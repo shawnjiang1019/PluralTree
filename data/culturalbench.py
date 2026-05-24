@@ -116,7 +116,7 @@ def load_culturalbench(
     except ImportError:
         raise ImportError("Install huggingface datasets: pip install datasets")
 
-    ds = load_dataset("kellycyy/CulturalBench", "CulturalBench-Easy", trust_remote_code=True)
+    ds = load_dataset("kellycyy/CulturalBench", "CulturalBench-Easy")
 
     # Use the test split (only split available) — we create our own train/val/test
     rows = ds["test"]
