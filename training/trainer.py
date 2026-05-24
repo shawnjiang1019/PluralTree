@@ -17,13 +17,14 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
 from data.culturalbench import CulturalGraph
 from data.collate import TripleBatchSampler
 from data.negative_sampler import NegativeSampler
 from data.tree_builder import build_full_tree_inputs
-from training.losses import link_prediction_loss, gate_sparsity_loss
+from training.losses import gate_sparsity_loss
 from training.scoring import HyperbolicLinkPredictor
 from pluraltree.manifolds.poincare import PoincareBall
 from pluraltree.combined.gki_tree_encoder import GKITreeEncoder
@@ -142,27 +143,16 @@ class Trainer:
         h_neg_s = h_all[neg_s]   # (B*K, d)
         h_neg_o = h_all[neg_o]   # (B*K, d)
 
-        # Score positives and negatives
+        # Score positives and negatives using relation-aware predictor
         score_pos = self.predictor.score(h_pos_s, pos_r, h_pos_o)  # (B,)
 
-        # Match negatives back to positives: repeat pos scores K times
         K = self.config.n_negative
-        B = pos_s.shape[0]
         if neg_s.shape[0] > 0:
-            score_pos_rep = score_pos.repeat_interleave(K)[:neg_s.shape[0]]
-            score_neg = self.predictor.score(h_neg_s, neg_r, h_neg_o)
+            score_neg = self.predictor.score(h_neg_s, neg_r, h_neg_o)  # (B*K,)
+            score_pos_rep = score_pos.repeat_interleave(K)[:score_neg.shape[0]]
+            loss_lp = F.relu(self.config.margin + score_neg - score_pos_rep).mean()
         else:
-            score_pos_rep = score_pos
-            score_neg = score_pos.clone().detach()
-
-        # Link prediction loss
-        loss_lp = link_prediction_loss(
-            h_subjects   = h_pos_s,
-            h_objects_pos= h_pos_o,
-            h_objects_neg= h_neg_o[:B] if neg_o.shape[0] >= B else h_pos_o,
-            manifold     = self.encoder.manifold,
-            margin       = self.config.margin,
-        )
+            loss_lp = torch.zeros(1, device=self.device, requires_grad=True)
 
         # Gate sparsity — penalize always-open gates
         # Approximate by measuring mean hidden state norm (proxy for gate activity)
@@ -204,10 +194,8 @@ class Trainer:
             epoch_losses: list[float] = []
             t0 = time.time()
 
-            # Encode the full tree once per epoch
-            h_all = self.encode_tree()
-
             for batch in self.batch_sampler:
+                h_all = self.encode_tree()
                 metrics = self.train_step(batch, h_all)
                 epoch_losses.append(metrics["loss"])
 
