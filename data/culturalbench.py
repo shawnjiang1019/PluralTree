@@ -292,4 +292,4 @@ def compute_text_embeddings(graph: CulturalGraph, model_name: str = "all-MiniLM-
     texts = [graph.entity_text[i] for i in range(n)]
     embeddings = model.encode(texts, convert_to_tensor=True, show_progress_bar=True)
     # Clone to exit inference_mode context set by sentence-transformers
-    return embeddings.clone()  # (N, 384) for MiniLM
+    return embeddings.clone()  # (N, embed_dim): 384 for MiniLM, 768 for mpnet

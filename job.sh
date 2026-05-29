@@ -7,8 +7,8 @@
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
 
-module load python/3.11 gcc cuda/12.2
+module load python/3.11 gcc cuda/13.2
 source ~/envs/pluraltree/bin/activate
 
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
-python scripts/train.py --device cuda --n_epochs 100 --d_hidden 128
+python scripts/train.py --device cuda --n_epochs 300 --d_hidden 128 --warmup1 400 --warmup2 1600 --embed_model all-mpnet-base-v2
