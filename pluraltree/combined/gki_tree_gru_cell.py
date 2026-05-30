@@ -39,17 +39,24 @@ class GKITreeGRUCell(nn.Module):
         injection_point: InjectionPoint = InjectionPoint.POST_AGGREGATION,
         gate_bias: float = -2.0,
         child_attention: bool = True,
+        depth_aware: bool = True,
+        inject: bool = True,
     ):
         super().__init__()
         self.manifold = manifold
         self.injection_point = injection_point
+        # When False, all knowledge injection is bypassed (pure Tree-GRU ablation).
+        self.inject = inject
         self.tree_gru_cell = HyperbolicTreeGRUCell(d_input, d_hidden, manifold, child_attention)
 
-        # Depth-aware GKI injector
+        # GKI injector (creates a plain HyperbolicGate by default)
         self.gki = GKIInjector(d_hidden, sources, manifold, gate_bias)
 
-        # Replace the standard gate in the injector with depth-aware variant
-        self.gki.gate = DepthAwareHyperbolicGate(d_hidden, d_hidden, manifold, gate_bias)
+        # Optionally replace the standard gate with the depth-aware variant.
+        # Ablation A1: depth_aware=False keeps the plain HyperbolicGate so we can
+        # test whether conditioning the gate on radius ρ actually matters.
+        if depth_aware:
+            self.gki.gate = DepthAwareHyperbolicGate(d_hidden, d_hidden, manifold, gate_bias)
 
     def forward(
         self,
@@ -72,7 +79,7 @@ class GKITreeGRUCell(nn.Module):
             (batch, d_hidden) hidden state on the Poincaré ball
         """
         # Pre-aggregation injection
-        if self.injection_point in (InjectionPoint.PRE_AGGREGATION, InjectionPoint.DUAL):
+        if self.inject and self.injection_point in (InjectionPoint.PRE_AGGREGATION, InjectionPoint.DUAL):
             if child_node_ids is not None:
                 K = h_children.shape[0]
                 injected = []
@@ -84,7 +91,7 @@ class GKITreeGRUCell(nn.Module):
         h_agg = self.tree_gru_cell.aggregator(h_children, children_mask)
 
         # Post-aggregation injection
-        if self.injection_point == InjectionPoint.POST_AGGREGATION:
+        if self.inject and self.injection_point == InjectionPoint.POST_AGGREGATION:
             h_agg = self.gki(h_agg, node_ids)
 
         # GRU step
@@ -92,7 +99,7 @@ class GKITreeGRUCell(nn.Module):
         h_v = self.tree_gru_cell.gru_step(x_v, h_agg_tan)
 
         # Post-GRU injection
-        if self.injection_point in (InjectionPoint.POST_GRU, InjectionPoint.DUAL):
+        if self.inject and self.injection_point in (InjectionPoint.POST_GRU, InjectionPoint.DUAL):
             h_v = self.gki(h_v, node_ids)
 
         return h_v

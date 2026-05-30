@@ -25,13 +25,16 @@ class GKITreeEncoder(nn.Module):
         sources: list[KnowledgeSource],
         injection_point: InjectionPoint = InjectionPoint.POST_AGGREGATION,
         gate_bias: float = -2.0,
+        depth_aware: bool = True,
+        inject: bool = True,
     ):
         super().__init__()
         self.d_hidden = d_hidden
         self.manifold = manifold
         self.input_proj = nn.Linear(d_input, d_hidden)
         self.cell = GKITreeGRUCell(
-            d_hidden, d_hidden, manifold, sources, injection_point, gate_bias
+            d_hidden, d_hidden, manifold, sources, injection_point, gate_bias,
+            depth_aware=depth_aware, inject=inject,
         )
         self.schedule = None
 
@@ -81,7 +84,8 @@ class GKITreeEncoder(nn.Module):
                     x_tan[idx : idx + 1], h_agg_tan
                 )
                 # Apply post-agg or post-GRU injection even for leaves
-                h_node = self.cell.gki(h_node, node_ids[idx : idx + 1])
+                if self.cell.inject:
+                    h_node = self.cell.gki(h_node, node_ids[idx : idx + 1])
             else:
                 h_ch = torch.stack([h[c] for c in children], dim=0).unsqueeze(1)
                 mask = torch.ones(len(children), 1, dtype=torch.bool, device=device)

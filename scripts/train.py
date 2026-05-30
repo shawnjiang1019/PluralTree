@@ -40,6 +40,12 @@ def parse_args():
     p.add_argument("--curvature",     type=float, default=1.0)
     p.add_argument("--injection",     type=str,   default="post_agg",
                    choices=["pre_agg", "post_agg", "post_gru", "dual"])
+    # --- A1 ablation flags ---
+    p.add_argument("--no_gki",        action="store_true",
+                   help="Disable all knowledge injection (pure Tree-GRU baseline).")
+    p.add_argument("--gate_type",     type=str,   default="depth_aware",
+                   choices=["depth_aware", "plain"],
+                   help="depth_aware = radius-conditioned gate; plain = HyperbolicGate.")
     p.add_argument("--embed_model",   type=str,   default="all-MiniLM-L6-v2")
     p.add_argument("--device",        type=str,   default="cpu")
     p.add_argument("--seed",          type=int,   default=42)
@@ -97,7 +103,13 @@ def main():
         sources          = [knowledge_source],
         injection_point  = injection_map[args.injection],
         gate_bias        = args.gate_bias,
+        depth_aware      = (args.gate_type == "depth_aware"),
+        inject           = (not args.no_gki),
     )
+    if args.no_gki:
+        print("  [ablation] GKI DISABLED — pure Tree-GRU")
+    else:
+        print(f"  [ablation] gate_type={args.gate_type}  injection={args.injection}")
 
     predictor = HyperbolicLinkPredictor(
         num_relations = n_relations,

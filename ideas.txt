@@ -2,3 +2,10 @@ Things I want to try out:
 
 Experiments:
 1. Multi-agent deliberation with fine-tuned LMs
+
+
+python -c "
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer('all-MiniLM-L6-v2')
+print('Downloaded successfully')
+"
