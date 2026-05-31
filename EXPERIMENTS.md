@@ -12,6 +12,36 @@ a stronger encoder (`all-mpnet-base-v2`) and recalibrated curriculum
 
 ---
 
+## Positioning vs. HyperKGR (closest prior work)
+
+**Liu, *HyperKGR* (EMNLP 2025)** is the nearest published system and overlaps
+heavily with our *mechanics*: Poincaré ball, recursive tree in hyperbolic space, GRU
+gating, learnable curvature, relation-as-translation, link-prediction MRR/Hits. We
+must position against it deliberately.
+
+- **What it does that we don't (yet):** embeds a *per-query message-passing tree*
+  (dynamic, query-specific embeddings; a hyperbolic GNN in the NBFNet lineage), with
+  a DP=GNN theorem and SOTA results on FB15k-237 / WN18RR / NELL-995 / Family / UMLS,
+  in both transductive and inductive settings.
+- **What we do that it doesn't:** (1) **external knowledge injection (GKI)** with
+  **depth-aware radius gating**; (2) a *fixed semantic hierarchy* encoded once (vs. a
+  query-specific computation tree); (3) the **plurality / distributional** directions
+  (E1–E3); (4) **learned/soft hierarchy** (E4); (5) the **LLM-reasoning end goal** (D).
+
+**Consequences for the roadmap:**
+1. Do **not** frame contributions as "hyperbolic recursive tree + GRU for link
+   prediction" — HyperKGR owns that claim. Lead with GKI + plurality + LLM grounding.
+2. Treat HyperKGR-class GNN reasoners (NBFNet, RED-GNN, AdaProp) as the **real
+   baselines** (sharpens A3). If our MRR can't match them on a fixed KG, the pure-LP
+   story is weak — push the value to knowledge injection and downstream LLM use.
+3. Its **query-specific embeddings** are a useful template for a context-conditioned
+   encoder, which is essentially the bridge to E2 (Pluralistic Leaf Existence) and E4
+   (learned attachment).
+
+See `RELATED_WORK.md` (top callout + §2) for the full contrast.
+
+---
+
 ## A. Validate the current architecture (do first — low risk, high value)
 
 These confirm that each component earns its place before we build on top of it.

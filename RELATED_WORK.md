@@ -11,10 +11,24 @@ survey. Each entry notes *why it matters here*.
 
 ---
 
+> ⚠️ **Closest prior work — read before positioning the project.**
+> **Liu, *HyperKGR: Knowledge Graph Reasoning in Hyperbolic Space with Graph Neural
+> Network Encoding Symbolic Path* (EMNLP 2025).** Shares almost all of PluralTree's
+> machinery — Poincaré ball, recursive tree in hyperbolic space, GRU gating,
+> learnable curvature, relation-as-translation, link-prediction MRR/Hits. **Key
+> difference:** HyperKGR's "tree" is a *per-query message-passing tree* (dynamic,
+> query-specific embeddings, a hyperbolic GNN in the NBFNet lineage), whereas
+> PluralTree's tree is a *fixed semantic hierarchy* encoded once and shared. It has
+> **no external-knowledge injection (GKI), no depth-aware radius gating, no plurality/
+> distribution, and no LLM-grounding goal** — which is exactly where PluralTree must
+> differentiate. Do **not** pitch PluralTree as "hyperbolic recursive tree + GRU for
+> link prediction": HyperKGR owns that, on standard benchmarks, with a DP=GNN theorem
+> and SOTA numbers vs. NBFNet/RED-GNN/AdaProp. See §2 for the full contrast.
+
 ## 0. Read these three first (highest leverage)
 
 1. **Chami et al., *Low-Dimensional Hyperbolic Knowledge Graph Embeddings* (AttH, 2020)**
-   — the closest prior work to this project. Hyperbolic KG embeddings with
+   — the closest *embedding-based* prior work. Hyperbolic KG embeddings with
    attention and learnable curvature; covers the exact MRR / Hits@k filtered-ranking
    evaluation you use. Will calibrate expectations and sharpen baselines (A3) and
    learnable curvature (B3).
@@ -61,6 +75,25 @@ survey. Each entry notes *why it matters here*.
   — hyperbolic KG embeddings with relation-specific Möbius transformations;
   precursor to AttH and directly comparable to your relation translation.
 - **Chami et al., AttH/RotH (2020)** — see section 0.
+- **Liu, *HyperKGR* (EMNLP 2025)** — **the closest prior work overall** (see the
+  callout above). A hyperbolic GNN that embeds a *query-specific* message-passing tree
+  on the Poincaré ball with learnable curvature, query-relation-aware attention over
+  reasoning paths, and a GRU that gates updates *across propagation hops* (anti
+  over-smoothing). Scores with `wᵀh` + multi-class log-loss; evaluated transductively
+  **and inductively** on FB15k-237 / WN18RR / NELL-995 / Family / UMLS.
+  Contrast with PluralTree:
+  - *Tree*: HyperKGR = dynamic per-query computation graph; PluralTree = fixed
+    ontological hierarchy (one global `h_all`).
+  - *Encoder*: HyperKGR = GNN message passing (DP=GNN theorem); PluralTree = recursive
+    Tree-GRU (Tree-LSTM lineage).
+  - *GRU role*: HyperKGR gates across hops; PluralTree gates the children→parent update.
+  - *Knowledge*: HyperKGR uses KG structure only; PluralTree injects external text/
+    semantic knowledge (GKI) with depth-aware gating — **no analog in HyperKGR**.
+  - *Goal*: HyperKGR = SOTA link prediction; PluralTree = LLM-reasoning support +
+    plurality/distribution research.
+  Take-away: cite as nearest prior work; differentiate on GKI, depth-aware gating,
+  plurality (E1–E3), learned hierarchy (E4), and LLM grounding (D). Its query-specific
+  embeddings are also a useful template for a context-conditioned encoder (E2/E4).
 
 ---
 
