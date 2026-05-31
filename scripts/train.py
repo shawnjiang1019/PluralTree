@@ -52,9 +52,32 @@ def parse_args():
     return p.parse_args()
 
 
+def run_tag(args) -> str:
+    """A short, grep-friendly identifier for this run's configuration."""
+    parts = [
+        f"embed={args.embed_model}",
+        f"d_hidden={args.d_hidden}",
+        f"inj={args.injection}",
+        f"gate={'NONE' if args.no_gki else args.gate_type}",
+    ]
+    return " | ".join(parts)
+
+
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
+
+    # ------------------------------------------------------------------
+    # 0. Run banner — makes each .out self-describing
+    # ------------------------------------------------------------------
+    print("=" * 70)
+    print("PluralTree training run")
+    print("=" * 70)
+    print(f"  RUN: {run_tag(args)}")
+    print("  config:")
+    for k, v in sorted(vars(args).items()):
+        print(f"    {k:14s} = {v}")
+    print("=" * 70)
 
     # ------------------------------------------------------------------
     # 1. Load data
@@ -154,6 +177,18 @@ def main():
     test_metrics = trainer.evaluate("test")
     for k, v in test_metrics.items():
         print(f"  {k}: {v:.4f}")
+
+    # ------------------------------------------------------------------
+    # 6. One-line summary — easy to grep/compare across runs
+    #    e.g.  grep '^RESULT' logs/a1_*.out
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 70)
+    print(f"RESULT | {run_tag(args)} | best_val_mrr={trainer.best_val_mrr:.4f} | "
+          f"test_mrr={test_metrics.get('mrr', float('nan')):.4f} "
+          f"h@1={test_metrics.get('hits@1', float('nan')):.4f} "
+          f"h@3={test_metrics.get('hits@3', float('nan')):.4f} "
+          f"h@10={test_metrics.get('hits@10', float('nan')):.4f}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
