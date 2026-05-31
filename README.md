@@ -4,6 +4,8 @@ PluralTree is a research system for learning hierarchical knowledge graph embedd
 
 The system is validated on **CulturalBench**, a dataset of cultural practices organized into a four-level geographic hierarchy (World → Region → Country → Practice), using link prediction as the training task.
 
+**Companion docs:** [`EXPERIMENTS.md`](./EXPERIMENTS.md) — the experiment roadmap (validation, ablations, and novel plurality/distribution directions); [`RELATED_WORK.md`](./RELATED_WORK.md) — a reading list mapped to the architecture.
+
 ---
 
 ## Core Ideas
@@ -80,10 +82,18 @@ PluralTree/
 │   ├── test_tree_gru_cell.py   # Cell output shapes, manifold preservation
 │   └── test_combined.py        # Full GKI Tree-GRU integration tests
 ├── configs/                    # YAML configs for different experiment setups
-├── job.sh                      # SLURM script for Compute Canada (Narval)
+├── jobs/                       # SLURM scripts for Compute Canada (Narval)
+│   ├── job.sh                  # Main training job
+│   └── job_a1_*.sh             # A1 ablation jobs: baseline, no_gki, plain_gate,
+│                               #   pre_agg, post_gru, dual
+├── EXPERIMENTS.md              # Experiment roadmap (validation → novel directions A–E)
+├── RELATED_WORK.md             # Reading list mapped to the architecture
 ├── pyproject.toml
 └── requirements.txt
 ```
+
+> **Note on layout:** SLURM scripts live under `jobs/`. Submit them from the repo
+> root (e.g. `sbatch jobs/job.sh`) so the `logs/` output paths resolve correctly.
 
 ---
 
@@ -98,7 +108,8 @@ CulturalBench (HuggingFace)
 load_culturalbench()  →  CulturalGraph
         │                 (entity vocab, triples, tree structure, type constraints)
         ▼
-compute_text_embeddings()  →  (N, 384) sentence-transformer embeddings
+compute_text_embeddings()  →  (N, d_input) sentence-transformer embeddings
+        │                       (d_input = 384 for all-MiniLM-L6-v2, 768 for all-mpnet-base-v2)
         │
         ├──► KGEmbeddingSource (frozen knowledge source)
         │
@@ -209,7 +220,7 @@ Relations:
 
 Structural triples (country/region/world) are always in the training set. Practice triples are split 80/10/10 train/val/test.
 
-Sentence-transformer embeddings (`all-MiniLM-L6-v2`) of entity description text serve as both node input features and the frozen knowledge source.
+Sentence-transformer embeddings of entity description text serve as both node input features and the frozen knowledge source. The encoder model is selectable via `--embed_model` (default `all-MiniLM-L6-v2`, 384-d; `all-mpnet-base-v2`, 768-d, is a stronger alternative). The hidden dimension `d_input` is derived automatically from the embedding size, so swapping encoders needs no model-code changes.
 
 ---
 
@@ -235,7 +246,12 @@ Pre-download data and model on the login node (compute nodes have no internet):
 ```bash
 python -c "from datasets import load_dataset; load_dataset('kellycyy/CulturalBench', 'CulturalBench-Easy')"
 python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+# If using the stronger encoder, pre-download it too:
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-mpnet-base-v2')"
 ```
+
+> On Narval, `pyarrow` is provided by the `arrow` module, **not** pip — load
+> `arrow/24.0.0` *before* activating the venv, and do not `pip install pyarrow`.
 
 ---
 
@@ -247,9 +263,15 @@ python scripts/train.py
 python scripts/train.py --d_hidden 128 --n_epochs 100 --device cuda
 ```
 
-**SLURM (Narval):**
+**SLURM (Narval):** submit from the repo root so `logs/` resolves correctly.
 ```bash
-sbatch job.sh
+sbatch jobs/job.sh
+
+# A1 ablation matrix (see EXPERIMENTS.md §A1) — 6 separate jobs, each logging
+# to logs/a1_<variant>_<jobid>.{out,err}:
+for j in baseline no_gki plain_gate pre_agg post_gru dual; do
+  sbatch jobs/job_a1_$j.sh
+done
 ```
 
 **Key arguments:**
@@ -267,6 +289,9 @@ sbatch job.sh
 | `--warmup2` | 1500 | Step at which gates are fully unbiased |
 | `--gate_bias` | -2.0 | Initial gate bias (negative = nearly closed) |
 | `--injection` | `post_agg` | Injection point: `pre_agg`, `post_agg`, `post_gru`, `dual` |
+| `--no_gki` | off | **A1 ablation:** disable all knowledge injection (pure Tree-GRU baseline) |
+| `--gate_type` | `depth_aware` | **A1 ablation:** `depth_aware` (radius-conditioned) or `plain` (`HyperbolicGate`) |
+| `--embed_model` | `all-MiniLM-L6-v2` | Sentence-transformer encoder (e.g. `all-mpnet-base-v2`) |
 | `--curvature` | 1.0 | Poincaré ball curvature `c` |
 | `--device` | `cpu` | `cpu` or `cuda` |
 
