@@ -96,6 +96,7 @@ def load_culturalbench(
     split_seed: int = 42,
     train_frac: float = 0.8,
     val_frac: float = 0.1,
+    leakage_safe: bool = True,
 ) -> CulturalGraph:
     """Load CulturalBench and build the knowledge graph.
 
@@ -107,6 +108,14 @@ def load_culturalbench(
         split_seed: random seed for reproducible splits
         train_frac: fraction of practice triples for training
         val_frac: fraction for validation (remainder goes to test)
+        leakage_safe: if True (default), avoid the two leakage sources:
+            (1) structural triples (country->region, region->world) are trivial
+                and memorized — they are kept in TRAIN only, never scored in
+                val/test, so evaluation reflects real practice prediction;
+            (2) the Country->Practice tree edges are built from TRAIN practices
+                ONLY, so the encoder never aggregates a held-out practice into
+                its country's embedding (the leaked structural answer).
+            Set False to reproduce the original (leaky) behavior.
 
     Returns:
         CulturalGraph with all structure needed for training
@@ -213,9 +222,29 @@ def load_culturalbench(
     n_train = int(n * train_frac)
     n_val   = int(n * val_frac)
 
-    train_triples = structural_triples + shuffled[:n_train]
-    val_triples   = structural_triples + shuffled[n_train : n_train + n_val]
-    test_triples  = structural_triples + shuffled[n_train + n_val :]
+    train_practices = shuffled[:n_train]
+    val_practices   = shuffled[n_train : n_train + n_val]
+    test_practices  = shuffled[n_train + n_val :]
+
+    if leakage_safe:
+        # Source 1 fix: structural triples are trivial (part_of has 1 candidate;
+        # located_in is fully memorized from train) — keep them in TRAIN only so
+        # val/test measure genuine practice prediction, not memorized structure.
+        train_triples = structural_triples + train_practices
+        val_triples   = val_practices
+        test_triples  = test_practices
+        # Source 2 fix: build the Country->Practice tree from TRAIN practices only.
+        tree_practice_triples = train_practices
+    else:
+        # Legacy (leaky) behavior, kept for reproducing prior numbers.
+        train_triples = structural_triples + train_practices
+        val_triples   = structural_triples + val_practices
+        test_triples  = structural_triples + test_practices
+        tree_practice_triples = practice_triples
+
+    # all_triples = every known-true triple, used ONLY as the filter set for
+    # filtered ranking (excludes other true triples from competing). This is
+    # standard filtered-setting practice and does not leak into embeddings.
     all_triples   = structural_triples + shuffled
 
     # ------------------------------------------------------------------
@@ -234,8 +263,10 @@ def load_culturalbench(
         for country in countries:
             children_indices[region_id].append(entity_vocab[country])
 
-    # Country → Practices (using ALL practice triples to build the tree)
-    for s_id, r_id, o_id in practice_triples:
+    # Country → Practices.
+    # leakage_safe: train practices only (held-out practices stay isolated leaves,
+    # encoded from their own text alone — the inductive, leakage-free setup).
+    for s_id, r_id, o_id in tree_practice_triples:
         if r_id == r_practiced_in:
             children_indices[o_id].append(s_id)  # country → practice
 

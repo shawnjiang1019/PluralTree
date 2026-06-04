@@ -47,6 +47,10 @@ def parse_args():
                    choices=["depth_aware", "plain"],
                    help="depth_aware = radius-conditioned gate; plain = HyperbolicGate.")
     p.add_argument("--embed_model",   type=str,   default="all-MiniLM-L6-v2")
+    p.add_argument("--allow_leakage", action="store_true",
+                   help="Reproduce the original leaky setup (structural triples in "
+                        "every split + tree built from all practices). Default is "
+                        "leakage-safe evaluation.")
     p.add_argument("--device",        type=str,   default="cpu")
     p.add_argument("--seed",          type=int,   default=42)
     return p.parse_args()
@@ -83,7 +87,8 @@ def main():
     # 1. Load data
     # ------------------------------------------------------------------
     print("Loading CulturalBench...")
-    graph = load_culturalbench(split_seed=args.seed)
+    graph = load_culturalbench(split_seed=args.seed, leakage_safe=not args.allow_leakage)
+    print(f"  leakage_safe = {not args.allow_leakage}")
     n_entities  = len(graph.id_to_entity)
     n_relations = len(graph.relation_vocab)
     print(f"  Entities: {n_entities}  |  Relations: {n_relations}")
