@@ -51,6 +51,9 @@ def parse_args():
                    help="Reproduce the original leaky setup (structural triples in "
                         "every split + tree built from all practices). Default is "
                         "leakage-safe evaluation.")
+    p.add_argument("--keep_country_text", action="store_true",
+                   help="Keep country names/demonyms in the question text (leaky). "
+                        "Default masks them so the label is not in the input.")
     p.add_argument("--device",        type=str,   default="cpu")
     p.add_argument("--seed",          type=int,   default=42)
     return p.parse_args()
@@ -63,6 +66,7 @@ def run_tag(args) -> str:
         f"d_hidden={args.d_hidden}",
         f"inj={args.injection}",
         f"gate={'NONE' if args.no_gki else args.gate_type}",
+        f"mask_country={not args.keep_country_text}",
     ]
     return " | ".join(parts)
 
@@ -87,8 +91,13 @@ def main():
     # 1. Load data
     # ------------------------------------------------------------------
     print("Loading CulturalBench...")
-    graph = load_culturalbench(split_seed=args.seed, leakage_safe=not args.allow_leakage)
+    graph = load_culturalbench(
+        split_seed=args.seed,
+        leakage_safe=not args.allow_leakage,
+        mask_country=not args.keep_country_text,
+    )
     print(f"  leakage_safe = {not args.allow_leakage}")
+    print(f"  mask_country = {not args.keep_country_text}")
     n_entities  = len(graph.id_to_entity)
     n_relations = len(graph.relation_vocab)
     print(f"  Entities: {n_entities}  |  Relations: {n_relations}")

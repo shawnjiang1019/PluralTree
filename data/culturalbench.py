@@ -14,6 +14,7 @@ Relations:
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass, field
 
 import torch
@@ -50,6 +51,95 @@ RELATION_VOCAB: dict[str, int] = {
     "part_of":      2,
 }
 NUM_RELATIONS = len(RELATION_VOCAB)
+
+
+# ---------------------------------------------------------------------------
+# Country name + demonym aliases (for label masking)
+# ---------------------------------------------------------------------------
+# ~89% of CulturalBench question texts literally name the country or its demonym
+# (e.g. "In Japanese culture...", "...for Spanish people?"). Embedding that text
+# verbatim leaks the answer into the input features, so practice->country link
+# prediction reduces to string matching (test MRR ~0.94 with no graph signal).
+# These aliases are stripped from question text when mask_country=True so the
+# model must infer the country from the cultural *content*, not a literal mention.
+COUNTRY_ALIASES: dict[str, list[str]] = {
+    "China":          ["China", "Chinese"],
+    "Hong Kong":      ["Hong Kong", "Hongkong", "Hongkonger"],
+    "Japan":          ["Japan", "Japanese"],
+    "South Korea":    ["South Korea", "South Korean", "Korea", "Korean"],
+    "Taiwan":         ["Taiwan", "Taiwanese"],
+    "Indonesia":      ["Indonesia", "Indonesian"],
+    "Malaysia":       ["Malaysia", "Malaysian"],
+    "Philippines":    ["Philippines", "Philippine", "Filipino", "Filipina", "Filipinos"],
+    "Singapore":      ["Singapore", "Singaporean"],
+    "Thailand":       ["Thailand", "Thai"],
+    "Vietnam":        ["Vietnam", "Vietnamese"],
+    "Bangladesh":     ["Bangladesh", "Bangladeshi"],
+    "India":          ["India", "Indian"],
+    "Nepal":          ["Nepal", "Nepali", "Nepalese"],
+    "Pakistan":       ["Pakistan", "Pakistani"],
+    "Czech Republic": ["Czech Republic", "Czechia", "Czech"],
+    "Poland":         ["Poland", "Polish"],
+    "Romania":        ["Romania", "Romanian"],
+    "Russia":         ["Russia", "Russian"],
+    "Ukraine":        ["Ukraine", "Ukrainian"],
+    "France":         ["France", "French"],
+    "Germany":        ["Germany", "German"],
+    "Netherlands":    ["Netherlands", "Holland", "Dutch"],
+    "United Kingdom": ["United Kingdom", "Great Britain", "Britain", "British",
+                       "England", "English", "UK"],
+    "Italy":          ["Italy", "Italian"],
+    "Spain":          ["Spain", "Spanish", "Spaniard"],
+    "Iran":           ["Iran", "Iranian", "Persian"],
+    "Israel":         ["Israel", "Israeli"],
+    "Lebanon":        ["Lebanon", "Lebanese"],
+    "Saudi Arabia":   ["Saudi Arabia", "Saudi Arabian", "Saudi"],
+    "Turkey":         ["Turkey", "Turkish"],
+    "Egypt":          ["Egypt", "Egyptian"],
+    "Morocco":        ["Morocco", "Moroccan"],
+    "Nigeria":        ["Nigeria", "Nigerian"],
+    "South Africa":   ["South Africa", "South African"],
+    "Zimbabwe":       ["Zimbabwe", "Zimbabwean"],
+    "Argentina":      ["Argentina", "Argentine", "Argentinian"],
+    "Brazil":         ["Brazil", "Brazilian"],
+    "Chile":          ["Chile", "Chilean"],
+    "Mexico":         ["Mexico", "Mexican"],
+    "Peru":           ["Peru", "Peruvian"],
+    "Canada":         ["Canada", "Canadian"],
+    "United States":  ["United States of America", "United States", "USA",
+                       "America", "American"],
+    "Australia":      ["Australia", "Australian"],
+    "New Zealand":    ["New Zealand", "New Zealander", "Kiwi"],
+}
+
+MASK_TOKEN = "[COUNTRY]"
+
+# One word-boundary alternation over every alias, longest first so multi-word
+# names ("South Korea") match before their substrings ("Korea"). Case-insensitive.
+_ALL_ALIASES = sorted(
+    {a for aliases in COUNTRY_ALIASES.values() for a in aliases},
+    key=len, reverse=True,
+)
+_COUNTRY_RE = re.compile(
+    r"\b(" + "|".join(re.escape(a) for a in _ALL_ALIASES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def mask_country_text(text: str) -> tuple[str, bool]:
+    """Replace any country name/demonym mention with MASK_TOKEN.
+
+    Returns (masked_text, changed) where changed is True if any mention was
+    found. Collapses runs of mask tokens and extra whitespace so the result
+    reads cleanly (e.g. "In Japanese culture" -> "In [COUNTRY] culture").
+    """
+    masked, n = _COUNTRY_RE.subn(MASK_TOKEN, text)
+    if n == 0:
+        return text, False
+    masked = re.sub(r"(?:" + re.escape(MASK_TOKEN) + r"\s*){2,}",
+                    MASK_TOKEN + " ", masked)
+    masked = re.sub(r"\s{2,}", " ", masked).strip()
+    return masked, True
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +187,7 @@ def load_culturalbench(
     train_frac: float = 0.8,
     val_frac: float = 0.1,
     leakage_safe: bool = True,
+    mask_country: bool = True,
 ) -> CulturalGraph:
     """Load CulturalBench and build the knowledge graph.
 
@@ -116,6 +207,12 @@ def load_culturalbench(
                 ONLY, so the encoder never aggregates a held-out practice into
                 its country's embedding (the leaked structural answer).
             Set False to reproduce the original (leaky) behavior.
+        mask_country: if True (default), strip country names and demonyms from
+            each practice's question text before it becomes the node feature
+            (e.g. "In Japanese culture..." -> "In [COUNTRY] culture..."). Without
+            this, ~89% of questions name the answer country in the input, so
+            practice->country prediction is trivial string matching rather than
+            cultural inference. Set False to reproduce the leaky text.
 
     Returns:
         CulturalGraph with all structure needed for training
@@ -174,11 +271,18 @@ def load_culturalbench(
 
     # Cultural practices (one per question)
     practice_questions: list[dict] = []
+    n_masked = 0
     for q in questions:
         name = f"practice_{q['question_idx']}"
         text = q["prompt_question"]
+        if mask_country:
+            text, changed = mask_country_text(text)
+            n_masked += int(changed)
         add_entity(name, text, "practice")
         practice_questions.append(q)
+    if mask_country:
+        print(f"  Masked country mention in {n_masked}/{len(practice_questions)} "
+              f"practice texts")
 
     # ------------------------------------------------------------------
     # Build triples
