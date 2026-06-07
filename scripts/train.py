@@ -54,6 +54,11 @@ def parse_args():
     p.add_argument("--keep_country_text", action="store_true",
                    help="Keep country names/demonyms in the question text (leaky). "
                         "Default masks them so the label is not in the input.")
+    p.add_argument("--dataset",       type=str,   default="culturalbench",
+                   choices=["culturalbench", "wn18rr"],
+                   help="Which dataset/loader to use.")
+    p.add_argument("--data_dir",      type=str,   default="data/wn18rr",
+                   help="Directory of WN18RR train/valid/test.txt (wn18rr only).")
     p.add_argument("--device",        type=str,   default="cpu")
     p.add_argument("--seed",          type=int,   default=42)
     return p.parse_args()
@@ -90,14 +95,23 @@ def main():
     # ------------------------------------------------------------------
     # 1. Load data
     # ------------------------------------------------------------------
-    print("Loading CulturalBench...")
-    graph = load_culturalbench(
-        split_seed=args.seed,
-        leakage_safe=not args.allow_leakage,
-        mask_country=not args.keep_country_text,
-    )
-    print(f"  leakage_safe = {not args.allow_leakage}")
-    print(f"  mask_country = {not args.keep_country_text}")
+    print(f"Loading {args.dataset}...")
+    if args.dataset == "wn18rr":
+        from data.wordnet import load_wn18rr
+        graph = load_wn18rr(
+            data_dir=args.data_dir,
+            split_seed=args.seed,
+            leakage_safe=not args.allow_leakage,
+        )
+        print(f"  leakage_safe = {not args.allow_leakage}")
+    else:
+        graph = load_culturalbench(
+            split_seed=args.seed,
+            leakage_safe=not args.allow_leakage,
+            mask_country=not args.keep_country_text,
+        )
+        print(f"  leakage_safe = {not args.allow_leakage}")
+        print(f"  mask_country = {not args.keep_country_text}")
     n_entities  = len(graph.id_to_entity)
     n_relations = len(graph.relation_vocab)
     print(f"  Entities: {n_entities}  |  Relations: {n_relations}")
