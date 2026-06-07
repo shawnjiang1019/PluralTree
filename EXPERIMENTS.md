@@ -102,10 +102,44 @@ relational knowledge for abstract nodes, precise factual knowledge for leaves.
 curvature, possibly per-depth or per-layer — different hierarchy levels may prefer
 different curvature.
 
-### B4. Top-down + bottom-up message passing
-Encoding is currently bottom-up only (leaves → root). Add a top-down pass so a
-practice node is informed by its country/region context — the tree analogue of a
-bidirectional RNN.
+### B4. Symmetric parent–child conditioning (top-down + bottom-up message passing)
+
+**The asymmetry today.** Conditioning is currently one-directional. The bottom-up
+pass means a **parent is conditioned on its children** (a country's `h` is an
+attention-weighted aggregate of its practices; a region's on its countries; the
+world's on everything below). But a **child is *not* conditioned on its parents**: a
+practice leaf is encoded from its own text (plus GKI) alone, with `h_agg = 0` — it
+never learns which country / region / world it sits under. In the leakage-safe setup
+held-out practices are therefore fully isolated leaves with zero structural context,
+which likely explains why the task is nearly solvable from question text alone
+(no_gki test MRR ≈ 0.94): the hierarchy only shapes the country/region side of the
+score, not the practice side.
+
+**The goal: make conditioning symmetric.** Move from "children shape parents" to
+"children and parents shape each other," so every node's representation reflects both
+its descendants *and* its ancestral context — the tree analogue of a bidirectional
+RNN.
+
+**Recipe.**
+1. **Up pass** (current): leaves → root, producing `h_v^↑` (node informed by its
+   subtree).
+2. **Down pass** (new): root → leaves. Each node mixes its own `h_v^↑` with a message
+   from its parent's downward state `h_parent^↓` (e.g. a Möbius midpoint / a second
+   GRU cell whose "children" slot is fed the parent). A practice then "knows" it is in
+   Japan → East Asia → World.
+3. **Combine:** final `h_v = combine(h_v^↑, h_v^↓)` (concat+project in tangent space,
+   or a gated Möbius blend), keeping everything on the ball.
+
+**Why it's high-leverage.**
+- *Accuracy:* gives leaves the structural signal they currently lack, and makes the
+  GKI gate genuinely depth-aware on the way down (A2 premise).
+- *Research story:* symmetric conditioning is the prerequisite for **E2 (Pluralistic
+  Leaf Existence)**. Once a child can be conditioned on a parent, the *same* leaf can
+  be conditioned on *different* parents to yield a distinct existence per branch
+  (`h_leaf|Japan ≠ h_leaf|UK`), whose spread is the measured variance of **E3**. So
+  B4 is the natural bridge from a static tree to the plurality/distributional
+  directions — and a way to approach HyperKGR-style query/context conditioning
+  without going fully query-dynamic.
 
 ---
 
