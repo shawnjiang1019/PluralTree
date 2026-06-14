@@ -4,7 +4,7 @@ PluralTree is a research system for learning hierarchical knowledge graph embedd
 
 The system is validated on **CulturalBench**, a dataset of cultural practices organized into a four-level geographic hierarchy (World → Region → Country → Practice), using link prediction as the training task.
 
-**Companion docs:** [`EXPERIMENTS.md`](./EXPERIMENTS.md) — the experiment roadmap (validation, ablations, and novel plurality/distribution directions); [`RELATED_WORK.md`](./RELATED_WORK.md) — a reading list mapped to the architecture.
+**Companion docs** (in [`docs/`](./docs/)): [`EXPERIMENTS.md`](./docs/EXPERIMENTS.md) — the experiment roadmap (validation, ablations, and novel plurality/distribution directions); [`RELATED_WORK.md`](./docs/RELATED_WORK.md) — a reading list mapped to the architecture; [`EVALUATION.md`](./docs/EVALUATION.md) — how we judge embedding quality beyond link prediction.
 
 ---
 
@@ -86,8 +86,8 @@ PluralTree/
 │   ├── job.sh                  # Main training job
 │   └── job_a1_*.sh             # A1 ablation jobs: baseline, no_gki, plain_gate,
 │                               #   pre_agg, post_gru, dual
-├── EXPERIMENTS.md              # Experiment roadmap (validation → novel directions A–E)
-├── RELATED_WORK.md             # Reading list mapped to the architecture
+├── docs/                       # Companion docs (EXPERIMENTS, EVALUATION,
+│                               #   RELATED_WORK, GATING, WN18RR, comparisons …)
 ├── pyproject.toml
 └── requirements.txt
 ```

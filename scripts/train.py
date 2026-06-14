@@ -54,6 +54,20 @@ def parse_args():
     p.add_argument("--keep_country_text", action="store_true",
                    help="Keep country names/demonyms in the question text (leaky). "
                         "Default masks them so the label is not in the input.")
+    p.add_argument("--checkpoint",    action="store_true",
+                   help="Gradient-checkpoint the encoder (recompute each tree "
+                        "level in backward). Big memory savings for large graphs "
+                        "(WN18RR) at ~20-30%% extra compute.")
+    # --- Extra message-passing flows (default off = pure bottom-up) ---
+    p.add_argument("--bidirectional", action="store_true",
+                   help="Add a top-down pass so children are conditioned on their "
+                        "parents (symmetric parent<->child message passing, B4).")
+    p.add_argument("--lateral",       action="store_true",
+                   help="Add a same-depth pass so a node is conditioned on its "
+                        "siblings (lateral message passing).")
+    p.add_argument("--lateral_max_siblings", type=int, default=16,
+                   help="Cap on siblings aggregated per node in the lateral pass "
+                        "(bounds memory for high-fan-out parents).")
     p.add_argument("--dataset",       type=str,   default="culturalbench",
                    choices=["culturalbench", "wn18rr"],
                    help="Which dataset/loader to use.")
@@ -72,6 +86,7 @@ def run_tag(args) -> str:
         f"inj={args.injection}",
         f"gate={'NONE' if args.no_gki else args.gate_type}",
         f"mask_country={not args.keep_country_text}",
+        f"flow={'+'.join(['up'] + (['down'] if args.bidirectional else []) + (['lat'] if args.lateral else []))}",
     ]
     return " | ".join(parts)
 
@@ -156,6 +171,10 @@ def main():
         gate_bias        = args.gate_bias,
         depth_aware      = (args.gate_type == "depth_aware"),
         inject           = (not args.no_gki),
+        gradient_checkpointing = args.checkpoint,
+        bidirectional        = args.bidirectional,
+        lateral              = args.lateral,
+        lateral_max_siblings = args.lateral_max_siblings,
     )
     if args.no_gki:
         print("  [ablation] GKI DISABLED — pure Tree-GRU")

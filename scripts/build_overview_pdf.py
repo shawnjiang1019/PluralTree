@@ -291,7 +291,7 @@ def build(doc: PDFBuilder):
         "L        = L_lp + 0.01 * L_sparse")
     doc.block("caption",
         "Note: the sparsity term penalises gate-weight magnitude as a proxy; a true "
-        "L0/hard-concrete gate (see GATING.md) would penalise activations directly.")
+        "L0/hard-concrete gate (see docs/GATING.md) would penalise activations directly.")
 
     doc.block("h2", "3.8  Evaluation (evaluation/link_prediction.py)")
     doc.block("body",
@@ -436,7 +436,7 @@ def build(doc: PDFBuilder):
         "pyarrow comes from the 'arrow' module (load before activating the venv), not "
         "pip.")
     doc.block("caption",
-        "Companion docs in the repo: README.md, EXPERIMENTS.md, RELATED_WORK.md, GATING.md.")
+        "Companion docs in the repo: README.md, docs/EXPERIMENTS.md, docs/RELATED_WORK.md, docs/GATING.md.")
 
 
 def main():
