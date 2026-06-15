@@ -80,6 +80,9 @@ def parse_args():
                    help="Re-encode the full tree every N training steps (1 = every "
                         "batch). Larger N reuses a detached embedding between "
                         "refreshes — big speedup on large graphs (WN18RR/PrimeKG).")
+    p.add_argument("--save_embeddings", type=str, default=None,
+                   help="Path to save the final (N, d) embedding tensor for offline "
+                        "structure evaluation (scripts/eval_structure.py).")
     p.add_argument("--dataset",       type=str,   default="culturalbench",
                    choices=["culturalbench", "wn18rr"],
                    help="Which dataset/loader to use.")
@@ -249,6 +252,9 @@ def main():
     encoder.eval()
     with torch.no_grad():
         h_all_final = trainer.encode_tree()
+    if args.save_embeddings:
+        torch.save(h_all_final.detach().cpu(), args.save_embeddings)
+        print(f"  Saved final embeddings to {args.save_embeddings}")
     struct = compute_structure_metrics(
         h_all_final,
         graph.children_indices,
