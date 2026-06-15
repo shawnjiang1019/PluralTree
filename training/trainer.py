@@ -43,6 +43,7 @@ class TrainerConfig:
     gate_sparsity_weight: float = 0.01
     lambda_struct:  float = 0.0   # weight on the hierarchy structure-fidelity loss
     struct_margin:  float = 1.0   # margin for that loss (parent closer than non-ancestor)
+    encode_every:   int   = 1     # re-encode the full tree every N steps (1 = every batch)
     lr:             float = 1e-3
     lr_manifold:    float = 1e-2
     eval_every:     int   = 200   # steps
@@ -181,7 +182,7 @@ class Trainer:
         # Hierarchy margin: a node's parent should be closer than a random
         # non-ancestor by `struct_margin`. Optimises subtree_ap / ancestor_auc /
         # depth_radius_rho (see docs/EVALUATION.md). Off when lambda_struct == 0.
-        loss_struct_val = 0.0
+        loss_struct_t = torch.zeros((), device=self.device)
         if self.config.lambda_struct > 0.0 and self._n_struct_edges > 0:
             manifold = self.encoder.manifold
             n_nodes = h_all.shape[0]
@@ -190,17 +191,17 @@ class Trainer:
             c = self._struct_child[e]
             p = self._struct_parent[e]
             neg = torch.randint(n_nodes, (B,), device=self.device)
-            # Resample degenerate negatives that hit the child or its parent.
+            # Resample degenerate negatives that hit the child or its parent
+            # (unconditional where — avoids a per-step .any() GPU sync).
             bad = (neg == c) | (neg == p)
-            if bad.any():
-                neg = torch.where(
-                    bad, torch.randint(n_nodes, (B,), device=self.device), neg
-                )
+            neg = torch.where(
+                bad, torch.randint(n_nodes, (B,), device=self.device), neg
+            )
             d_pos = manifold.distance(h_all[c], h_all[p]).squeeze(-1)
             d_neg = manifold.distance(h_all[c], h_all[neg]).squeeze(-1)
             loss_struct = F.relu(self.config.struct_margin + d_pos - d_neg).mean()
             loss = loss + self.config.lambda_struct * loss_struct
-            loss_struct_val = loss_struct.item()
+            loss_struct_t = loss_struct.detach()
 
         loss.backward()
 
@@ -213,11 +214,13 @@ class Trainer:
         self.optimizer.step()
         self.global_step += 1
 
+        # Return detached tensors (no .item() here) so the hot path has zero
+        # GPU->CPU syncs; the caller materializes scalars only when logging.
         return {
-            "loss":        loss.item(),
-            "loss_lp":     loss_lp.item(),
-            "loss_sparse": loss_sparse.item(),
-            "loss_struct": loss_struct_val,
+            "loss":        loss.detach().reshape(()),
+            "loss_lp":     loss_lp.detach().reshape(()),
+            "loss_sparse": loss_sparse.detach().reshape(()),
+            "loss_struct": loss_struct_t,
         }
 
     def train(self) -> None:
@@ -227,26 +230,40 @@ class Trainer:
         print(f"  Train triples: {len(self.graph.train_triples)}")
         print(f"  Val triples:   {len(self.graph.val_triples)}")
         print(f"  Device: {self.device}")
+        if self.config.encode_every > 1:
+            print(f"  Encoding the tree every {self.config.encode_every} steps "
+                  f"(reusing a detached copy in between)")
 
+        h_all = None  # persists across batches; refreshed every encode_every steps
         for epoch in range(self.config.n_epochs):
             self.encoder.train()
             self.predictor.train()
 
-            epoch_losses: list[float] = []
+            epoch_loss_sum = torch.zeros((), device=self.device)
+            epoch_n = 0
             t0 = time.time()
 
             for batch in self.batch_sampler:
-                h_all = self.encode_tree()
-                metrics = self.train_step(batch, h_all)
-                epoch_losses.append(metrics["loss"])
+                # Re-encode the *static* tree only every encode_every steps; between
+                # refreshes reuse a detached copy. The predictor still trains every
+                # step; the encoder updates on encode steps (full grad). This
+                # amortizes the dominant per-batch full-tree encode on large graphs.
+                if h_all is None or self.global_step % self.config.encode_every == 0:
+                    h_all = self.encode_tree()
+                    h_step = h_all
+                else:
+                    h_step = h_all.detach()
+                metrics = self.train_step(batch, h_step)
+                epoch_loss_sum = epoch_loss_sum + metrics["loss"]
+                epoch_n += 1
 
                 if self.global_step % self.config.log_every == 0:
                     gate_bias = self.schedule.get_gate_bias(self.global_step)
                     print(
                         f"  step {self.global_step:5d} | "
-                        f"loss {metrics['loss']:.4f} | "
-                        f"lp {metrics['loss_lp']:.4f} | "
-                        f"struct {metrics['loss_struct']:.4f} | "
+                        f"loss {metrics['loss'].item():.4f} | "
+                        f"lp {metrics['loss_lp'].item():.4f} | "
+                        f"struct {metrics['loss_struct'].item():.4f} | "
                         f"gate_bias {gate_bias:.2f}"
                     )
 
@@ -263,7 +280,7 @@ class Trainer:
                         print(f"  [best] new best val MRR: {self.best_val_mrr:.4f}")
 
             elapsed = time.time() - t0
-            mean_loss = sum(epoch_losses) / max(len(epoch_losses), 1)
+            mean_loss = (epoch_loss_sum / max(epoch_n, 1)).item()   # one sync / epoch
             print(f"Epoch {epoch+1:3d}/{self.config.n_epochs} | "
                   f"mean loss {mean_loss:.4f} | {elapsed:.1f}s")
 

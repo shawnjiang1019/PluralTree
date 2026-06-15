@@ -44,6 +44,6 @@ echo "RUN_NAME=${RUN_NAME:-up}  FLOW_FLAGS=${FLOW_FLAGS:-<none>}"
 
 python scripts/train.py --dataset wn18rr --device cuda \
     --n_epochs 100 --d_hidden 128 --checkpoint \
-    --warmup1 400 --warmup2 1600 \
+    --warmup1 400 --warmup2 1600 --encode_every 25 \
     --embed_model all-mpnet-base-v2 \
     --no_gki ${FLOW_FLAGS}

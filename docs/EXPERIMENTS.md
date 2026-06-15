@@ -242,6 +242,54 @@ context.
   likely combine with the parametric head (E1) as a prior refined by the samples.
   Data thinness makes this a larger-KG direction.
 
+### E4. Plurality benchmarks — GlobalOpinionQA / OpinionQA
+E1–E3 are currently *synthetic aspirations*: the plurality is constructed, the
+variance invented. These two opinion-survey datasets make plurality **empirical** —
+the target is a *distribution over answers per group*, with no single ground truth,
+so different groups legitimately differ. This is the natural flagship benchmark for
+the plurality track (and it sidesteps the CulturalBench label-leakage failure: the
+label is a distribution to represent, not a country name to string-match — see
+`LABEL_LEAKAGE.md`).
+
+- **GlobalOpinionQA** (World Values Survey + Pew Global) → a clean **tree**:
+  World → Region → Country, each opinion question a leaf whose per-country answer
+  distribution is its **per-parent existence** (`dist(q | Japan) ≠ dist(q | UK)`).
+  Reuses the existing `REGION_TO_COUNTRIES` scaffold. **Start here.**
+- **OpinionQA** (Pew American Trends Panel) → groups defined by *cross-cutting
+  facets* (age, sex, race, education, income, religion, politics, region): a
+  **multi-facet DAG**, not a tree. Richer, and a genuine stress test of multi-parent
+  conditioning (C3) — do *second*.
+
+**Why it fits the architecture (and the recent work).**
+- Direct instance of **E2** (per-parent existence) and **E3** (measured variance):
+  the spread of a question's distribution across countries *is* the plurality.
+- **B4 (top-down conditioning) is the mechanism** — a leaf can only acquire a
+  *country-specific* existence if it is conditioned on its parent. So this dataset is
+  the proving ground for `--bidirectional`.
+- **Distributions over a tree** are exactly what a Tree-Wasserstein distance compares
+  (see `EVALUATION.md` Tier-2/4 and the TWD note): "is a country's opinion
+  distribution closer to its regional siblings than to a random country?" The
+  dual-space split also fits — a hierarchy head for *where a group sits*, a
+  distributional head for *what it believes*.
+
+**Evaluation.** Distribution alignment per group, scored with **Wasserstein / JS
+divergence** (the papers' "representativeness" metric) — a real-distribution version
+of the `STRUCT` geometry checks. Downstream (D-track): retrieve the region/country
+subtree, condition the LLM, and measure whether group-conditioned generation aligns
+better than flat — i.e., **pluralistic reasoning for an LLM** against an established
+benchmark.
+
+**Caveats.**
+- *Not* a KG / link-prediction benchmark — repurposed as node-attribute
+  distributions over a hierarchy. Complements PrimeKG/WN18RR; does not replace them.
+- Shallow hierarchy (~3 levels, ~50–100 countries): a **plurality** test, not a
+  depth/scale test (that is PrimeKG's job).
+- Representational framing: the task is to *faithfully represent the spread*
+  (including disagreement), explicitly **not** to endorse any group's view or treat a
+  majority as "correct." Survey snapshots age; coverage is incomplete (not every
+  question asked in every country) — that missingness maps onto partial-coverage DAG
+  structure but is noise to handle.
+
 ---
 
 ## Recommended sequencing
@@ -253,7 +301,9 @@ context.
 3. **C2** (inductive eval) — a distinctive, demonstrable claim.
 4. **D1** — close the loop back to the motivating LLM goal.
 5. **E1 → E2 → E3** — the novel contributions, on a larger KG (C1), with E3 as the
-   flagship synthesis (plurality producing distributions).
+   flagship synthesis (plurality producing distributions). Anchor these on **E4
+   (GlobalOpinionQA)** for *empirical* plurality — it instantiates E2/E3 on the
+   existing geographic tree and exercises B4 + the distributional eval.
 
 ---
 

@@ -76,6 +76,10 @@ def parse_args():
     p.add_argument("--struct_margin", type=float, default=1.0,
                    help="Margin for the structure-fidelity loss (parent closer than "
                         "a non-ancestor by this much).")
+    p.add_argument("--encode_every",  type=int,   default=1,
+                   help="Re-encode the full tree every N training steps (1 = every "
+                        "batch). Larger N reuses a detached embedding between "
+                        "refreshes — big speedup on large graphs (WN18RR/PrimeKG).")
     p.add_argument("--dataset",       type=str,   default="culturalbench",
                    choices=["culturalbench", "wn18rr"],
                    help="Which dataset/loader to use.")
@@ -215,6 +219,7 @@ def main():
         gate_bias_init = args.gate_bias,
         lambda_struct  = args.lambda_struct,
         struct_margin  = args.struct_margin,
+        encode_every   = args.encode_every,
         device         = args.device,
     )
 

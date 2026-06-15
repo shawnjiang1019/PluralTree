@@ -135,8 +135,11 @@ small `λ_struct` and watch the Tier-1/2 metrics move.
 
 ## 6. Status
 
-- [ ] `evaluation/structure_metrics.py` — Tier 1–3 (intrinsic, no training loop)
-- [ ] depth–radius ρ wired into the trainer's per-eval log (cheapest signal)
+- [x] `evaluation/structure_metrics.py` — Tier 1–3 + sibling over-smoothing guard
+      (intrinsic, no training loop; hyperbolic *and* Euclidean via `manifold=None`)
+- [x] printed every run as a `STRUCT |` line (`scripts/train.py`); keys:
+      `depth_radius_rho`, `dist_tree_rho`, `recon_map`, `subtree_ap`,
+      `ancestor_auc`, `sibling_ratio`
 - [ ] structure-fidelity loss term (`λ_struct`) in `Trainer.train_step`
 - [ ] Tier-4 retrieval proxy harness
 - [x] vectorized filtered LP (`evaluation/link_prediction.py`)

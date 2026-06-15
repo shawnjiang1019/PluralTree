@@ -53,9 +53,11 @@ def evaluate_link_prediction(
     for s, r, o in neg_sampler.known_positives:
         true_objs[(s, r)].add(o)
 
-    # Per-relation candidate tensors and id->position maps, cached by the
-    # identity of the candidate list (relations may share one big list).
-    cand_cache: dict[int, tuple[Tensor, Tensor]] = {}
+    # Per-relation candidate tensors, id->position maps, and the gathered candidate
+    # embeddings — cached by the identity of the candidate list (relations may share
+    # one big list, e.g. all ~40K entities on WN18RR). Caching h_cands here avoids
+    # re-gathering the full (K, d) candidate matrix on every single triple.
+    cand_cache: dict[int, tuple[Tensor, Tensor, Tensor]] = {}
 
     def candidates_for(r_id: int):
         ids = graph.type_constraints.get(r_id, [])
@@ -67,7 +69,8 @@ def evaluate_link_prediction(
             cand = torch.tensor(ids, dtype=torch.long, device=device)
             id2pos = torch.full((n_entities,), -1, dtype=torch.long, device=device)
             id2pos[cand] = torch.arange(cand.numel(), device=device)
-            cand_cache[key] = (cand, id2pos)
+            h_cands = h_all[cand]                          # (K, d) — gather once
+            cand_cache[key] = (cand, id2pos, h_cands)
             cached = cand_cache[key]
         return cached
 
@@ -76,14 +79,13 @@ def evaluate_link_prediction(
         cc = candidates_for(r_id)
         if cc is None:
             continue
-        cand, id2pos = cc
+        cand, id2pos, h_cands = cc
 
         correct_pos = id2pos[o_id].item()
         if correct_pos < 0:                       # true object not a candidate
             ranks.append(cand.numel() + 1)
             continue
 
-        h_cands = h_all[cand]                                          # (K, d)
         scores = predictor.score_all_candidates(h_all[s_id], r_id, h_cands)  # (K,)
         correct_score = scores[correct_pos]
 

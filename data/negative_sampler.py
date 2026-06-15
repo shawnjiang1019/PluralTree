@@ -11,7 +11,6 @@ negative pool to avoid false negatives during evaluation.
 
 from __future__ import annotations
 
-import random
 import torch
 from torch import Tensor
 
@@ -23,121 +22,71 @@ class NegativeSampler:
         self,
         type_constraints: dict[int, list[int]],
         all_triples: list[tuple[int, int, int]],
-        seed: int = 0,
     ):
         """
         Args:
             type_constraints: relation_id → list of valid object entity ids
             all_triples: all known positive triples (for filtered evaluation)
-            seed: random seed
         """
         self.type_constraints = type_constraints
-        self.rng = random.Random(seed)
 
         # Build a set of known positives for fast lookup
         self.known_positives: set[tuple[int, int, int]] = set(all_triples)
 
-    def sample_negatives(
+        # Precompute a candidate tensor per relation for vectorized sampling.
+        self._cand_tensors: dict[int, Tensor] = {
+            r: torch.tensor(ids, dtype=torch.long)
+            for r, ids in type_constraints.items() if ids
+        }
+
+    def sample_negatives_tensor(
         self,
-        triples: list[tuple[int, int, int]],
-        n_negative: int = 1,
-        filtered: bool = False,
-    ) -> list[tuple[int, int, int]]:
-        """Generate negative triples by corrupting the object.
+        pos_s: Tensor,
+        pos_r: Tensor,
+        pos_o: Tensor,
+        n_negative: int,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Vectorized object-corruption negatives (training).
+
+        Replaces the per-triple Python ``rng.choice`` + retry loop with grouped
+        tensor sampling: one ``torch.randint`` per relation present in the batch,
+        with collisions against the true object resampled in a few vectorized
+        passes. Unfiltered (other known positives are allowed as negatives, which
+        is standard for training throughput).
 
         Args:
-            triples: positive triples to corrupt
-            n_negative: number of negatives per positive
-            filtered: if True, skip known positives when sampling
+            pos_s, pos_r, pos_o: (B,) long tensors for the positive triples.
+            n_negative: negatives per positive.
 
         Returns:
-            List of negative triples, length = len(triples) * n_negative
+            (neg_s, neg_r, neg_o), each (M,) with
+            M = (#triples whose relation has candidates) * n_negative.
         """
-        negatives: list[tuple[int, int, int]] = []
-        for s, r, o in triples:
-            candidates = self.type_constraints.get(r, [])
-            if not candidates:
-                continue
-            for _ in range(n_negative):
-                neg_o = self._sample_one(s, r, o, candidates, filtered)
-                negatives.append((s, r, neg_o))
-        return negatives
+        device = pos_s.device
+        keep = torch.tensor(
+            [int(r) in self._cand_tensors for r in pos_r.tolist()], dtype=torch.bool
+        )
+        if not bool(keep.any()):
+            empty = torch.zeros(0, dtype=torch.long, device=device)
+            return empty, empty, empty
 
-    def _sample_one(
-        self,
-        s: int,
-        r: int,
-        o: int,
-        candidates: list[int],
-        filtered: bool,
-    ) -> int:
-        """Sample one negative object, avoiding the true object."""
-        for _ in range(100):  # max attempts
-            neg = self.rng.choice(candidates)
-            if neg == o:
-                continue
-            if filtered and (s, r, neg) in self.known_positives:
-                continue
-            return neg
-        # Fallback: return any candidate different from o
-        for neg in candidates:
-            if neg != o:
-                return neg
-        return candidates[0]
+        s, r, o = pos_s[keep], pos_r[keep], pos_o[keep]
+        neg_s  = s.repeat_interleave(n_negative)
+        neg_r  = r.repeat_interleave(n_negative)
+        true_o = o.repeat_interleave(n_negative)
+        neg_o  = torch.empty_like(true_o)
 
-    def get_all_candidates(self, r: int, exclude: set[tuple[int, int, int]] | None = None) -> Tensor:
-        """Get all valid object candidates for a relation (for ranking evaluation).
+        for r_id in torch.unique(neg_r).tolist():
+            cand = self._cand_tensors[int(r_id)].to(device)
+            mask = neg_r == r_id
+            k = int(mask.sum())
+            sampled = cand[torch.randint(len(cand), (k,), device=device)]
+            t_o = true_o[mask]
+            for _ in range(10):                    # resample collisions w/ true object
+                coll = sampled == t_o
+                if not bool(coll.any()):
+                    break
+                sampled[coll] = cand[torch.randint(len(cand), (int(coll.sum()),), device=device)]
+            neg_o[mask] = sampled
 
-        Args:
-            r: relation id
-            exclude: set of (s, r, o) triples to exclude from candidates
-
-        Returns:
-            LongTensor of candidate object entity ids
-        """
-        candidates = self.type_constraints.get(r, [])
-        if exclude is None:
-            return torch.tensor(candidates, dtype=torch.long)
-        filtered = [c for c in candidates if c not in {o for s_, r_, o in exclude if r_ == r}]
-        return torch.tensor(filtered, dtype=torch.long)
-
-    def rank_candidates(
-        self,
-        s_id: int,
-        r_id: int,
-        o_id: int,
-        scores: Tensor,
-        candidate_ids: Tensor,
-        filtered: bool = True,
-    ) -> int:
-        """Compute the rank of the correct object among candidates.
-
-        Args:
-            s_id: subject entity id
-            r_id: relation id
-            o_id: correct object entity id
-            scores: (num_candidates,) score for each candidate
-            candidate_ids: (num_candidates,) entity ids corresponding to scores
-            filtered: exclude known positives other than (s_id, r_id, o_id)
-
-        Returns:
-            1-based rank of the correct object
-        """
-        id_to_idx = {cid.item(): i for i, cid in enumerate(candidate_ids)}
-        correct_idx = id_to_idx.get(o_id, -1)
-        if correct_idx == -1:
-            return len(candidate_ids) + 1
-
-        correct_score = scores[correct_idx].item()
-
-        # Count how many candidates score higher than correct
-        rank = 1
-        for i, (cid, score) in enumerate(zip(candidate_ids.tolist(), scores.tolist())):
-            if i == correct_idx:
-                continue
-            if filtered and (s_id, r_id, cid) in self.known_positives and cid != o_id:
-                continue
-            if score > correct_score:
-                rank += 1
-
-        return rank
+        return neg_s, neg_r, neg_o

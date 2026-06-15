@@ -5,7 +5,9 @@
 #
 #     bash jobs/submit_wn18rr_sweep.sh
 #
-# Compare afterwards with:  grep -h '^RESULT' logs/wn18rr_*_*.out
+# Compare afterwards with:
+#   grep -h '^RESULT' logs/wn18rr_*_*.out   # link prediction (MRR / Hits)
+#   grep -h '^STRUCT' logs/wn18rr_*_*.out   # geometry (subtree_ap, ancestor_auc, ...)
 
 set -euo pipefail
 mkdir -p logs

@@ -39,43 +39,15 @@ class TripleBatchSampler:
         self.rng.shuffle(self._indices)
         for start in range(0, len(self._indices), self.batch_size):
             batch_idx = self._indices[start : start + self.batch_size]
-            pos_triples = [self.triples[i] for i in batch_idx]
-            neg_triples = self.sampler.sample_negatives(
-                pos_triples, n_negative=self.n_negative
+            pos = [self.triples[i] for i in batch_idx]
+            ps, pr, po = zip(*pos)
+            pos_s = torch.tensor(ps, dtype=torch.long)
+            pos_r = torch.tensor(pr, dtype=torch.long)
+            pos_o = torch.tensor(po, dtype=torch.long)
+            neg_s, neg_r, neg_o = self.sampler.sample_negatives_tensor(
+                pos_s, pos_r, pos_o, self.n_negative
             )
-            yield _pack_batch(pos_triples, neg_triples, self.n_negative)
-
-
-def _pack_batch(
-    pos_triples: list[tuple[int, int, int]],
-    neg_triples: list[tuple[int, int, int]],
-    n_negative: int,
-) -> dict[str, Tensor]:
-    """Pack positive and negative triples into tensors.
-
-    Returns dict with:
-        pos_s, pos_r, pos_o : (B,) LongTensors for positive triples
-        neg_s, neg_r, neg_o : (B * n_negative,) LongTensors for negatives
-    """
-    def unpack(triples):
-        if not triples:
-            e = torch.zeros(0, dtype=torch.long)
-            return e, e, e
-        s, r, o = zip(*triples)
-        return (
-            torch.tensor(s, dtype=torch.long),
-            torch.tensor(r, dtype=torch.long),
-            torch.tensor(o, dtype=torch.long),
-        )
-
-    pos_s, pos_r, pos_o = unpack(pos_triples)
-    neg_s, neg_r, neg_o = unpack(neg_triples)
-
-    return {
-        "pos_s": pos_s,
-        "pos_r": pos_r,
-        "pos_o": pos_o,
-        "neg_s": neg_s,
-        "neg_r": neg_r,
-        "neg_o": neg_o,
-    }
+            yield {
+                "pos_s": pos_s, "pos_r": pos_r, "pos_o": pos_o,
+                "neg_s": neg_s, "neg_r": neg_r, "neg_o": neg_o,
+            }
