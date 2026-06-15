@@ -41,6 +41,8 @@ class TrainerConfig:
     n_negative:     int   = 10
     margin:         float = 1.0
     gate_sparsity_weight: float = 0.01
+    lambda_struct:  float = 0.0   # weight on the hierarchy structure-fidelity loss
+    struct_margin:  float = 1.0   # margin for that loss (parent closer than non-ancestor)
     lr:             float = 1e-3
     lr_manifold:    float = 1e-2
     eval_every:     int   = 200   # steps
@@ -105,6 +107,19 @@ class Trainer:
         # Tree inputs (static — built once)
         self.tree_inputs = build_full_tree_inputs(graph, self.node_embeddings)
 
+        # Structure-fidelity loss edges: (child, parent) pairs from the tree.
+        # Used only when config.lambda_struct > 0 — a Poincaré-style hierarchy
+        # margin loss (pull parents close, push non-ancestors away). Leakage-safe:
+        # these are backbone/ontology edges, not held-out target triples.
+        ch, par = [], []
+        for p, kids in enumerate(graph.children_indices):
+            for c in kids:
+                ch.append(c)
+                par.append(p)
+        self._struct_child  = torch.tensor(ch,  dtype=torch.long, device=self.device)
+        self._struct_parent = torch.tensor(par, dtype=torch.long, device=self.device)
+        self._n_struct_edges = len(ch)
+
         self.global_step = 0
         self.best_val_mrr = 0.0
 
@@ -162,6 +177,31 @@ class Trainer:
 
         loss = loss_lp + self.config.gate_sparsity_weight * loss_sparse
 
+        # Structure-fidelity loss — train the *geometry*, not just the link.
+        # Hierarchy margin: a node's parent should be closer than a random
+        # non-ancestor by `struct_margin`. Optimises subtree_ap / ancestor_auc /
+        # depth_radius_rho (see docs/EVALUATION.md). Off when lambda_struct == 0.
+        loss_struct_val = 0.0
+        if self.config.lambda_struct > 0.0 and self._n_struct_edges > 0:
+            manifold = self.encoder.manifold
+            n_nodes = h_all.shape[0]
+            B = min(self.config.batch_size, self._n_struct_edges)
+            e = torch.randint(self._n_struct_edges, (B,), device=self.device)
+            c = self._struct_child[e]
+            p = self._struct_parent[e]
+            neg = torch.randint(n_nodes, (B,), device=self.device)
+            # Resample degenerate negatives that hit the child or its parent.
+            bad = (neg == c) | (neg == p)
+            if bad.any():
+                neg = torch.where(
+                    bad, torch.randint(n_nodes, (B,), device=self.device), neg
+                )
+            d_pos = manifold.distance(h_all[c], h_all[p]).squeeze(-1)
+            d_neg = manifold.distance(h_all[c], h_all[neg]).squeeze(-1)
+            loss_struct = F.relu(self.config.struct_margin + d_pos - d_neg).mean()
+            loss = loss + self.config.lambda_struct * loss_struct
+            loss_struct_val = loss_struct.item()
+
         loss.backward()
 
         # Gradient clipping
@@ -177,6 +217,7 @@ class Trainer:
             "loss":        loss.item(),
             "loss_lp":     loss_lp.item(),
             "loss_sparse": loss_sparse.item(),
+            "loss_struct": loss_struct_val,
         }
 
     def train(self) -> None:
@@ -205,6 +246,7 @@ class Trainer:
                         f"  step {self.global_step:5d} | "
                         f"loss {metrics['loss']:.4f} | "
                         f"lp {metrics['loss_lp']:.4f} | "
+                        f"struct {metrics['loss_struct']:.4f} | "
                         f"gate_bias {gate_bias:.2f}"
                     )
 

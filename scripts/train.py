@@ -68,6 +68,14 @@ def parse_args():
     p.add_argument("--lateral_max_siblings", type=int, default=16,
                    help="Cap on siblings aggregated per node in the lateral pass "
                         "(bounds memory for high-fan-out parents).")
+    # --- Structure-fidelity loss (train the geometry, not just the link) ---
+    p.add_argument("--lambda_struct", type=float, default=0.0,
+                   help="Weight on the hierarchy structure-fidelity loss. 0 = off "
+                        "(pure link prediction). Try ~0.1 to push the embedding "
+                        "geometry to respect the tree (see docs/EVALUATION.md).")
+    p.add_argument("--struct_margin", type=float, default=1.0,
+                   help="Margin for the structure-fidelity loss (parent closer than "
+                        "a non-ancestor by this much).")
     p.add_argument("--dataset",       type=str,   default="culturalbench",
                    choices=["culturalbench", "wn18rr"],
                    help="Which dataset/loader to use.")
@@ -87,6 +95,7 @@ def run_tag(args) -> str:
         f"gate={'NONE' if args.no_gki else args.gate_type}",
         f"mask_country={not args.keep_country_text}",
         f"flow={'+'.join(['up'] + (['down'] if args.bidirectional else []) + (['lat'] if args.lateral else []))}",
+        f"lstruct={args.lambda_struct}",
     ]
     return " | ".join(parts)
 
@@ -204,6 +213,8 @@ def main():
         warmup1        = args.warmup1,
         warmup2        = args.warmup2,
         gate_bias_init = args.gate_bias,
+        lambda_struct  = args.lambda_struct,
+        struct_margin  = args.struct_margin,
         device         = args.device,
     )
 
@@ -226,8 +237,27 @@ def main():
         print(f"  {k}: {v:.4f}")
 
     # ------------------------------------------------------------------
-    # 6. One-line summary — easy to grep/compare across runs
-    #    e.g.  grep '^RESULT' logs/a1_*.out
+    # 5b. Structure-fidelity metrics — does the geometry encode the tree?
+    #     (subtree/path quality, beyond link prediction; see docs/EVALUATION.md)
+    # ------------------------------------------------------------------
+    from evaluation.structure_metrics import compute_structure_metrics
+    encoder.eval()
+    with torch.no_grad():
+        h_all_final = trainer.encode_tree()
+    struct = compute_structure_metrics(
+        h_all_final,
+        graph.children_indices,
+        graph.topo_order,
+        manifold = manifold,
+        seed     = args.seed,
+    )
+    print("\nStructure-fidelity metrics (geometry quality):")
+    for k, v in struct.items():
+        print(f"  {k}: {v:.4f}")
+
+    # ------------------------------------------------------------------
+    # 6. One-line summaries — easy to grep/compare across runs
+    #    e.g.  grep '^RESULT' logs/*.out  ;  grep '^STRUCT' logs/*.out
     # ------------------------------------------------------------------
     print("\n" + "=" * 70)
     print(f"RESULT | {run_tag(args)} | best_val_mrr={trainer.best_val_mrr:.4f} | "
@@ -235,6 +265,8 @@ def main():
           f"h@1={test_metrics.get('hits@1', float('nan')):.4f} "
           f"h@3={test_metrics.get('hits@3', float('nan')):.4f} "
           f"h@10={test_metrics.get('hits@10', float('nan')):.4f}")
+    print(f"STRUCT | {run_tag(args)} | "
+          + " ".join(f"{k}={v:.4f}" for k, v in struct.items()))
     print("=" * 70)
 
 
