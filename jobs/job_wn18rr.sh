@@ -42,8 +42,13 @@ case "${RUN_NAME:-up}" in
 esac
 echo "RUN_NAME=${RUN_NAME:-up}  FLOW_FLAGS=${FLOW_FLAGS:-<none>}"
 
+# Faster *convergence* config: encode every step (default), no gradient
+# checkpointing (GKI is off, so activations fit -> no recompute), and a large
+# batch so each expensive encode trains on many triples. If this OOMs, add
+# --checkpoint back (and/or drop to --d_hidden 64).
 python scripts/train.py --dataset wn18rr --device cuda \
-    --n_epochs 100 --d_hidden 128 --checkpoint \
-    --warmup1 400 --warmup2 1600 --encode_every 25 \
+    --n_epochs 100 --d_hidden 128 \
+    --warmup1 400 --warmup2 1600 --batch_size 1024 --lr 3e-3 \
     --embed_model all-mpnet-base-v2 \
+    --save_embeddings "embeddings_${RUN_NAME:-up}.pt" \
     --no_gki ${FLOW_FLAGS}
