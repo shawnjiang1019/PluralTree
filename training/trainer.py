@@ -44,6 +44,7 @@ class TrainerConfig:
     lambda_struct:  float = 0.0   # weight on the hierarchy structure-fidelity loss
     struct_margin:  float = 1.0   # margin for that loss (parent closer than non-ancestor)
     encode_every:   int   = 1     # re-encode the full tree every N steps (1 = every batch)
+    metrics_csv:    str | None = None   # if set, append per-eval val metrics here
     lr:             float = 1e-3
     lr_manifold:    float = 1e-2
     eval_every:     int   = 200   # steps
@@ -123,6 +124,17 @@ class Trainer:
 
         self.global_step = 0
         self.best_val_mrr = 0.0
+
+        # Optional CSV log of the validation learning curve (for offline plotting).
+        self._csv_writer = None
+        if config.metrics_csv:
+            import csv
+            self._csv_file = open(config.metrics_csv, "w", newline="")
+            self._csv_writer = csv.writer(self._csv_file)
+            self._csv_writer.writerow(
+                ["step", "epoch", "val_mrr", "hits@1", "hits@3", "hits@10"]
+            )
+            self._csv_file.flush()
 
     def encode_tree(self) -> Tensor:
         """Run the full tree encoder and return all entity hidden states."""
@@ -275,6 +287,13 @@ class Trainer:
                         f"H@1 {val_metrics['hits@1']:.4f} | "
                         f"H@10 {val_metrics['hits@10']:.4f}"
                     )
+                    if self._csv_writer is not None:
+                        self._csv_writer.writerow([
+                            self.global_step, epoch + 1,
+                            val_metrics["mrr"], val_metrics["hits@1"],
+                            val_metrics["hits@3"], val_metrics["hits@10"],
+                        ])
+                        self._csv_file.flush()
                     if val_metrics["mrr"] > self.best_val_mrr:
                         self.best_val_mrr = val_metrics["mrr"]
                         print(f"  [best] new best val MRR: {self.best_val_mrr:.4f}")

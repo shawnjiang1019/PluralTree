@@ -51,4 +51,5 @@ python scripts/train.py --dataset wn18rr --device cuda \
     --warmup1 400 --warmup2 1600 --batch_size 1024 --lr 3e-3 \
     --embed_model all-mpnet-base-v2 \
     --save_embeddings "embeddings_${RUN_NAME:-up}.pt" \
+    --metrics_csv "metrics_${RUN_NAME:-up}.csv" \
     --no_gki ${FLOW_FLAGS}

@@ -83,6 +83,9 @@ def parse_args():
     p.add_argument("--save_embeddings", type=str, default=None,
                    help="Path to save the final (N, d) embedding tensor for offline "
                         "structure evaluation (scripts/eval_structure.py).")
+    p.add_argument("--metrics_csv",    type=str, default=None,
+                   help="Path to append per-eval validation metrics (step, epoch, "
+                        "MRR, Hits) for offline plotting (scripts/plot_metrics.py).")
     p.add_argument("--dataset",       type=str,   default="culturalbench",
                    choices=["culturalbench", "wn18rr"],
                    help="Which dataset/loader to use.")
@@ -223,6 +226,7 @@ def main():
         lambda_struct  = args.lambda_struct,
         struct_margin  = args.struct_margin,
         encode_every   = args.encode_every,
+        metrics_csv    = args.metrics_csv,
         device         = args.device,
     )
 
