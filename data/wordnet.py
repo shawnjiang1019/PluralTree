@@ -80,7 +80,12 @@ def _read_entity_text(data_dir: str) -> dict[str, str]:
 
 
 def _nltk_gloss(entity_id: str) -> str | None:
-    """Best-effort WordNet gloss for a synset-offset id (needs nltk data)."""
+    """Best-effort WordNet gloss for a synset-offset id (needs nltk data).
+
+    Offsets absent from nltk's WordNet version emit a UserWarning and return None;
+    we suppress those (they're expected) and fall back to the raw id upstream.
+    """
+    import warnings
     try:
         from nltk.corpus import wordnet as wn
     except Exception:
@@ -89,14 +94,16 @@ def _nltk_gloss(entity_id: str) -> str | None:
     if not digits.isdigit():
         return None
     offset = int(digits)
-    for pos in ("n", "v", "a", "r", "s"):
-        try:
-            syn = wn.synset_from_pos_and_offset(pos, offset)
-        except Exception:
-            continue
-        if syn is not None:
-            name = syn.lemma_names()[0].replace("_", " ")
-            return f"{name} — {syn.definition()}"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for pos in ("n", "v", "a", "r", "s"):
+            try:
+                syn = wn.synset_from_pos_and_offset(pos, offset)
+            except Exception:
+                continue
+            if syn is not None:
+                name = syn.lemma_names()[0].replace("_", " ")
+                return f"{name} — {syn.definition()}"
     return None
 
 
@@ -112,6 +119,7 @@ def load_wn18rr(
     split_seed: int = 42,          # accepted for a uniform interface; splits are fixed
     leakage_safe: bool = True,
     hierarchy_relations: tuple[str, ...] = HIERARCHY_RELATIONS,
+    holdout_entities: float = 0.0,
 ) -> CulturalGraph:
     """Load WN18RR and build a CulturalGraph for the Tree-GRU encoder.
 
@@ -229,6 +237,38 @@ def load_wn18rr(
     topo_order = topological_sort(children_indices)
 
     # ------------------------------------------------------------------
+    # Optional inductive holdout. Pick a fraction of LEAF entities, remove all
+    # their triples from train/val/test (the model never trains on them, and they
+    # are not in the transductive eval), and collect their non-hierarchy triples
+    # as an inductive test set. Their hierarchy position stays in the tree (it was
+    # built above), so they are embedded from text + structure alone — the test of
+    # whether the *computed* embeddings generalise to never-trained nodes.
+    # ------------------------------------------------------------------
+    inductive_test: list[tuple[int, int, int]] = []
+    holdout_ids: set[int] = set()
+    if holdout_entities > 0.0:
+        hier_rel_ids = {relation_vocab[r] for r in hierarchy_relations if r in relation_vocab}
+        leaves = [eid for eid in range(n_entities)
+                  if eid != root_id and not children_indices[eid]]
+        rng = random.Random(split_seed)
+        rng.shuffle(leaves)
+        k = int(round(holdout_entities * len(leaves)))
+        holdout_ids = set(leaves[:k])
+
+        def _touches(t):
+            return t[0] in holdout_ids or t[2] in holdout_ids
+
+        inductive_test = [t for t in all_triples
+                          if _touches(t) and t[1] not in hier_rel_ids]
+        train_triples = [t for t in train_triples if not _touches(t)]
+        val_triples   = [t for t in val_triples   if not _touches(t)]
+        test_triples  = [t for t in test_triples  if not _touches(t)]
+        print(f"  Inductive holdout: {len(holdout_ids)} leaf entities "
+              f"({holdout_entities:.0%} of {len(leaves)} leaves) | "
+              f"{len(inductive_test)} inductive test triples | "
+              f"train now {len(train_triples)}")
+
+    # ------------------------------------------------------------------
     # Negative sampling / ranking candidates: all entities except ROOT.
     # Every relation shares the same candidate list (no WordNet type system).
     # ------------------------------------------------------------------
@@ -260,4 +300,6 @@ def load_wn18rr(
         topo_order=topo_order,
         type_constraints=type_constraints,
         entity_types=entity_types,
+        inductive_test=inductive_test,
+        holdout_entity_ids=holdout_ids,
     )

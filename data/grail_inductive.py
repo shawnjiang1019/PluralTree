@@ -101,8 +101,14 @@ def _build_graph(rel_vocab, text_map, train_raw, val_raw, test_raw) -> CulturalG
     )
 
 
-def load_grail_wn18rr(version: str = "v1", data_dir: str = "data/grail"):
+def load_grail_wn18rr(version: str = "v1", data_dir: str = "data/grail",
+                      text_dir: str = "data/wn18rr"):
     """Load one GraIL inductive WN18RR version.
+
+    Entity text (node features) is resolved in this order: an entity2text file in
+    the GraIL dir, then the standard WN18RR ``entity2text.txt`` under ``text_dir``
+    (curated descriptions for all 40,943 synsets — avoids nltk WordNet-version
+    offset mismatches), then nltk glosses, then a raw-id fallback.
 
     Returns:
         (train_graph, ind_graph) — both CulturalGraphs sharing the relation vocab.
@@ -130,7 +136,10 @@ def load_grail_wn18rr(version: str = "v1", data_dir: str = "data/grail"):
         if r not in rel_vocab:
             rel_vocab[r] = len(rel_vocab)
 
-    text_map = _read_entity_text(base) or _read_entity_text(ind)
+    # Prefer curated WN18RR descriptions (no nltk version mismatch); fall back to
+    # the GraIL dirs, then (inside _build_graph) to nltk glosses / raw id.
+    text_map = (_read_entity_text(text_dir)
+                or _read_entity_text(base) or _read_entity_text(ind))
 
     train_graph = _build_graph(rel_vocab, text_map, tr, va, te)
     ind_graph   = _build_graph(rel_vocab, text_map, itr, [], ite)
