@@ -1,0 +1,60 @@
+% WN18RR message-passing sweep results.
+% Requires: \usepackage{booktabs}
+% Trained variants (hyperbolic Tree-GRU, --no_gki, encode_every=25).
+% Bold = best variant per metric.
+
+\begin{table}[t]
+\centering
+\caption{WN18RR message-passing variants. Link prediction is filtered
+MRR/Hits@$k$; the rest are structure-fidelity metrics. Bold = best variant. All
+runs use \texttt{--no\_gki}, $d{=}128$, \texttt{encode\_every=25} (under-trained;
+preliminary).}
+\label{tab:wn18rr-sweep}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Metric & Up & +Lateral & +Up-Down & +Both \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Link prediction}} \\
+MRR $\uparrow$        & \textbf{0.1119} & 0.1041 & 0.0877 & 0.0876 \\
+Hits@1 $\uparrow$     & \textbf{0.0150} & 0.0137 & 0.0026 & 0.0032 \\
+Hits@3 $\uparrow$     & \textbf{0.1414} & 0.1292 & 0.1043 & 0.1063 \\
+Hits@10 $\uparrow$    & \textbf{0.3079} & 0.2856 & 0.2601 & 0.2537 \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Structure fidelity}} \\
+depth\_radius\_rho $\uparrow$ & 0.2603 & 0.3448 & 0.3486 & \textbf{0.3695} \\
+dist\_tree\_rho $\uparrow$    & 0.2105 & 0.2923 & 0.3263 & \textbf{0.3400} \\
+recon\_map $\uparrow$         & 0.2102 & 0.2201 & \textbf{0.3528} & 0.3473 \\
+subtree\_ap $\uparrow$        & 0.3697 & 0.3666 & 0.3817 & \textbf{0.3855} \\
+ancestor\_auc $\uparrow$      & \textbf{0.9260} & 0.9147 & 0.8448 & 0.8434 \\
+sibling\_ratio $\downarrow$\textsuperscript{a} & 0.7511 & \textbf{0.6706} & 0.6952 & 0.6739 \\
+\bottomrule
+\end{tabular}
+
+\smallskip
+\footnotesize\textsuperscript{a}\,$\mathtt{sibling\_ratio}$: lower = tighter
+siblings, but $\to 0$ indicates collapse (over-smoothing); read with Hits@1.
+\end{table}
+
+\paragraph{Structure-fidelity metrics.} All operate on the trained embeddings
+$h_v$ with hyperbolic distance $d_{\mathcal{H}}$; pair/anchor quantities are
+sampled with a fixed seed.
+\begin{itemize}
+  \item \texttt{depth\_radius\_rho} --- whether embedding norm grows with tree
+        depth; the Spearman correlation between $\lVert h_v\rVert$ and depth over
+        all non-root nodes.
+  \item \texttt{dist\_tree\_rho} --- whether embedding distance tracks tree
+        distance; the Spearman correlation between $d_{\mathcal{H}}(h_u,h_v)$ and
+        tree distance over sampled node pairs.
+  \item \texttt{recon\_map} --- whether a node's direct tree neighbours are its
+        nearest points; the mean Average Precision of ranking parents$+$children
+        by $d_{\mathcal{H}}$ over sampled anchors.
+  \item \texttt{subtree\_ap} --- whether same-subtree nodes cluster together; the
+        mean Average Precision of ranking same-level-$k$-ancestor nodes by
+        $d_{\mathcal{H}}$ over sampled anchors.
+  \item \texttt{ancestor\_auc} --- whether ancestors are closer than unrelated
+        nodes; the AUC separating (node, ancestor) pairs from (node, random) pairs
+        scored by $-d_{\mathcal{H}}$.
+  \item \texttt{sibling\_ratio} --- whether siblings are tight without collapsing;
+        the mean sibling-pair $d_{\mathcal{H}}$ divided by the mean random-pair
+        $d_{\mathcal{H}}$.
+\end{itemize}

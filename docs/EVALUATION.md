@@ -4,7 +4,8 @@ How we judge whether the embeddings are *good* — not just whether they predict
 links. This file exists because the **end goal is geometry**: we want a knowledge
 graph encoded so that **subtree similarity** and **path similarity** are
 recoverable from distances, so an LLM can be handed diverse, structurally-related
-context for reasoning. Link prediction is a training signal and a sanity anchor;
+context for reasoning. Link prediction is a training signal and a sanity anc
+hor;
 it is **not** the primary yardstick.
 
 See also `EXPERIMENTS.md` (roadmap), `LABEL_LEAKAGE.md` (why we distrust a single

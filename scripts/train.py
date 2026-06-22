@@ -76,6 +76,10 @@ def parse_args():
     p.add_argument("--struct_margin", type=float, default=1.0,
                    help="Margin for the structure-fidelity loss (parent closer than "
                         "a non-ancestor by this much).")
+    p.add_argument("--inductive_holdout", type=float, default=0.0,
+                   help="WN18RR only: hold out this fraction of leaf entities from "
+                        "training and evaluate their links inductively (embedded "
+                        "from text+structure alone, never trained on).")
     p.add_argument("--encode_every",  type=int,   default=1,
                    help="Re-encode the full tree every N training steps (1 = every "
                         "batch). Larger N reuses a detached embedding between "
@@ -136,6 +140,7 @@ def main():
             data_dir=args.data_dir,
             split_seed=args.seed,
             leakage_safe=not args.allow_leakage,
+            holdout_entities=args.inductive_holdout,
         )
         print(f"  leakage_safe = {not args.allow_leakage}")
     else:
@@ -271,6 +276,26 @@ def main():
         print(f"  {k}: {v:.4f}")
 
     # ------------------------------------------------------------------
+    # 5c. Inductive evaluation — link prediction on held-out entities the model
+    #     never trained on (embedded from text + structure alone). Reuses the
+    #     final embeddings; a lookup-table KGE would score ~0 here.
+    # ------------------------------------------------------------------
+    ind_metrics = None
+    if getattr(graph, "inductive_test", None):
+        from evaluation.link_prediction import evaluate_link_prediction
+        ind_metrics = evaluate_link_prediction(
+            h_all       = h_all_final,
+            triples     = graph.inductive_test,
+            predictor   = predictor,
+            graph       = graph,
+            neg_sampler = trainer.neg_sampler,
+            device      = args.device,
+        )
+        print(f"\nInductive test (held-out entities, n={len(graph.inductive_test)}):")
+        for k, v in ind_metrics.items():
+            print(f"  {k}: {v:.4f}")
+
+    # ------------------------------------------------------------------
     # 6. One-line summaries — easy to grep/compare across runs
     #    e.g.  grep '^RESULT' logs/*.out  ;  grep '^STRUCT' logs/*.out
     # ------------------------------------------------------------------
@@ -282,6 +307,12 @@ def main():
           f"h@10={test_metrics.get('hits@10', float('nan')):.4f}")
     print(f"STRUCT | {run_tag(args)} | "
           + " ".join(f"{k}={v:.4f}" for k, v in struct.items()))
+    if ind_metrics is not None:
+        print(f"INDUCTIVE | {run_tag(args)} | n={len(graph.inductive_test)} | "
+              f"mrr={ind_metrics.get('mrr', float('nan')):.4f} "
+              f"h@1={ind_metrics.get('hits@1', float('nan')):.4f} "
+              f"h@3={ind_metrics.get('hits@3', float('nan')):.4f} "
+              f"h@10={ind_metrics.get('hits@10', float('nan')):.4f}")
     print("=" * 70)
 
 

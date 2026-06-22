@@ -177,6 +177,13 @@ class CulturalGraph:
     # Entity type labels for analysis
     entity_types: dict[int, str]  # id → "world" | "region" | "country" | "practice"
 
+    # Inductive holdout (optional). When a holdout is requested, these hold the
+    # entities whose triples were removed from train/val/test (so the model never
+    # trains on their links) and the held-out triples to evaluate inductively
+    # (non-hierarchy relations of those entities). Empty otherwise.
+    inductive_test:     list[tuple[int, int, int]] = field(default_factory=list)
+    holdout_entity_ids: set[int]                    = field(default_factory=set)
+
 
 # ---------------------------------------------------------------------------
 # Builder

@@ -130,3 +130,16 @@ groups + a built-in (if thin) agreement signal + a route to a cultural Overton b
 | GlobalOpinionQA | clean tree (World→Region→Country) | full multi-option distribution | flagship distributional/epistemic |
 | **CultureBank** | **multi-facet DAG (overlapping groups)** | **2-bin agreement (thin) + scenarios** | **C3/E2 DAG + cultural Overton** |
 | OpinionQA | multi-facet DAG (demographic facets) | full distribution per facet | richer distributional DAG (do later) |
+
+
+
+for f in up lat both; doexp
+  sbatch --job-name="grail_${f}" --output="logs/grail_${f}_%j.out" \
+         --error="logs/grail_${f}_%j.err" --export=ALL,FLOW="${f}" jobs/job_grail.sh
+done
+
+
+for f in up lat both; do
+  sbatch --job-name="grail_${f}" --output="logs/grail_${f}_%j.out" \
+         --error="logs/grail_${f}_%j.err" --export=ALL,FLOW="${f}" jobs/job_grail.sh
+done

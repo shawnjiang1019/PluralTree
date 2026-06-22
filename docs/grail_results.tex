@@ -1,0 +1,92 @@
+% Inductive WN18RR (GraIL splits v1-v4) results.
+% Requires: \usepackage{booktabs} and \usepackage{multirow}
+%
+% IMPORTANT: the baseline rows are STRUCTURE-ONLY inductive methods; our models
+% additionally use sentence-transformer entity descriptions (glosses). This is
+% therefore NOT a controlled comparison — ours has an extra (text) modality.
+% Baseline numbers from Teru et al. (GraIL, ICML 2020) and the REST survey table.
+
+\begin{table}[t]
+\centering
+\caption{Inductive link prediction on WN18RR (GraIL splits). Hits@10 (\%) ranked
+against 50 sampled negatives (GraIL protocol). Baselines are \emph{structure-only};
+PluralTree (ours) additionally uses entity-description text, so this is not a
+controlled comparison. \textbf{Bold} = best among our flows per column.}
+\label{tab:grail-hits10}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Method & v1 & v2 & v3 & v4 & Avg \\
+\midrule
+\multicolumn{6}{@{}l}{\emph{Structure-only baselines}} \\
+Neural-LP / DRUM & 74.4 & 68.9 & 46.2 & 67.1 & 64.2 \\
+RuleN            & 80.9 & 78.2 & 53.4 & 71.6 & 71.0 \\
+GraIL            & 82.5 & 78.7 & 58.4 & 73.4 & 73.2 \\
+\midrule
+\multicolumn{6}{@{}l}{\emph{PluralTree (text + structure, ours)}} \\
+up           & \textbf{74.5} & 88.9 & \textbf{86.0} & 82.8 & 83.0 \\
+up+lat       & 73.4 & 88.7 & 78.4 & 83.4 & 81.0 \\
+up+down+lat  & \textbf{74.5} & \textbf{89.6} & 83.5 & \textbf{84.9} & \textbf{83.1} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{PluralTree inductive WN18RR, additional metrics. AUC-PR (\%) is triple
+classification (GraIL protocol; GraIL row is structure-only, ours use text);
+filtered MRR / Hits@10 rank the true entity against \emph{all} entities in the
+inductive graph (modern protocol). Hits@1 was 0.000 for every configuration
+(coarse embeddings). \textbf{Bold} = best per column (AUC-PR) / best flow (filtered).}
+\label{tab:grail-extra}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+Metric & Flow / Method & v1 & v2 & v3 & v4 \\
+\midrule
+\multirow{4}{*}{AUC-PR (\%)}
+ & GraIL (struct-only) & \textbf{94.3} & \textbf{94.2} & 85.8 & \textbf{92.7} \\
+ & up          & 80.9 & 86.0 & 86.1 & 86.3 \\
+ & up+lat      & 80.5 & 86.0 & 80.3 & 86.8 \\
+ & up+down+lat & 82.7 & 91.0 & \textbf{86.4} & 89.2 \\
+\midrule
+\multirow{3}{*}{filtered MRR}
+ & up          & 0.085 & \textbf{0.132} & \textbf{0.097} & 0.073 \\
+ & up+lat      & 0.094 & 0.127 & 0.095 & \textbf{0.074} \\
+ & up+down+lat & \textbf{0.098} & 0.122 & 0.088 & 0.073 \\
+\midrule
+\multirow{3}{*}{filtered Hits@10}
+ & up          & 0.282 & 0.406 & \textbf{0.288} & 0.218 \\
+ & up+lat      & \textbf{0.309} & 0.401 & 0.278 & 0.218 \\
+ & up+down+lat & 0.282 & \textbf{0.413} & 0.256 & \textbf{0.237} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{The ``fair lane'': text-based inductive methods on the GraIL WN18RR
+splits, by MRR (vs.\ 50 negatives). Baseline MRRs are aggregate over WN18RR
+inductive (as tabulated by KRST); ours is the mean over v1--v4. These methods
+report MRR / Hits@1 rather than per-version Hits@10, so only MRR overlaps. The
+gap to BERTRL/KRST is our coarse Hits@1 (0.000 here), not the text modality.}
+\label{tab:grail-textbased}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Method & Text? & MRR (50-neg) \\
+\midrule
+KG-BERT \citep{yao2019kgbert}        & yes & 0.547 \\
+PluralTree (up)                      & yes & 0.591 \\
+PluralTree (up+lat)                  & yes & 0.579 \\
+PluralTree (up+down+lat)             & yes & 0.585 \\
+BERTRL \citep{zha2022bertrl}         & yes & 0.792 \\
+GraIL \citep{teru2020grail}          & no  & 0.799 \\
+KRST \citep{su2023krst}              & yes & \textbf{0.890} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% Bib entries for the \citep keys used above (add to your .bib; years/venues
+% verified, but double-check before submission):
+% @inproceedings{teru2020grail,  title={Inductive Relation Prediction by Subgraph Reasoning}, author={Teru, Komal and Denis, Etienne and Hamilton, William}, booktitle={ICML}, year={2020}}
+% @article{yao2019kgbert,         title={KG-BERT: BERT for Knowledge Graph Completion}, author={Yao, Liang and Mao, Chengsheng and Luo, Yuan}, journal={arXiv:1909.03193}, year={2019}}
+% @inproceedings{zha2022bertrl,   title={Inductive Relation Prediction by BERT}, author={Zha, Hanwen and Chen, Zhiyu and Yan, Xifeng}, booktitle={AAAI}, year={2022}}
+% @article{su2023krst,            title={Multi-Aspect Explainable Inductive Relation Prediction by Sentence Transformer}, author={Su, Zhixiang and others}, journal={arXiv:2301.01664}, year={2023}}
