@@ -38,6 +38,7 @@ import torch
 from pluraltree.manifolds.poincare import PoincareBall
 from pluraltree.sft.scout import scout
 from pluraltree.sft.verbalize import verbalize_subtree
+from evaluation.branch_divergence import divergence_anchors
 
 MODEL = "claude-sonnet-4-6"
 
@@ -102,11 +103,48 @@ def load_embeddings(args, graph) -> torch.Tensor:
 
 def link_anchor(item: dict, graph) -> int | None:
     """Resolve the QA item's anchor entity to a node id."""
+    if item.get("anchor_id") is not None:          # synthesized items carry the id
+        return item["anchor_id"]
     for key in ("anchor", "answer"):
         name = item.get(key)
         if name and name in graph.entity_vocab:
             return graph.entity_vocab[name]
     return None
+
+
+def _descendant(branch_root: int, children_indices, rng, max_steps: int = 12) -> int:
+    """Walk down a random path from a branch root to a (near-)leaf descendant."""
+    v = branch_root
+    for _ in range(max_steps):
+        kids = children_indices[v]
+        if not kids:
+            break
+        v = kids[rng.randrange(len(kids))]
+    return v
+
+
+def make_branch_question(anchor: int, graph, children_indices, rng) -> dict | None:
+    """Synthesize a verifiable contrastive question at a divergence anchor.
+
+    Branch-attribution: pick two of the anchor's child branches, sample a
+    descendant of one, and ask which branch it falls under. The gold answer is
+    the containing branch (known from the tree) — verifiable, and meaningful
+    precisely because the branches diverge (that's why the anchor was selected).
+    """
+    kids = children_indices[anchor]
+    if len(kids) < 2:
+        return None
+    i, j = rng.sample(range(len(kids)), 2)
+    ca, cb = kids[i], kids[j]
+    pick_a = rng.random() < 0.5
+    x = _descendant(ca if pick_a else cb, children_indices, rng)
+    if x in (ca, cb):                              # need a genuine descendant
+        return None
+    P = graph.id_to_entity[anchor]
+    na, nb, nx = (graph.id_to_entity[ca], graph.id_to_entity[cb], graph.id_to_entity[x])
+    q = (f"Within the category '{P}', does '{nx}' belong under the "
+         f"'{na}' branch or the '{nb}' branch?")
+    return {"question": q, "answer": na if pick_a else nb, "anchor_id": anchor}
 
 
 def distill_trace(client, question, captions, domains, answer):
@@ -167,15 +205,27 @@ def main():
     p = argparse.ArgumentParser(description="Generate contrastive Reasoner SFT data")
     p.add_argument("--dataset", choices=["culturalbench", "wn18rr"], default="wn18rr")
     p.add_argument("--data_dir", default="data/wn18rr")
-    p.add_argument("--qa", required=True, help="JSONL of {question, answer, anchor?}")
+    p.add_argument("--anchors", choices=["qa", "divergence"], default="qa",
+                   help="qa = read anchors/questions from --qa file; divergence = "
+                        "synthesize verifiable branch questions at Wasserstein "
+                        "Divergence Anchors (integration #2).")
+    p.add_argument("--qa", default=None, help="JSONL of {question, answer, anchor?} "
+                   "(required for --anchors qa)")
     p.add_argument("--embeddings", default=None, help=".pt of trained h_all on the ball")
     p.add_argument("--out", required=True, help="output JSONL")
     p.add_argument("--k", type=int, default=3, help="number of structural cousins")
     p.add_argument("--candidate_pool", type=int, default=100)
+    p.add_argument("--n_anchors", type=int, default=256,
+                   help="parents to score for --anchors divergence")
     p.add_argument("--curvature", type=float, default=1.0)
-    p.add_argument("--limit", type=int, default=0, help="cap QA items (0 = all)")
+    p.add_argument("--limit", type=int, default=0, help="cap items (0 = all)")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
+
+    if args.anchors == "qa" and not args.qa:
+        p.error("--qa is required when --anchors qa")
+    if args.anchors == "divergence" and not args.embeddings:
+        p.error("--anchors divergence needs --embeddings (anchors are ranked from h_all)")
 
     import anthropic
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
@@ -185,11 +235,25 @@ def main():
     h_all = load_embeddings(args, graph)
     manifold = PoincareBall(c=args.curvature)
 
-    with open(args.qa, encoding="utf-8") as f:
-        items = [json.loads(line) for line in f if line.strip()]
+    if args.anchors == "divergence":
+        import random as _random
+        rng = _random.Random(args.seed)
+        print(f"  ranking divergence anchors (n_anchors={args.n_anchors})...")
+        ranked = divergence_anchors(h_all, graph.children_indices, manifold=manifold,
+                                    n_anchors=args.n_anchors, seed=args.seed)
+        items = []
+        for anchor, score in ranked:                 # highest-divergence first
+            q = make_branch_question(anchor, graph, graph.children_indices, rng)
+            if q is not None:
+                q["divergence"] = round(score, 4)
+                items.append(q)
+        print(f"  {len(items)} branch questions from {len(ranked)} anchors")
+    else:
+        with open(args.qa, encoding="utf-8") as f:
+            items = [json.loads(line) for line in f if line.strip()]
+        print(f"  {len(items)} QA items")
     if args.limit:
         items = items[: args.limit]
-    print(f"  {len(items)} QA items")
 
     n_ok, n_skip = 0, 0
     with open(args.out, "w", encoding="utf-8") as out:
@@ -223,6 +287,8 @@ def main():
                 "domains": domains,
                 "gold_trace": assemble_trace(parsed, item["answer"]),
             }
+            if "divergence" in item:
+                record["divergence"] = item["divergence"]
             out.write(json.dumps(record, ensure_ascii=False) + "\n")
             out.flush()
             n_ok += 1

@@ -158,6 +158,7 @@ def compute_structure_metrics(
     n_anchors: int = 256,
     n_pairs: int = 4000,
     seed: int = 0,
+    branch_divergence: bool = False,
 ) -> dict[str, float]:
     """Compute the structure-fidelity vector for a frozen embedding ``h_all``.
 
@@ -170,6 +171,9 @@ def compute_structure_metrics(
         n_anchors:        number of sampled anchor nodes for AP-style metrics.
         n_pairs:          number of sampled node pairs for correlation/AUC metrics.
         seed:             RNG seed for the sampling.
+        branch_divergence: also compute Wasserstein child-subtree divergence
+                          (branch_divergence_mean/max/n). Off by default — the
+                          optimal transport is costly; see evaluation/branch_divergence.py.
 
     Returns:
         dict of the metric names documented in the module docstring.
@@ -318,5 +322,15 @@ def compute_structure_metrics(
         out["sibling_ratio"] = (sum(intra) / len(intra)) / inter_mean
     else:
         out["sibling_ratio"] = float("nan")
+
+    # -- 7. branch divergence (optional; Wasserstein over child subtrees) --
+    # Monoculture indicator: low mean = children collapse to the same region
+    # despite the tree branching. Off by default (optimal transport is costly).
+    if branch_divergence:
+        from evaluation.branch_divergence import compute_branch_divergence
+        out.update(compute_branch_divergence(
+            h_all, children_indices, manifold=manifold,
+            n_anchors=min(n_anchors, 128), seed=seed,
+        ))
 
     return out
