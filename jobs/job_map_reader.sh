@@ -34,7 +34,7 @@ export PYTHONUNBUFFERED=1
 
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 
-EMB="${EMB:-embeddings_up_ind.pt}"
+EMB="${EMB:-embeddings_up.pt}"
 DATASET="${DATASET:-wn18rr}"
 DATA_DIR="data/wn18rr"
 RUN="runs/map_reader"

@@ -227,6 +227,14 @@ def _main():
         h_all = h_all["h_all"]
     manifold = None if args.euclidean else PoincareBall(c=args.curvature)
 
+    # Prefer human-readable glosses (entity2text) over raw synset-offset ids.
+    text = getattr(graph, "entity_text", {})
+
+    def label(nid: int, width: int = 28) -> str:
+        s = text.get(nid) or graph.id_to_entity[nid]
+        s = s.split(",")[0].strip()                  # first sense / short form
+        return s if len(s) <= width else s[: width - 1] + "…"
+
     scored = divergence_anchors(h_all, graph.children_indices, manifold=manifold,
                                 n_anchors=args.n_anchors, seed=args.seed)
     agg = compute_branch_divergence(h_all, graph.children_indices, manifold=manifold,
@@ -235,9 +243,8 @@ def _main():
           f"max={agg['branch_divergence_max']:.4f}  scored={agg['branch_divergence_n']}")
     print(f"\nTop {args.top} Divergence Anchors:")
     for pid, score in scored[: args.top]:
-        name = graph.id_to_entity[pid]
-        kids = [graph.id_to_entity[c] for c in graph.children_indices[pid][:5]]
-        print(f"  W={score:.3f}  [{name}]  children: {', '.join(kids)}")
+        kids = ", ".join(label(c, 20) for c in graph.children_indices[pid][:5])
+        print(f"  W={score:.3f}  [{label(pid)}]\n        children: {kids}")
 
 
 if __name__ == "__main__":
