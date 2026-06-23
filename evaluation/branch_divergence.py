@@ -163,6 +163,79 @@ def divergence_anchors(
     return scored
 
 
+def _null_divergence(
+    h_all: Tensor,
+    children_indices: list[list[int]],
+    *,
+    manifold=None,
+    n_samples: int = 200,
+    max_nodes: int = 32,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """Chance-level divergence: (mean, std) of W over random NON-sibling subtree pairs.
+
+    This is the reference a fork must beat. Scattered instance-sets (e.g. 'gulf')
+    have large absolute W simply because the embedding is spread out — they sit
+    near this null. Genuine forks ('body') exceed it.
+    """
+    parents = _parents_from_children(children_indices)
+    internal = [v for v in range(len(children_indices)) if children_indices[v]]
+    if len(internal) < 2:
+        return float("nan"), float("nan")
+    gen = torch.Generator().manual_seed(seed)
+    ws, tries = [], 0
+    while len(ws) < n_samples and tries < n_samples * 10:
+        tries += 1
+        i, j = torch.randint(len(internal), (2,), generator=gen).tolist()
+        u, v = internal[i], internal[j]
+        if u == v or (set(parents[u]) & set(parents[v])):    # skip self / siblings
+            continue
+        Pu = h_all[torch.tensor(subtree_nodes(u, children_indices, max_nodes), dtype=torch.long)]
+        Pv = h_all[torch.tensor(subtree_nodes(v, children_indices, max_nodes), dtype=torch.long)]
+        ws.append(wasserstein(Pu, Pv, manifold))
+    if not ws:
+        return float("nan"), float("nan")
+    t = torch.tensor(ws)
+    return float(t.mean()), float(t.std())
+
+
+def relative_divergence_anchors(
+    h_all: Tensor,
+    children_indices: list[list[int]],
+    *,
+    manifold=None,
+    n_anchors: int = 128,
+    max_nodes: int = 32,
+    max_children: int = 6,
+    seed: int = 0,
+    n_null: int = 200,
+) -> tuple[list[tuple[int, float, float]], tuple[float, float]]:
+    """Anchors ranked by divergence *beyond chance* (z-score vs the null).
+
+    Returns ``([(parent, z, raw_W), ...] sorted by z desc, (null_mean, null_std))``.
+    z = (W_siblings - null_mean) / null_std, so it answers "how much more
+    divergent than random subtrees" — filtering out the spread-only confound.
+    """
+    raw = divergence_anchors(h_all, children_indices, manifold=manifold,
+                             n_anchors=n_anchors, max_nodes=max_nodes,
+                             max_children=max_children, seed=seed)
+    if not raw:
+        return [], (float("nan"), float("nan"))
+    mu, sd = _null_divergence(h_all, children_indices, manifold=manifold,
+                              n_samples=n_null, max_nodes=max_nodes, seed=seed)
+    out = []
+    for p, w in raw:
+        if mu == mu and sd and sd > 0:
+            z = (w - mu) / sd
+        elif mu == mu:
+            z = w - mu                       # std unavailable: use raw offset
+        else:
+            z = w                            # null unavailable: fall back to raw
+        out.append((p, z, w))
+    out.sort(key=lambda x: x[1], reverse=True)
+    return out, (mu, sd)
+
+
 def compute_branch_divergence(
     h_all: Tensor,
     children_indices: list[list[int]],
@@ -175,21 +248,27 @@ def compute_branch_divergence(
 ) -> dict[str, float]:
     """Aggregate branch-divergence metrics for ``compute_structure_metrics``.
 
-    ``branch_divergence_mean`` is the monoculture indicator: low across the tree
-    means branches are redundant despite the tree having many children.
+    ``branch_divergence_rel_mean`` (mean sibling W minus the chance null) is the
+    real monoculture indicator: <= 0 means siblings are no more divergent than
+    random subtrees (redundant branches); > 0 means genuine forks exist.
     """
-    scored = divergence_anchors(h_all, children_indices, manifold=manifold,
-                                n_anchors=n_anchors, max_nodes=max_nodes,
-                                max_children=max_children, seed=seed)
-    if not scored:
+    ranked, (mu, sd) = relative_divergence_anchors(
+        h_all, children_indices, manifold=manifold, n_anchors=n_anchors,
+        max_nodes=max_nodes, max_children=max_children, seed=seed)
+    if not ranked:
         return {"branch_divergence_mean": float("nan"),
-                "branch_divergence_max": float("nan"),
+                "branch_divergence_rel_mean": float("nan"),
+                "branch_divergence_null": float("nan"),
+                "branch_divergence_z_max": float("nan"),
                 "branch_divergence_n": 0}
-    vals = torch.tensor([s for _, s in scored])
+    raw = torch.tensor([w for _, _, w in ranked])
+    z = torch.tensor([zz for _, zz, _ in ranked])
     return {
-        "branch_divergence_mean": float(vals.mean()),
-        "branch_divergence_max": float(vals.max()),
-        "branch_divergence_n": len(scored),
+        "branch_divergence_mean": float(raw.mean()),
+        "branch_divergence_rel_mean": float(raw.mean()) - mu if mu == mu else float("nan"),
+        "branch_divergence_null": mu,
+        "branch_divergence_z_max": float(z.max()),
+        "branch_divergence_n": len(ranked),
     }
 
 
@@ -235,16 +314,19 @@ def _main():
         s = s.split(",")[0].strip()                  # first sense / short form
         return s if len(s) <= width else s[: width - 1] + "…"
 
-    scored = divergence_anchors(h_all, graph.children_indices, manifold=manifold,
-                                n_anchors=args.n_anchors, seed=args.seed)
+    ranked, (mu, sd) = relative_divergence_anchors(
+        h_all, graph.children_indices, manifold=manifold,
+        n_anchors=args.n_anchors, seed=args.seed)
     agg = compute_branch_divergence(h_all, graph.children_indices, manifold=manifold,
                                     n_anchors=args.n_anchors, seed=args.seed)
-    print(f"branch_divergence_mean={agg['branch_divergence_mean']:.4f}  "
-          f"max={agg['branch_divergence_max']:.4f}  scored={agg['branch_divergence_n']}")
-    print(f"\nTop {args.top} Divergence Anchors:")
-    for pid, score in scored[: args.top]:
+    print(f"null(random pairs) mean={mu:.4f} std={sd:.4f}  |  "
+          f"sibling mean={agg['branch_divergence_mean']:.4f}  "
+          f"rel_mean(siblings-null)={agg['branch_divergence_rel_mean']:+.4f}  "
+          f"z_max={agg['branch_divergence_z_max']:.2f}")
+    print(f"\nTop {args.top} Divergence Anchors (ranked by z = divergence beyond chance):")
+    for pid, z, w in ranked[: args.top]:
         kids = ", ".join(label(c, 20) for c in graph.children_indices[pid][:5])
-        print(f"  W={score:.3f}  [{label(pid)}]\n        children: {kids}")
+        print(f"  z={z:+.2f}  W={w:.2f}  [{label(pid)}]\n        children: {kids}")
 
 
 if __name__ == "__main__":
