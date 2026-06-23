@@ -90,19 +90,29 @@ def full_caption(node_id, graph, h_all, manifold, children_indices, parents, dep
     )
 
 
-def qa_pairs(node_id, graph, h_all, manifold, children_indices, parents, depth):
-    """List of (question, answer) structural probes. Geometry stays in the ANSWER."""
+def qa_pairs(node_id, graph, h_all, manifold, children_indices, parents, depth, lvl1):
+    """List of (fact, question, answer) structural probes. Geometry stays in the ANSWER.
+
+    One probe per fact type so the ablation harness can report per-fact deltas.
+    ``abstraction`` is deliberately omitted: it is a threshold of ``rho``, not an
+    independent signal. ``branching`` and ``domain`` are included precisely
+    because it is *unknown* whether link-prediction encodes them — the per-fact
+    shuffle-delta is what answers that.
+    """
     rho = _rho(h_all[node_id], manifold)
     d = depth[node_id]
     nch = len(children_indices[node_id])
     role = _role(node_id, children_indices, parents)
-    abts = _abstraction(rho)
+    branch = _branching(node_id, children_indices, depth)
+    dom_ids = sorted(lvl1[node_id])
+    domain = graph.id_to_entity[dom_ids[0]] if dom_ids else graph.id_to_entity[node_id]
     return [
-        ("How deep in the hierarchy is this node?", f"depth {d}"),
-        ("Is this node a root, a junction, or a leaf?", role),
-        ("How many direct children does this node have?", str(nch)),
-        ("Is this concept broad, intermediate, or specific?", abts),
-        ("What is the node's approximate hyperbolic radius?", f"{rho:.2f}"),
+        ("depth", "How deep in the hierarchy is this node?", f"depth {d}"),
+        ("role", "Is this node a root, a junction, or a leaf?", role),
+        ("children", "How many direct children does this node have?", str(nch)),
+        ("branching", "How many nodes lie 1 and 2 levels below this node?", str(branch)),
+        ("domain", "What top-level domain does this node belong to?", domain),
+        ("rho", "What is the node's approximate hyperbolic radius?", f"{rho:.2f}"),
     ]
 
 
@@ -112,6 +122,12 @@ def main():
     p.add_argument("--data_dir", default="data/wn18rr")
     p.add_argument("--embeddings", required=True, help=".pt of trained h_all on the ball")
     p.add_argument("--out", required=True, help="output JSONL")
+    p.add_argument("--split", default=None,
+                   help="train/val node split JSON. If the file exists it is "
+                        "loaded (reuse the encoder's inductive holdout for strict "
+                        "inductive validation); otherwise a fresh split is written.")
+    p.add_argument("--val_frac", type=float, default=0.1,
+                   help="fraction of nodes held out for validation (fresh split only)")
     p.add_argument("--curvature", type=float, default=1.0)
     p.add_argument("--max_nodes", type=int, default=0, help="cap #nodes (0 = all)")
     p.add_argument("--qa_per_node", type=int, default=3,
@@ -140,7 +156,26 @@ def main():
     depth = _depths(ci, parents)
     lvl1 = _level_k_ancestors(ci, parents, depth, 1)
 
-    nodes = list(range(len(ci)))
+    # --- train/val node split (reuse an existing split, else create one) ----
+    # Validation must run on held-out nodes so the shuffle ablation cannot be
+    # satisfied by retrieving a memorized caption (see map_reader.md).
+    n_nodes = len(ci)
+    if args.split and os.path.exists(args.split):
+        with open(args.split, encoding="utf-8") as f:
+            val_ids = set(json.load(f)["val"])
+        print(f"  loaded split: {len(val_ids)} val nodes from {args.split}")
+    else:
+        shuffled = list(range(n_nodes))
+        random.Random(args.seed).shuffle(shuffled)
+        n_val = int(n_nodes * args.val_frac)
+        val_ids = set(shuffled[:n_val])
+        if args.split:
+            with open(args.split, "w", encoding="utf-8") as f:
+                json.dump({"val": sorted(val_ids),
+                           "train": sorted(set(range(n_nodes)) - val_ids)}, f)
+            print(f"  wrote fresh split: {len(val_ids)} val nodes -> {args.split}")
+
+    nodes = list(range(n_nodes))
     if args.max_nodes:
         random.shuffle(nodes)
         nodes = nodes[: args.max_nodes]
@@ -148,29 +183,35 @@ def main():
     n_dec, n_qa = 0, 0
     with open(args.out, "w", encoding="utf-8") as out:
         for node_id in nodes:
+            split = "val" if node_id in val_ids else "train"
             if not args.no_decode:
                 cap = full_caption(node_id, graph, h_all, manifold, ci, parents, depth, lvl1)
                 out.write(json.dumps({
                     "node_id": node_id,
                     "kind": "decode",
+                    "fact": "caption",
+                    "split": split,
                     "prompt": "Describe the structural position of the injected node.",
                     "target": cap,
                 }, ensure_ascii=False) + "\n")
                 n_dec += 1
             if not args.no_qa:
-                pairs = qa_pairs(node_id, graph, h_all, manifold, ci, parents, depth)
+                pairs = qa_pairs(node_id, graph, h_all, manifold, ci, parents, depth, lvl1)
                 random.shuffle(pairs)
-                for q, a in pairs[: max(0, args.qa_per_node)]:
+                for fact, q, a in pairs[: max(0, args.qa_per_node)]:
                     out.write(json.dumps({
                         "node_id": node_id,
                         "kind": "qa",
+                        "fact": fact,
+                        "split": split,
                         "prompt": q,
                         "target": a,
                     }, ensure_ascii=False) + "\n")
                     n_qa += 1
 
+    n_val_nodes = sum(1 for n in nodes if n in val_ids)
     print(f"Done. Wrote {n_dec} decode + {n_qa} QA records to {args.out} "
-          f"({len(nodes)} nodes).")
+          f"({len(nodes)} nodes, {n_val_nodes} val).")
 
 
 if __name__ == "__main__":

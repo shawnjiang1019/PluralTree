@@ -37,9 +37,14 @@ from pluraltree.sft.latent_bridge import LatentBridge
 
 
 class MapReaderDataset(Dataset):
-    def __init__(self, path):
+    def __init__(self, path, split="train"):
         with open(path, encoding="utf-8") as f:
-            self.rows = [json.loads(l) for l in f if l.strip()]
+            rows = [json.loads(l) for l in f if l.strip()]
+        # Train on the train split only; never expose val-node latents at SFT,
+        # or the held-out ablation is contaminated (see map_reader.md).
+        self.rows = [r for r in rows if r.get("split", "train") == split]
+        if len(self.rows) < len(rows):
+            print(f"  filtered to split={split}: {len(self.rows)}/{len(rows)} records")
 
     def __len__(self):
         return len(self.rows)
@@ -126,7 +131,7 @@ def main():
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
     model = AutoModelForCausalLM.from_pretrained(
-        args.base, quantization_config=bnb, torch_dtype=torch.bfloat16, device_map={"": device},
+        args.base, quantization_config=bnb, dtype=torch.bfloat16, device_map={"": device},
     )
     model = prepare_model_for_kbit_training(model)
     lora = LoraConfig(
