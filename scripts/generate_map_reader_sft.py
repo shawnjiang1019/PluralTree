@@ -177,7 +177,10 @@ def main():
 
     nodes = list(range(n_nodes))
     if args.max_nodes:
-        random.shuffle(nodes)
+        # Use an RNG stream distinct from the split's Random(seed); otherwise the
+        # subsample is the identical permutation and every sampled node falls in
+        # the same (val) partition, leaving the train split empty.
+        random.Random(args.seed + 9973).shuffle(nodes)
         nodes = nodes[: args.max_nodes]
 
     n_dec, n_qa = 0, 0
