@@ -26,7 +26,13 @@ module load python/3.11 gcc cuda/13.2 arrow/24.0.0
 source ~/pluraltree-env/bin/activate
 
 # Compute nodes have no internet — model + tokenizer must be in the local HF cache.
-# Pre-download on the login node once:  huggingface-cli download <BASE>
+# Pre-download on the login node once (same HF_HOME as below):
+#   export HF_HOME=~/projects/def-enaskt/shawnj/hf_cache
+#   python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-7B-Instruct')"
+# Honor an HF_HOME passed at submit time (point it at wherever your model cache
+# lives); otherwise default to project space. Use a local --base dir to skip the
+# cache entirely.
+export HF_HOME="${HF_HOME:-$HOME/projects/def-enaskt/shawnj/hf_cache}"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1

@@ -25,6 +25,10 @@ cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 mkdir -p logs
 
 python scripts/train.py --dataset culturalbench \
-    --save_embeddings embeddings_cb.pt --device cuda
+    --save_embeddings embeddings_cb.pt --device cuda || { echo "TRAIN FAILED (see .err)"; exit 1; }
 
-echo "Done. Wrote embeddings_cb.pt"
+if [[ -f embeddings_cb.pt ]]; then
+    echo "Done. Wrote embeddings_cb.pt ($(du -h embeddings_cb.pt | cut -f1))"
+else
+    echo "ERROR: training exited 0 but embeddings_cb.pt was not written"; exit 1
+fi
