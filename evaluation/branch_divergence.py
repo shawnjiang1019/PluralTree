@@ -112,7 +112,9 @@ def wasserstein(P: Tensor, Q: Tensor, manifold=None, *, weights=None) -> float:
         return _sinkhorn_cost(a, b, C)
 
 
-def wasserstein_profile(P: Tensor, Q: Tensor, manifold=None, *, weights=None) -> dict[str, float]:
+def wasserstein_profile(P: Tensor, Q: Tensor, manifold=None, *, weights=None,
+                        nodes_P=None, nodes_Q=None, detail: bool = False,
+                        top_k: int = 5) -> dict:
     """W plus the *distribution* of the transport cost between two point sets.
 
     The scalar ``W`` hides *where* the divergence lives. The optimal coupling
@@ -127,11 +129,22 @@ def wasserstein_profile(P: Tensor, Q: Tensor, manifold=None, *, weights=None) ->
     - ``fork_dist``    : geodesic between the two subtree roots ``P[0], Q[0]``
       (``subtree_nodes`` emits the root first). Small ``fork_dist`` + large ``W``
       => branches start together and diverge only deeper.
+
+    With ``detail=True`` also returns the descendants that *drive* the divergence
+    (ids come from ``nodes_P``/``nodes_Q`` if given, else local indices):
+
+    - ``displacements_P``/``_Q``: ``[(node_id, t), ...]`` per subtree, sorted by
+      how far that node's mass must travel (the far vs close descendants).
+    - ``top_pairs``: ``[(node_P, node_Q, cost), ...]`` — the costliest matched
+      node pairs in the optimal plan (the actual divergent correspondences).
     """
     keys = ("W", "median", "p90", "concentration", "fork_dist")
     n, m = P.shape[0], Q.shape[0]
     if n == 0 or m == 0:
-        return {k: float("nan") for k in keys}
+        out = {k: float("nan") for k in keys}
+        if detail:
+            out.update(displacements_P=[], displacements_Q=[], top_pairs=[])
+        return out
     C = _ground_cost(P, Q, manifold)
     if weights is None:
         a = torch.full((n,), 1.0 / n, device=P.device)
@@ -139,7 +152,8 @@ def wasserstein_profile(P: Tensor, Q: Tensor, manifold=None, *, weights=None) ->
     else:
         a, b = weights
     G = _transport_plan(a, b, C)
-    cost_i = (G * C).sum(1)                               # cost per source point; sums to W
+    GC = G * C
+    cost_i = GC.sum(1)                                    # cost per source point; sums to W
     total = cost_i.sum().clamp_min(1e-12)
     t = cost_i / a.clamp_min(1e-12)                       # per-source displacement
     k = max(1, int(round(0.10 * n)))                     # top-10% costliest points
@@ -148,13 +162,29 @@ def wasserstein_profile(P: Tensor, Q: Tensor, manifold=None, *, weights=None) ->
         fork = float(torch.cdist(P[:1], Q[:1]).squeeze())
     else:
         fork = float(manifold.distance(P[:1], Q[:1]).squeeze())
-    return {
+    out = {
         "W": float(cost_i.sum()),
         "median": float(t.median()),
         "p90": float(torch.quantile(t, 0.90)),
         "concentration": float(top / total),
         "fork_dist": fork,
     }
+    if detail:
+        ids_P = list(nodes_P) if nodes_P is not None else list(range(n))
+        ids_Q = list(nodes_Q) if nodes_Q is not None else list(range(m))
+        t_j = GC.sum(0) / b.clamp_min(1e-12)             # per-target displacement
+        out["displacements_P"] = sorted(
+            ((ids_P[i], float(t[i])) for i in range(n)), key=lambda x: -x[1])
+        out["displacements_Q"] = sorted(
+            ((ids_Q[j], float(t_j[j])) for j in range(m)), key=lambda x: -x[1])
+        kk = min(top_k, GC.numel())
+        flat = torch.topk(GC.flatten(), kk)              # costliest matched pairs
+        pairs = []
+        for val, idx in zip(flat.values.tolist(), flat.indices.tolist()):
+            i, j = divmod(idx, m)
+            pairs.append((ids_P[i], ids_Q[j], float(val)))
+        out["top_pairs"] = pairs
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +199,8 @@ def branch_divergence(
     max_nodes: int = 32,
     max_children: int = 6,
     profile: bool = False,
-) -> dict[str, float]:
+    detail: bool = False,
+) -> dict:
     """Mean / max pairwise Wasserstein across ``parent``'s child subtrees.
 
     Returns ``{mean, max, n_children}``; mean/max are NaN if the parent has < 2
@@ -178,17 +209,23 @@ def branch_divergence(
 
     With ``profile=True`` also returns ``{fork_dist, median, concentration}`` for
     the *most divergent* child pair (the one defining ``max``) — i.e. whether that
-    top distance is a broad fork or a few scattered descendants. See
-    ``wasserstein_profile``.
+    top distance is a broad fork or a few scattered descendants.
+
+    With ``detail=True`` (implies ``profile``) also returns, for that pair,
+    ``{displacements_P, displacements_Q, top_pairs}`` carrying real ``node_id``s —
+    the descendants that drive the divergence. See ``wasserstein_profile``.
     """
+    profile = profile or detail
     kids = children_indices[parent][:max_children]
     prof_nan = {"fork_dist": float("nan"), "median": float("nan"),
                 "concentration": float("nan")}
+    if detail:
+        prof_nan.update(displacements_P=[], displacements_Q=[], top_pairs=[])
     if len(kids) < 2:
         out = {"mean": float("nan"), "max": float("nan"), "n_children": len(kids)}
         return {**out, **prof_nan} if profile else out
-    dists = [h_all[torch.tensor(subtree_nodes(c, children_indices, max_nodes),
-                                dtype=torch.long)] for c in kids]
+    subs = [subtree_nodes(c, children_indices, max_nodes) for c in kids]
+    dists = [h_all[torch.tensor(s, dtype=torch.long)] for s in subs]
     ws, pairs = [], []
     for i in range(len(dists)):
         for j in range(i + 1, len(dists)):
@@ -198,9 +235,14 @@ def branch_divergence(
     out = {"mean": float(t.nanmean()), "max": float(t.max()), "n_children": len(kids)}
     if profile:
         bi, bj = pairs[int(torch.argmax(t))]             # most divergent child pair
-        prof = wasserstein_profile(dists[bi], dists[bj], manifold)
+        prof = wasserstein_profile(dists[bi], dists[bj], manifold,
+                                   nodes_P=subs[bi], nodes_Q=subs[bj], detail=detail)
         out.update({"fork_dist": prof["fork_dist"], "median": prof["median"],
                     "concentration": prof["concentration"]})
+        if detail:
+            out.update(displacements_P=prof["displacements_P"],
+                       displacements_Q=prof["displacements_Q"],
+                       top_pairs=prof["top_pairs"])
     return out
 
 
@@ -369,7 +411,11 @@ def _main():
     ap.add_argument("--profile", action="store_true",
                     help="show the transport-cost distribution per anchor "
                          "(fork_dist, median displacement, concentration)")
+    ap.add_argument("--detail", action="store_true",
+                    help="with --profile, also name the descendants driving the "
+                         "divergence (per-node displacement + top transport pairs)")
     args = ap.parse_args()
+    args.profile = args.profile or args.detail
 
     from pluraltree.manifolds.poincare import PoincareBall
     if args.dataset == "wn18rr":
@@ -410,10 +456,17 @@ def _main():
         line = f"  z={z:+.2f}  W={w:.2f}  [{label(pid)}]"
         if args.profile:
             bd = branch_divergence(pid, h_all, graph.children_indices,
-                                   manifold=manifold, profile=True)
+                                   manifold=manifold, detail=args.detail)
             line += (f"  fork={bd['fork_dist']:.2f}  med={bd['median']:.2f}"
                      f"  conc={bd['concentration']:.2f}")
         print(line + f"\n        children: {kids}")
+        if args.profile and args.detail:
+            far_p = ", ".join(f"{label(nid, 18)}({d:.2f})" for nid, d in bd["displacements_P"][:3])
+            far_q = ", ".join(f"{label(nid, 18)}({d:.2f})" for nid, d in bd["displacements_Q"][:3])
+            print(f"        drivers A: {far_p}")
+            print(f"        drivers B: {far_q}")
+            for na, nb, cst in bd["top_pairs"][:3]:
+                print(f"          {label(na, 16)} <-> {label(nb, 16)}  cost={cst:.3f}")
 
 
 if __name__ == "__main__":
