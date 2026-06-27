@@ -58,9 +58,9 @@ def _ground_cost(P: Tensor, Q: Tensor, manifold=None) -> Tensor:
     return out
 
 
-def _sinkhorn_cost(a: Tensor, b: Tensor, C: Tensor, eps_frac: float = 0.05,
-                   iters: int = 100) -> float:
-    """Entropic-OT transport cost <P, C> via stable log-domain Sinkhorn.
+def _sinkhorn_plan(a: Tensor, b: Tensor, C: Tensor, eps_frac: float = 0.05,
+                   iters: int = 100) -> Tensor:
+    """Entropic-OT coupling matrix via stable log-domain Sinkhorn.
 
     ``eps`` is set adaptively to ``eps_frac * mean(C)`` so the regulariser scales
     with the geodesic magnitude (which varies with curvature/depth).
@@ -73,8 +73,22 @@ def _sinkhorn_cost(a: Tensor, b: Tensor, C: Tensor, eps_frac: float = 0.05,
     for _ in range(iters):
         f = log_a - torch.logsumexp(logK + g.unsqueeze(0), dim=1)
         g = log_b - torch.logsumexp(logK + f.unsqueeze(1), dim=0)
-    logP = f.unsqueeze(1) + logK + g.unsqueeze(0)
-    return float((logP.exp() * C).sum())
+    return (f.unsqueeze(1) + logK + g.unsqueeze(0)).exp()
+
+
+def _sinkhorn_cost(a: Tensor, b: Tensor, C: Tensor, **kw) -> float:
+    """Entropic-OT transport cost <P, C> (mass-weighted Sinkhorn plan)."""
+    return float((_sinkhorn_plan(a, b, C, **kw) * C).sum())
+
+
+def _transport_plan(a: Tensor, b: Tensor, C: Tensor) -> Tensor:
+    """Optimal coupling gamma (n, m): exact via POT if available, else Sinkhorn."""
+    try:
+        import ot                                         # POT, exact EMD plan
+        g = ot.emd(a.cpu().numpy(), b.cpu().numpy(), C.cpu().numpy())
+        return torch.as_tensor(g, dtype=C.dtype, device=C.device)
+    except ImportError:
+        return _sinkhorn_plan(a, b, C)
 
 
 def wasserstein(P: Tensor, Q: Tensor, manifold=None, *, weights=None) -> float:
@@ -98,6 +112,51 @@ def wasserstein(P: Tensor, Q: Tensor, manifold=None, *, weights=None) -> float:
         return _sinkhorn_cost(a, b, C)
 
 
+def wasserstein_profile(P: Tensor, Q: Tensor, manifold=None, *, weights=None) -> dict[str, float]:
+    """W plus the *distribution* of the transport cost between two point sets.
+
+    The scalar ``W`` hides *where* the divergence lives. The optimal coupling
+    does not, so we keep it and summarise the per-source displacement
+    ``t_i = cost_i / a_i`` (whose mass-mean equals ``W``):
+
+    - ``W``            : scalar Wasserstein (mean per-point displacement).
+    - ``median``/``p90``: quantiles of ``t_i``. ``median << W`` => the distance
+      is driven by a few far points, not a broad fork.
+    - ``concentration``: share of total transport cost from the top-10% costliest
+      source points (0..1). High => outlier-driven (the "spread" confound).
+    - ``fork_dist``    : geodesic between the two subtree roots ``P[0], Q[0]``
+      (``subtree_nodes`` emits the root first). Small ``fork_dist`` + large ``W``
+      => branches start together and diverge only deeper.
+    """
+    keys = ("W", "median", "p90", "concentration", "fork_dist")
+    n, m = P.shape[0], Q.shape[0]
+    if n == 0 or m == 0:
+        return {k: float("nan") for k in keys}
+    C = _ground_cost(P, Q, manifold)
+    if weights is None:
+        a = torch.full((n,), 1.0 / n, device=P.device)
+        b = torch.full((m,), 1.0 / m, device=P.device)
+    else:
+        a, b = weights
+    G = _transport_plan(a, b, C)
+    cost_i = (G * C).sum(1)                               # cost per source point; sums to W
+    total = cost_i.sum().clamp_min(1e-12)
+    t = cost_i / a.clamp_min(1e-12)                       # per-source displacement
+    k = max(1, int(round(0.10 * n)))                     # top-10% costliest points
+    top = torch.sort(cost_i, descending=True).values[:k].sum()
+    if manifold is None:
+        fork = float(torch.cdist(P[:1], Q[:1]).squeeze())
+    else:
+        fork = float(manifold.distance(P[:1], Q[:1]).squeeze())
+    return {
+        "W": float(cost_i.sum()),
+        "median": float(t.median()),
+        "p90": float(torch.quantile(t, 0.90)),
+        "concentration": float(top / total),
+        "fork_dist": fork,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Branch divergence at a parent
 # ---------------------------------------------------------------------------
@@ -109,24 +168,40 @@ def branch_divergence(
     manifold=None,
     max_nodes: int = 32,
     max_children: int = 6,
+    profile: bool = False,
 ) -> dict[str, float]:
     """Mean / max pairwise Wasserstein across ``parent``'s child subtrees.
 
     Returns ``{mean, max, n_children}``; mean/max are NaN if the parent has < 2
     children (no fork to measure). Children are capped at ``max_children`` to
     bound the O(children^2) pairwise cost.
+
+    With ``profile=True`` also returns ``{fork_dist, median, concentration}`` for
+    the *most divergent* child pair (the one defining ``max``) — i.e. whether that
+    top distance is a broad fork or a few scattered descendants. See
+    ``wasserstein_profile``.
     """
     kids = children_indices[parent][:max_children]
+    prof_nan = {"fork_dist": float("nan"), "median": float("nan"),
+                "concentration": float("nan")}
     if len(kids) < 2:
-        return {"mean": float("nan"), "max": float("nan"), "n_children": len(kids)}
+        out = {"mean": float("nan"), "max": float("nan"), "n_children": len(kids)}
+        return {**out, **prof_nan} if profile else out
     dists = [h_all[torch.tensor(subtree_nodes(c, children_indices, max_nodes),
                                 dtype=torch.long)] for c in kids]
-    ws = []
+    ws, pairs = [], []
     for i in range(len(dists)):
         for j in range(i + 1, len(dists)):
             ws.append(wasserstein(dists[i], dists[j], manifold))
+            pairs.append((i, j))
     t = torch.tensor(ws)
-    return {"mean": float(t.nanmean()), "max": float(t.max()), "n_children": len(kids)}
+    out = {"mean": float(t.nanmean()), "max": float(t.max()), "n_children": len(kids)}
+    if profile:
+        bi, bj = pairs[int(torch.argmax(t))]             # most divergent child pair
+        prof = wasserstein_profile(dists[bi], dists[bj], manifold)
+        out.update({"fork_dist": prof["fork_dist"], "median": prof["median"],
+                    "concentration": prof["concentration"]})
+    return out
 
 
 def divergence_anchors(
@@ -291,6 +366,9 @@ def _main():
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--n_anchors", type=int, default=128)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--profile", action="store_true",
+                    help="show the transport-cost distribution per anchor "
+                         "(fork_dist, median displacement, concentration)")
     args = ap.parse_args()
 
     from pluraltree.manifolds.poincare import PoincareBall
@@ -324,9 +402,18 @@ def _main():
           f"rel_mean(siblings-null)={agg['branch_divergence_rel_mean']:+.4f}  "
           f"z_max={agg['branch_divergence_z_max']:.2f}")
     print(f"\nTop {args.top} Divergence Anchors (ranked by z = divergence beyond chance):")
+    if args.profile:
+        print("  (profile = most divergent child pair: fork=root-root geodesic, "
+              "med=median displacement, conc=top-10% cost share)")
     for pid, z, w in ranked[: args.top]:
         kids = ", ".join(label(c, 20) for c in graph.children_indices[pid][:5])
-        print(f"  z={z:+.2f}  W={w:.2f}  [{label(pid)}]\n        children: {kids}")
+        line = f"  z={z:+.2f}  W={w:.2f}  [{label(pid)}]"
+        if args.profile:
+            bd = branch_divergence(pid, h_all, graph.children_indices,
+                                   manifold=manifold, profile=True)
+            line += (f"  fork={bd['fork_dist']:.2f}  med={bd['median']:.2f}"
+                     f"  conc={bd['concentration']:.2f}")
+        print(line + f"\n        children: {kids}")
 
 
 if __name__ == "__main__":
