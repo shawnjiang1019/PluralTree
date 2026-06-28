@@ -91,7 +91,7 @@ def parse_args():
                    help="Path to append per-eval validation metrics (step, epoch, "
                         "MRR, Hits) for offline plotting (scripts/plot_metrics.py).")
     p.add_argument("--dataset",       type=str,   default="culturalbench",
-                   choices=["culturalbench", "wn18rr"],
+                   choices=["culturalbench", "wn18rr", "globalopinionqa"],
                    help="Which dataset/loader to use.")
     p.add_argument("--data_dir",      type=str,   default="data/wn18rr",
                    help="Directory of WN18RR train/valid/test.txt (wn18rr only).")
@@ -143,6 +143,13 @@ def main():
             holdout_entities=args.inductive_holdout,
         )
         print(f"  leakage_safe = {not args.allow_leakage}")
+    elif args.dataset == "globalopinionqa":
+        from data.globalopinionqa import load_globalopinionqa
+        graph = load_globalopinionqa(
+            split_seed=args.seed,
+            leakage_safe=not args.allow_leakage,
+        )
+        print(f"  leakage_safe = {not args.allow_leakage}")
     else:
         graph = load_culturalbench(
             split_seed=args.seed,
@@ -162,7 +169,11 @@ def main():
     # 2. Compute text embeddings (node features + knowledge source)
     # ------------------------------------------------------------------
     print(f"Computing text embeddings with {args.embed_model}...")
-    node_embeddings = compute_text_embeddings(graph, model_name=args.embed_model)
+    if args.dataset == "globalopinionqa":
+        from data.globalopinionqa import compute_features
+        node_embeddings = compute_features(graph, model_name=args.embed_model)
+    else:
+        node_embeddings = compute_text_embeddings(graph, model_name=args.embed_model)
     d_input = node_embeddings.shape[1]
     print(f"  Embedding dim: {d_input}")
 
