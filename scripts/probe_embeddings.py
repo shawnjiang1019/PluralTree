@@ -189,6 +189,8 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", default="auto",
                     help="'auto' uses cuda if available, else cpu.")
+    ap.add_argument("--json", default=None, help="also write per-fact results to this JSON "
+                    "(for compare_probe_mapreader.py)")
     args = ap.parse_args()
 
     if args.device == "auto":
@@ -243,38 +245,52 @@ def main():
     print(hdr)
     print("-" * len(hdr))
 
+    results: dict[str, dict] = {}
     for fact, (labels, kind) in facts.items():
         if kind == "reg":
             mae, prior_mae, thr, prior_thr = train_regressor(
                 X, labels, idx_tr, idx_va, epochs=args.epochs,
                 batch_size=args.batch_size, device=args.device)
             line = (f"{fact:<10}{prior_thr:>8.2f}{thr:>9.2f}")
+            rec = {"kind": "reg", "prior": prior_thr, "linear": thr,
+                   "mae": mae, "prior_mae": prior_mae}
             if args.hidden:
                 mae_h, _, thr_h, _ = train_regressor(
                     X, labels, idx_tr, idx_va, hidden=args.hidden,
                     epochs=args.epochs, batch_size=args.batch_size, device=args.device)
                 line += f"{thr_h:>9.2f}"
+                rec["mlp"] = thr_h
             line += f"   (MAE {mae:.3f} vs prior {prior_mae:.3f})"
             print(line)
+            rec["best"] = max(rec["linear"], rec.get("mlp", rec["linear"]))
+            results[fact] = rec
             continue
 
         lin, prior = train_classifier(X, labels, idx_tr, idx_va, epochs=args.epochs,
                                       batch_size=args.batch_size, device=args.device)
         best = lin
         line = f"{fact:<10}{prior:>8.2f}{lin:>9.2f}"
+        rec = {"kind": "cls", "prior": prior, "linear": lin}
         if args.hidden:
             mlp, _ = train_classifier(X, labels, idx_tr, idx_va, hidden=args.hidden,
                                       epochs=args.epochs, batch_size=args.batch_size,
                                       device=args.device)
             best = max(lin, mlp)
             line += f"{mlp:>9.2f}"
+            rec["mlp"] = mlp
         gap = best - prior
         verdict = ("EMBEDDING (info absent)" if gap < 0.05
                    else "info present -> compare to Map Reader")
         print(line + f"   {verdict}")
+        rec["best"] = best
+        results[fact] = rec
 
     print("\nRead: probe~prior => embedding problem; probe>>prior => info is there, "
           "so a low Map Reader score is an interpretation problem.")
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+        print(f"Wrote probe results to {args.json}")
 
 
 if __name__ == "__main__":

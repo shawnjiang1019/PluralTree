@@ -113,6 +113,8 @@ def main():
     ap.add_argument("--data", required=True, help="map_reader_sft.jsonl (with split tags)")
     ap.add_argument("--max_eval", type=int, default=400, help="cap val QA examples per fact")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--json", default=None, help="also write per-fact results to this JSON "
+                    "(for compare_probe_mapreader.py)")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -155,6 +157,7 @@ def main():
 
     print(f"{'fact':<10} {'true':>6} {'zero':>6} {'shuf':>6} {'text':>6} {'fip':>6} "
           f"{'d_zero[CI]':>22} {'d_shuf[CI]':>22}")
+    results: dict[str, dict] = {}
     for fact, recs in sorted(by_fact.items()):
         recs = recs[: args.max_eval]
         nids = torch.tensor([r["node_id"] for r in recs], device=device)
@@ -183,6 +186,18 @@ def main():
               f"{acc['fip'].mean():>6.2f} "
               f"{dz:>+6.2f}[{ciz[0]:+.2f},{ciz[1]:+.2f}] "
               f"{ds:>+6.2f}[{cis[0]:+.2f},{cis[1]:+.2f}]")
+        results[fact] = {
+            "true": float(acc["true"].mean()), "zero": float(acc["zero"].mean()),
+            "shuffle": float(acc["shuffle"].mean()), "text": float(acc["text"].mean()),
+            "fip": float(acc["fip"].mean()),
+            "d_zero": dz, "d_zero_ci": list(ciz),
+            "d_shuf": ds, "d_shuf_ci": list(cis), "n": len(recs),
+        }
+
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+        print(f"\nWrote Map Reader results to {args.json}")
 
 
 if __name__ == "__main__":
