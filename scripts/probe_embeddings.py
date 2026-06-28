@@ -100,7 +100,8 @@ def _make_probe(d_in, d_out, hidden):
     return nn.Linear(d_in, d_out)
 
 
-def train_classifier(X, y, idx_tr, idx_va, *, hidden=0, epochs=300, lr=1e-2, device="cpu"):
+def train_classifier(X, y, idx_tr, idx_va, *, hidden=0, epochs=80, lr=1e-2,
+                     batch_size=4096, device="cpu"):
     """Fit a probe to predict class y; return (val_acc, prior_acc)."""
     classes = sorted(set(y[i] for i in idx_tr))
     cmap = {c: k for k, c in enumerate(classes)}
@@ -112,12 +113,16 @@ def train_classifier(X, y, idx_tr, idx_va, *, hidden=0, epochs=300, lr=1e-2, dev
     model = _make_probe(X.shape[1], len(classes), hidden).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     lossf = nn.CrossEntropyLoss()
+    ntr = Xtr.shape[0]
     model.train()
     for _ in range(epochs):
-        opt.zero_grad()
-        loss = lossf(model(Xtr), ytr)
-        loss.backward()
-        opt.step()
+        perm = torch.randperm(ntr, device=device)
+        for s in range(0, ntr, batch_size):
+            b = perm[s:s + batch_size]
+            opt.zero_grad()
+            loss = lossf(model(Xtr[b]), ytr[b])
+            loss.backward()
+            opt.step()
     model.eval()
     with torch.no_grad():
         pred = model(Xva).argmax(1).cpu()
@@ -129,8 +134,8 @@ def train_classifier(X, y, idx_tr, idx_va, *, hidden=0, epochs=300, lr=1e-2, dev
     return val_acc, prior
 
 
-def train_regressor(X, y, idx_tr, idx_va, *, hidden=0, epochs=300, lr=1e-2,
-                    tol=0.05, device="cpu"):
+def train_regressor(X, y, idx_tr, idx_va, *, hidden=0, epochs=80, lr=1e-2,
+                    tol=0.05, batch_size=4096, device="cpu"):
     """Fit a probe to predict float y; return (val_mae, prior_mae, thr_acc, prior_thr)."""
     yt = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
     Xtr, ytr = X[idx_tr].to(device), yt[idx_tr].to(device)
@@ -140,12 +145,16 @@ def train_regressor(X, y, idx_tr, idx_va, *, hidden=0, epochs=300, lr=1e-2,
     model = _make_probe(X.shape[1], 1, hidden).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     lossf = nn.MSELoss()
+    ntr = Xtr.shape[0]
     model.train()
     for _ in range(epochs):
-        opt.zero_grad()
-        loss = lossf(model(Xtr), ytr)
-        loss.backward()
-        opt.step()
+        perm = torch.randperm(ntr, device=device)
+        for s in range(0, ntr, batch_size):
+            b = perm[s:s + batch_size]
+            opt.zero_grad()
+            loss = lossf(model(Xtr[b]), ytr[b])
+            loss.backward()
+            opt.step()
     model.eval()
     with torch.no_grad():
         pred = model(Xva).cpu()
@@ -171,10 +180,19 @@ def main():
     ap.add_argument("--hidden", type=int, default=0,
                     help="hidden width for the MLP probe (0 = linear only). When >0, "
                          "BOTH linear and MLP are reported.")
-    ap.add_argument("--epochs", type=int, default=300)
+    ap.add_argument("--epochs", type=int, default=80)
+    ap.add_argument("--batch_size", type=int, default=4096)
+    ap.add_argument("--max_train", type=int, default=20000,
+                    help="cap #train nodes used to fit the probe (0 = all). A linear "
+                         "ceiling estimate is stable with a few thousand; this is the "
+                         "main speed knob on large graphs like WN18RR.")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--device", default="auto",
+                    help="'auto' uses cuda if available, else cpu.")
     args = ap.parse_args()
+
+    if args.device == "auto":
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -211,7 +229,13 @@ def main():
     X = _standardize(X, idx_tr)
     facts = build_facts(graph, h_all, manifold)
 
-    print(f"\nProbe ceiling on {args.dataset}  ({len(idx_tr)} train / {len(idx_va)} val nodes)")
+    # Subsample train nodes for speed (the probe ceiling is stable with a few k).
+    n_tr_full = len(idx_tr)
+    if args.max_train and n_tr_full > args.max_train:
+        idx_tr = random.Random(args.seed).sample(idx_tr, args.max_train)
+
+    print(f"\nProbe ceiling on {args.dataset}  ({len(idx_tr)}/{n_tr_full} train, "
+          f"{len(idx_va)} val nodes; device={args.device})")
     hdr = f"{'fact':<10}{'prior':>8}{'linear':>9}"
     if args.hidden:
         hdr += f"{'mlp':>9}"
@@ -222,24 +246,26 @@ def main():
     for fact, (labels, kind) in facts.items():
         if kind == "reg":
             mae, prior_mae, thr, prior_thr = train_regressor(
-                X, labels, idx_tr, idx_va, epochs=args.epochs, device=args.device)
+                X, labels, idx_tr, idx_va, epochs=args.epochs,
+                batch_size=args.batch_size, device=args.device)
             line = (f"{fact:<10}{prior_thr:>8.2f}{thr:>9.2f}")
             if args.hidden:
                 mae_h, _, thr_h, _ = train_regressor(
                     X, labels, idx_tr, idx_va, hidden=args.hidden,
-                    epochs=args.epochs, device=args.device)
+                    epochs=args.epochs, batch_size=args.batch_size, device=args.device)
                 line += f"{thr_h:>9.2f}"
             line += f"   (MAE {mae:.3f} vs prior {prior_mae:.3f})"
             print(line)
             continue
 
-        lin, prior = train_classifier(X, labels, idx_tr, idx_va,
-                                      epochs=args.epochs, device=args.device)
+        lin, prior = train_classifier(X, labels, idx_tr, idx_va, epochs=args.epochs,
+                                      batch_size=args.batch_size, device=args.device)
         best = lin
         line = f"{fact:<10}{prior:>8.2f}{lin:>9.2f}"
         if args.hidden:
             mlp, _ = train_classifier(X, labels, idx_tr, idx_va, hidden=args.hidden,
-                                      epochs=args.epochs, device=args.device)
+                                      epochs=args.epochs, batch_size=args.batch_size,
+                                      device=args.device)
             best = max(lin, mlp)
             line += f"{mlp:>9.2f}"
         gap = best - prior
