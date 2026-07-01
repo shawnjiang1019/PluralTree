@@ -36,11 +36,14 @@ mkdir -p logs
 
 CURV="${CURV:-0.5}"
 LSTR="${LSTR:-0.1}"
+LDIV="${LDIV:-0.1}"        # sibling-separation floor (diversity-as-objective)
+DIVM="${DIVM:-1.0}"        # min geodesic distance between siblings
 EMB="${EMB:-embeddings_goqa.pt}"
-echo "CURV=${CURV}  LSTR=${LSTR}  EMB=${EMB}"
+echo "CURV=${CURV}  LSTR=${LSTR}  LDIV=${LDIV}  DIVM=${DIVM}  EMB=${EMB}"
 
 python scripts/train.py --dataset globalopinionqa \
     --curvature "${CURV}" --lambda_struct "${LSTR}" \
+    --lambda_div "${LDIV}" --div_margin "${DIVM}" \
     --save_embeddings "${EMB}" --device cuda \
     || { echo "TRAIN FAILED (see .err)"; exit 1; }
 

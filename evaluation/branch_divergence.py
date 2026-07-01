@@ -288,24 +288,33 @@ def _null_divergence(
     n_samples: int = 200,
     max_nodes: int = 32,
     seed: int = 0,
+    same_level: bool = False,
 ) -> tuple[float, float]:
     """Chance-level divergence: (mean, std) of W over random NON-sibling subtree pairs.
 
     This is the reference a fork must beat. Scattered instance-sets (e.g. 'gulf')
     have large absolute W simply because the embedding is spread out — they sit
     near this null. Genuine forks ('body') exceed it.
+
+    ``same_level=True`` restricts the null to internal-node pairs at the SAME tree
+    depth. A global null mixes forks from every level (World/Region/Country/…),
+    inflating its variance and shrinking z. Matching depth tightens the null so a
+    Country fork is judged against random Country pairs, not against the whole tree.
     """
     parents = _parents_from_children(children_indices)
+    depth = _depths(children_indices, parents) if same_level else None
     internal = [v for v in range(len(children_indices)) if children_indices[v]]
     if len(internal) < 2:
         return float("nan"), float("nan")
     gen = torch.Generator().manual_seed(seed)
     ws, tries = [], 0
-    while len(ws) < n_samples and tries < n_samples * 10:
+    while len(ws) < n_samples and tries < n_samples * 20:
         tries += 1
         i, j = torch.randint(len(internal), (2,), generator=gen).tolist()
         u, v = internal[i], internal[j]
         if u == v or (set(parents[u]) & set(parents[v])):    # skip self / siblings
+            continue
+        if same_level and depth[u] != depth[v]:              # same-depth null only
             continue
         Pu = h_all[torch.tensor(subtree_nodes(u, children_indices, max_nodes), dtype=torch.long)]
         Pv = h_all[torch.tensor(subtree_nodes(v, children_indices, max_nodes), dtype=torch.long)]
@@ -326,12 +335,15 @@ def relative_divergence_anchors(
     max_children: int = 6,
     seed: int = 0,
     n_null: int = 200,
+    per_level: bool = False,
 ) -> tuple[list[tuple[int, float, float]], tuple[float, float]]:
     """Anchors ranked by divergence *beyond chance* (z-score vs the null).
 
     Returns ``([(parent, z, raw_W), ...] sorted by z desc, (null_mean, null_std))``.
     z = (W_siblings - null_mean) / null_std, so it answers "how much more
     divergent than random subtrees" — filtering out the spread-only confound.
+
+    ``per_level=True`` uses a same-depth null (tighter variance, higher z).
     """
     raw = divergence_anchors(h_all, children_indices, manifold=manifold,
                              n_anchors=n_anchors, max_nodes=max_nodes,
@@ -339,7 +351,8 @@ def relative_divergence_anchors(
     if not raw:
         return [], (float("nan"), float("nan"))
     mu, sd = _null_divergence(h_all, children_indices, manifold=manifold,
-                              n_samples=n_null, max_nodes=max_nodes, seed=seed)
+                              n_samples=n_null, max_nodes=max_nodes, seed=seed,
+                              same_level=per_level)
     out = []
     for p, w in raw:
         if mu == mu and sd and sd > 0:
@@ -362,6 +375,7 @@ def compute_branch_divergence(
     max_nodes: int = 32,
     max_children: int = 6,
     seed: int = 0,
+    per_level: bool = False,
 ) -> dict[str, float]:
     """Aggregate branch-divergence metrics for ``compute_structure_metrics``.
 
@@ -371,7 +385,8 @@ def compute_branch_divergence(
     """
     ranked, (mu, sd) = relative_divergence_anchors(
         h_all, children_indices, manifold=manifold, n_anchors=n_anchors,
-        max_nodes=max_nodes, max_children=max_children, seed=seed)
+        max_nodes=max_nodes, max_children=max_children, seed=seed,
+        per_level=per_level)
     if not ranked:
         return {"branch_divergence_mean": float("nan"),
                 "branch_divergence_rel_mean": float("nan"),
@@ -414,6 +429,9 @@ def _main():
     ap.add_argument("--detail", action="store_true",
                     help="with --profile, also name the descendants driving the "
                          "divergence (per-node displacement + top transport pairs)")
+    ap.add_argument("--per-level", dest="per_level", action="store_true",
+                    help="score forks against a SAME-DEPTH null (tighter variance, "
+                         "higher z) instead of a global cross-level null")
     args = ap.parse_args()
     args.profile = args.profile or args.detail
 
@@ -446,10 +464,12 @@ def _main():
 
     ranked, (mu, sd) = relative_divergence_anchors(
         h_all, graph.children_indices, manifold=manifold,
-        n_anchors=args.n_anchors, seed=args.seed)
+        n_anchors=args.n_anchors, seed=args.seed, per_level=args.per_level)
     agg = compute_branch_divergence(h_all, graph.children_indices, manifold=manifold,
-                                    n_anchors=args.n_anchors, seed=args.seed)
-    print(f"null(random pairs) mean={mu:.4f} std={sd:.4f}  |  "
+                                    n_anchors=args.n_anchors, seed=args.seed,
+                                    per_level=args.per_level)
+    null_kind = "same-depth" if args.per_level else "random pairs"
+    print(f"null({null_kind}) mean={mu:.4f} std={sd:.4f}  |  "
           f"sibling mean={agg['branch_divergence_mean']:.4f}  "
           f"rel_mean(siblings-null)={agg['branch_divergence_rel_mean']:+.4f}  "
           f"z_max={agg['branch_divergence_z_max']:.2f}")
