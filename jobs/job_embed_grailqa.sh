@@ -43,11 +43,14 @@ mkdir -p logs
 CURV="${CURV:-0.5}"
 LSTR="${LSTR:-0.1}"
 LBND="${LBND:-0.0}"
+LDIV="${LDIV:-0.1}"        # sibling-separation floor (diversity-as-objective)
+DIVM="${DIVM:-1.0}"        # min geodesic distance between siblings
 EMB="${EMB:-embeddings_grailqa.pt}"
-echo "CURV=${CURV}  LSTR=${LSTR}  LBND=${LBND}  EMB=${EMB}"
+echo "CURV=${CURV}  LSTR=${LSTR}  LBND=${LBND}  LDIV=${LDIV}  DIVM=${DIVM}  EMB=${EMB}"
 
 python scripts/train.py --dataset grailqa \
     --curvature "${CURV}" --lambda_struct "${LSTR}" --lambda_boundary "${LBND}" \
+    --lambda_div "${LDIV}" --div_margin "${DIVM}" \
     --checkpoint --encode_every 4 \
     --save_embeddings "${EMB}" --device cuda \
     || { echo "TRAIN FAILED (see .err)"; exit 1; }

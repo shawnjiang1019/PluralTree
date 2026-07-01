@@ -18,7 +18,7 @@ class CodebookDecoder:
     """Frozen codebook + geodesic nearest-neighbour lookup."""
 
     def __init__(self, codebook: Tensor, manifold: PoincareBall):
-        self.codebook = codebook            # (N, d) frozen embeddings on the ball
+        self.codebook = codebook
         self.manifold = manifold
 
     @torch.no_grad()
