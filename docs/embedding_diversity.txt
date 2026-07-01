@@ -1,0 +1,118 @@
+PLURALTREE — EMBEDDING APPROACH & SUBTREE DIVERSITY
+===================================================
+
+1. ENCODER (unchanged core)
+---------------------------
+Hyperbolic Tree-GRU + Gated Knowledge Injection on the Poincare ball.
+- Bottom-up pass over topo_order; each parent = Mobius/Einstein midpoint of its
+  children (aggregation), then depth-aware injection of MiniLM text features.
+- Node feature h_i lives on the ball; rho_i = sqrt(c)*||h_i|| in [0,1) is the
+  fractional radius (abstraction: root near center, leaves toward the rim).
+- Distance = geodesic d(x,y) = (2/sqrt(c)) * artanh(sqrt(c) * ||(-x) (+) y||).
+
+
+2. THE NEW RECIPE (anti-collapse + diversity-as-objective)
+----------------------------------------------------------
+Problem: link-prediction + curvature push all nodes to the boundary (rho -> 1).
+Near the rim distances blow up and equalize -> uniform shell, no usable geometry
+(a "monoculture"). Diversity is destroyed.
+
+Training loss = link_pred
+              + lambda_struct  * structure_fidelity   (parent closer than non-ancestor)
+              + lambda_boundary* boundary_penalty      (keep mass off the rim)
+              + lambda_div     * sibling_separation     (diversity floor)      <-- NEW
+              + lambda_decode  * codebook_separation    (robust NN decode)
+
+Anti-collapse levers:
+  - lower curvature c (roomier interior, gentler distance growth)
+  - lambda_boundary: direct penalty on rho approaching 1
+  - lambda_div: hinge FLOOR pushing sibling pairs at least div_margin apart
+
+Current GrailQA job defaults: CURV=0.5, LSTR=0.1, LBND=0.0, LDIV=0.1, DIVM=1.0.
+
+
+3. HOW WE DEFINE / FIND DIVERSITY
+---------------------------------
+Diversity = geometric spread that is NOT collapsed. Measured intrinsically on a
+frozen h_all (no training loop):
+
+  sibling_ratio = mean(dist between siblings) / mean(dist between random pairs)
+      -> 0   : siblings collapsed onto each other (monoculture, BAD)
+      ~1     : siblings as spread as random pairs (fully diverse)
+      target : comfortably off 0 (diversity preserved)
+
+  dist_tree_rho = Spearman(geodesic dist, tree LCA-distance)
+      -> whether distance RANKS dissimilarity the way the tree does
+      (weak on flat/high-fan-out graphs like GrailQA — low tree resolution)
+
+lambda_div directly optimizes diversity: geodesic_separation_loss over sibling
+pairs enforces a minimum separation (div_margin). It is a FLOOR only — it opens
+collapsed siblings up to div_margin, then stops (does not inflate distances).
+
+Validation signal for the diversity objective:
+  sibling_ratio stays off 0  AND  branch_divergence rel_mean goes up.
+
+
+4. GIVEN A ROOT — DIVERSITY IN THE SUBTREE ANCHORED THERE
+---------------------------------------------------------
+Question: how divergent are the branches hanging off a chosen anchor node R?
+Tool: evaluation/branch_divergence.py (optimal transport over child subtrees).
+
+Setup:
+  - R has children c_1..c_m. Each child c_k defines a subtree; collect the point
+    cloud P_k = { h_v : v in subtree(c_k) } on the ball.
+  - Represent each branch as an empirical distribution over its cloud.
+
+Pairwise branch divergence (child i vs child j):
+  W(P_i, P_j) = min over transport plans gamma of  sum gamma_ab * C_ab
+    where C_ab = geodesic distance between point a in P_i and point b in P_j
+    (POT ot.emd2; log-domain Sinkhorn fallback for large clouds).
+  W is the Wasserstein / earth-mover distance under the hyperbolic ground metric:
+  the minimal cost to morph one branch's cloud into the other's.
+
+Subtree diversity of R = aggregate of {W(P_i, P_j)} over its child pairs
+  (mean = overall branch spread; max = most divergent fork).
+
+Is it REAL or noise? null-baseline z-score:
+  - Build a null by sampling W between random non-sibling subtree pairs.
+  - z = (W_observed - null_mean) / null_std ;  rel_mean = (sibling_mean - null_mean)/null_mean.
+  - rel_mean > 0 and z >> 1  => the fork is genuinely more divergent than chance
+    (structured plurality, not uniform-shell noise).
+  - rel_mean <= 0 / z ~ 0    => no divergence signal (control, or collapsed embedding).
+
+
+5. WHERE THE DIVERGENCE COMES FROM (profiling a fork)
+-----------------------------------------------------
+A large W between two branches can be a broad fork OR a close fork with a few far
+outliers. The transport plan gamma tells us which:
+
+  fork_dist       = geodesic distance between the two subtree ROOTS (c_i, c_j).
+                    small fork_dist + large W => branches split near the anchor but
+                    fan out far below.
+  cost_a          = (gamma * C).sum over partners for point a  (its transport cost)
+  displacement_a  = cost_a / mass_a                            (how far a must move)
+                    -> rank descendants; the high-displacement nodes DRIVE the split.
+  concentration   = share of total cost carried by the top 10% of points.
+                    high => a few descendants dominate the divergence;
+                    low  => divergence is spread evenly across the branch.
+  top_pairs       = largest gamma*C entries = the specific cross-branch node pairs
+                    that are farthest apart under the optimal coupling.
+
+So from a root R we get: (a) how divergent its branches are (W, z, rel_mean),
+(b) where they split (fork_dist), and (c) which descendants cause the split
+(per-node displacement, concentration, top_pairs).
+
+
+6. COMMANDS
+-----------
+Train (diversity on):
+  sbatch jobs/job_embed_grailqa.sh                 # LDIV=0.1 DIVM=1.0 default
+  LDIV=0.3 DIVM=1.5 sbatch jobs/job_embed_grailqa.sh
+
+Measure subtree diversity / divergence:
+  python evaluation/branch_divergence.py \
+      --embeddings embeddings_grailqa.pt --dataset grailqa \
+      --curvature 0.5 --profile --detail
+
+  --profile : fork_dist, median displacement, concentration per anchor
+  --detail  : also names the descendants driving each fork + top transport pairs

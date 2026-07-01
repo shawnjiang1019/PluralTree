@@ -322,7 +322,7 @@ def compute_features(graph: GlobalOpinionGraph, model_name: str = "all-MiniLM-L6
         else:
             unique.add(graph.entity_text[nid])
     texts = sorted(unique)
-    emb = model.encode(texts, convert_to_tensor=True, show_progress_bar=True).clone()
+    emb = model.encode(texts, convert_to_tensor=True, show_progress_bar=True).clone().cpu()
     idx = {t: i for i, t in enumerate(texts)}
 
     out = torch.zeros(n, emb.shape[1])
