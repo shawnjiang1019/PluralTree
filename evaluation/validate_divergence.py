@@ -58,6 +58,11 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max_pairs", type=int, default=20000,
                     help="cap same-question country pairs (0 = all)")
+    ap.add_argument("--question", default=None,
+                    help="row-index key of ONE question: print its per-country "
+                         "divergence (embedding + JS) and exit")
+    ap.add_argument("--rank_questions", type=int, default=0,
+                    help="print the top-K most divergent questions (by mean JS) and exit")
     args = ap.parse_args()
 
     from pluraltree.manifolds.poincare import PoincareBall
@@ -77,6 +82,64 @@ def main():
         q = _question_of(graph.id_to_entity[nid])
         if q is not None and nid in graph.opinion_dist:
             by_q.setdefault(q, []).append(nid)
+
+    def canon_of(nid: int) -> str:
+        parts = graph.id_to_entity[nid].split("_", 2)
+        return parts[2] if len(parts) >= 3 else "?"
+
+    def qtext(nid: int) -> str:
+        return graph.entity_text.get(nid, "").rsplit(" [", 1)[0]
+
+    def pairwise(oids):
+        """All country-pair (JS, geodesic) for one question's opinion leaves."""
+        js, geo, pr = [], [], []
+        for a in range(len(oids)):
+            for b in range(a + 1, len(oids)):
+                i, j = oids[a], oids[b]
+                di, dj = graph.opinion_dist[i], graph.opinion_dist[j]
+                if len(di) != len(dj):
+                    continue
+                jd = _js_divergence(di, dj)
+                gd = float(manifold.distance(h_all[i:i+1], h_all[j:j+1]).squeeze())
+                js.append(jd); geo.append(gd); pr.append((i, j, jd, gd))
+        return js, geo, pr
+
+    import statistics as st
+
+    # --- single-question mode: diversity of responses to ONE question --------
+    if args.question is not None:
+        oids = by_q.get(args.question)
+        if not oids:
+            print(f"question {args.question!r} not found "
+                  f"(keys are row indices: {sorted(by_q)[:8]}...)")
+            return
+        print(f"Q[{args.question}] {qtext(oids[0])[:110]}")
+        print(f"  {len(oids)} countries responding")
+        js, geo, pr = pairwise(oids)
+        if not js:
+            print("  <2 comparable responses"); return
+        print(f"  mean JS={st.mean(js):.4f}  max JS={max(js):.4f}  "
+              f"mean geodesic={st.mean(geo):.4f}")
+        pr.sort(key=lambda x: x[2], reverse=True)
+        print("  most divergent country pairs (by JS):")
+        for i, j, jd, gd in pr[:10]:
+            print(f"    {canon_of(i):<16} vs {canon_of(j):<16}  JS={jd:.4f}  geodesic={gd:.4f}")
+        return
+
+    # --- rank questions by how divergent the responses are -------------------
+    if args.rank_questions:
+        rows = []
+        for q, oids in by_q.items():
+            if len(oids) < 2:
+                continue
+            js, geo, _ = pairwise(oids)
+            if js:
+                rows.append((q, st.mean(js), st.mean(geo), len(oids), qtext(oids[0])))
+        rows.sort(key=lambda x: x[1], reverse=True)
+        print(f"top {args.rank_questions} most divergent questions (by mean JS):")
+        for q, mj, mg, n, qt in rows[:args.rank_questions]:
+            print(f"  JS={mj:.4f}  geo={mg:.4f}  n={n:>3}  Q[{q}] {qt[:66]}")
+        return
 
     oracle, embed = [], []
     for q, oids in by_q.items():
