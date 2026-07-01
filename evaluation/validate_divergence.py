@@ -61,6 +61,9 @@ def main():
     ap.add_argument("--question", default=None,
                     help="row-index key of ONE question: print its per-country "
                          "divergence (embedding + JS) and exit")
+    ap.add_argument("--responses", type=int, default=3,
+                    help="in --question mode, also print the actual answer "
+                         "distributions for the top-K most divergent country pairs")
     ap.add_argument("--rank_questions", type=int, default=0,
                     help="print the top-K most divergent questions (by mean JS) and exit")
     args = ap.parse_args()
@@ -89,6 +92,15 @@ def main():
 
     def qtext(nid: int) -> str:
         return graph.entity_text.get(nid, "").rsplit(" [", 1)[0]
+
+    def options_of(nid: int) -> list[str]:
+        """Recover the answer options by stripping the shared question prefix."""
+        import os
+        texts = graph.opinion_texts.get(nid, [])
+        pref = os.path.commonprefix(texts)
+        cut = pref.rfind(" ")
+        pref = pref[:cut + 1] if cut > 0 else pref
+        return [t[len(pref):] for t in texts]
 
     def pairwise(oids):
         """All country-pair (JS, geodesic) for one question's opinion leaves."""
@@ -124,6 +136,16 @@ def main():
         print("  most divergent country pairs (by JS):")
         for i, j, jd, gd in pr[:10]:
             print(f"    {canon_of(i):<16} vs {canon_of(j):<16}  JS={jd:.4f}  geodesic={gd:.4f}")
+
+        # Actual answer distributions for the top-K pairs — eyeball the ranking.
+        for i, j, jd, gd in pr[:max(0, args.responses)]:
+            print(f"\n  responses: {canon_of(i)} vs {canon_of(j)}  "
+                  f"(JS={jd:.4f}  geodesic={gd:.4f})")
+            opts = options_of(i)
+            pa, pb = graph.opinion_dist[i], graph.opinion_dist[j]
+            print(f"    {canon_of(i)[:12]:>12} {canon_of(j)[:12]:>12}   option")
+            for k, opt in enumerate(opts):
+                print(f"    {pa[k]:>12.2f} {pb[k]:>12.2f}   {opt[:70]}")
         return
 
     # --- rank questions by how divergent the responses are -------------------
