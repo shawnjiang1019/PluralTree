@@ -432,6 +432,9 @@ def _main():
     ap.add_argument("--per-level", dest="per_level", action="store_true",
                     help="score forks against a SAME-DEPTH null (tighter variance, "
                          "higher z) instead of a global cross-level null")
+    ap.add_argument("--anchor", type=int, default=None,
+                    help="print the full Wasserstein profile for this EXACT node id "
+                         "(every child-pair W + drivers) and exit; skips the ranked list")
     args = ap.parse_args()
     args.profile = args.profile or args.detail
 
@@ -461,6 +464,36 @@ def _main():
         s = text.get(nid) or graph.id_to_entity[nid]
         s = s.split(",")[0].strip()                  # first sense / short form
         return s if len(s) <= width else s[: width - 1] + "…"
+
+    # --- single-node mode: exact profile for one chosen anchor ---------------
+    if args.anchor is not None:
+        p = args.anchor
+        if not (0 <= p < len(graph.children_indices)):
+            print(f"anchor {p} out of range [0, {len(graph.children_indices)})"); return
+        kids = graph.children_indices[p]
+        print(f"anchor [{p}] {label(p, 44)} — {len(kids)} children")
+        if len(kids) < 2:
+            print("  <2 children: no fork to measure."); return
+        bd = branch_divergence(p, h_all, graph.children_indices,
+                               manifold=manifold, detail=True)
+        print(f"  mean_W={bd['mean']:.4f}  max_W={bd['max']:.4f}  "
+              f"fork={bd['fork_dist']:.4f}  median={bd['median']:.4f}  "
+              f"conc={bd['concentration']:.4f}")
+        used = kids[:6]                                   # branch_divergence caps at 6
+        subs = [subtree_nodes(c, graph.children_indices) for c in used]
+        dists = [h_all[torch.tensor(s, dtype=torch.long)] for s in subs]
+        print("  pairwise child W:")
+        for i in range(len(dists)):
+            for j in range(i + 1, len(dists)):
+                w = wasserstein(dists[i], dists[j], manifold)
+                print(f"    {label(used[i],20)} <-> {label(used[j],20)}  W={w:.4f}")
+        print("  drivers A: " + ", ".join(
+            f"{label(nid,18)}({d:.2f})" for nid, d in bd["displacements_P"][:5]))
+        print("  drivers B: " + ", ".join(
+            f"{label(nid,18)}({d:.2f})" for nid, d in bd["displacements_Q"][:5]))
+        for na, nb, cst in bd["top_pairs"][:5]:
+            print(f"    {label(na,16)} <-> {label(nb,16)}  cost={cst:.3f}")
+        return
 
     ranked, (mu, sd) = relative_divergence_anchors(
         h_all, graph.children_indices, manifold=manifold,
