@@ -3,3 +3,7 @@ __pycache__/
 **/__pycache__/
 **/__init__.py
 *.egg-info/
+
+# Raw datasets are fetched, not committed (too large; see scripts/get_*.py)
+data/grailqa/
+*.pt

@@ -169,7 +169,7 @@ def train_regressor(X, y, idx_tr, idx_va, *, hidden=0, epochs=80, lr=1e-2,
 def main():
     ap = argparse.ArgumentParser(description="Probe an embedding for structural facts")
     ap.add_argument("--embeddings", required=True)
-    ap.add_argument("--dataset", choices=["wn18rr", "culturalbench", "globalopinionqa"],
+    ap.add_argument("--dataset", choices=["wn18rr", "culturalbench", "globalopinionqa", "grailqa"],
                     default="wn18rr")
     ap.add_argument("--data_dir", default="data/wn18rr")
     ap.add_argument("--split", default=None,
@@ -205,6 +205,9 @@ def main():
     elif args.dataset == "globalopinionqa":
         from data.globalopinionqa import load_globalopinionqa
         graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+    elif args.dataset == "grailqa":
+        from data.grailqa import load_grailqa
+        graph = load_grailqa(split_seed=args.seed, leakage_safe=True)
     else:
         from data.culturalbench import load_culturalbench
         graph = load_culturalbench(split_seed=args.seed, leakage_safe=True)

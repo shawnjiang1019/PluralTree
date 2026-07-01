@@ -24,7 +24,11 @@ from data.culturalbench import CulturalGraph
 from data.collate import TripleBatchSampler
 from data.negative_sampler import NegativeSampler
 from data.tree_builder import build_full_tree_inputs
-from training.losses import gate_sparsity_loss
+from training.losses import (
+    gate_sparsity_loss,
+    geodesic_separation_loss,
+    boundary_penalty,
+)
 from training.scoring import HyperbolicLinkPredictor
 from pluraltree.manifolds.poincare import PoincareBall
 from pluraltree.combined.gki_tree_encoder import GKITreeEncoder
@@ -43,6 +47,12 @@ class TrainerConfig:
     gate_sparsity_weight: float = 0.01
     lambda_struct:  float = 0.0   # weight on the hierarchy structure-fidelity loss
     struct_margin:  float = 1.0   # margin for that loss (parent closer than non-ancestor)
+    # --- Diversity-as-objective (anti-collapse) + robust deterministic decode ---
+    lambda_div:      float = 0.0  # sibling-separation floor (faithful diversity)
+    div_margin:      float = 1.0  # min geodesic distance between siblings
+    lambda_boundary: float = 0.0  # boundary penalty (keep mass off the rim)
+    lambda_decode:   float = 0.0  # codebook-separation floor (robust NN decode)
+    decode_margin:   float = 1.0  # min geodesic gap to a node's nearest other
     encode_every:   int   = 1     # re-encode the full tree every N steps (1 = every batch)
     metrics_csv:    str | None = None   # if set, append per-eval val metrics here
     lr:             float = 1e-3
@@ -122,6 +132,18 @@ class Trainer:
         self._struct_parent = torch.tensor(par, dtype=torch.long, device=self.device)
         self._n_struct_edges = len(ch)
 
+        # Sibling pairs for the diversity floor (consecutive co-children of each
+        # parent — O(total children), bounds high-fan-out parents). Used only when
+        # config.lambda_div > 0.
+        si, sj = [], []
+        for kids in graph.children_indices:
+            for a, b in zip(kids[:-1], kids[1:]):
+                si.append(a)
+                sj.append(b)
+        self._sib_i = torch.tensor(si, dtype=torch.long, device=self.device)
+        self._sib_j = torch.tensor(sj, dtype=torch.long, device=self.device)
+        self._n_sib_pairs = len(si)
+
         self.global_step = 0
         self.best_val_mrr = 0.0
 
@@ -194,9 +216,9 @@ class Trainer:
         # Hierarchy margin: a node's parent should be closer than a random
         # non-ancestor by `struct_margin`. Optimises subtree_ap / ancestor_auc /
         # depth_radius_rho (see docs/EVALUATION.md). Off when lambda_struct == 0.
+        manifold = self.encoder.manifold
         loss_struct_t = torch.zeros((), device=self.device)
         if self.config.lambda_struct > 0.0 and self._n_struct_edges > 0:
-            manifold = self.encoder.manifold
             n_nodes = h_all.shape[0]
             B = min(self.config.batch_size, self._n_struct_edges)
             e = torch.randint(self._n_struct_edges, (B,), device=self.device)
@@ -214,6 +236,42 @@ class Trainer:
             loss_struct = F.relu(self.config.struct_margin + d_pos - d_neg).mean()
             loss = loss + self.config.lambda_struct * loss_struct
             loss_struct_t = loss_struct.detach()
+
+        # Diversity-as-objective: sibling-separation floor (anti-collapse). Keeps
+        # genuine forks measurable; link-pred/struct still pull siblings close, so
+        # this only sets a floor. Validate via branch_divergence_rel_mean (up) with
+        # sibling_ratio off 0 (not collapsed).
+        loss_div_t = torch.zeros((), device=self.device)
+        if self.config.lambda_div > 0.0 and self._n_sib_pairs > 0:
+            B = min(self.config.batch_size, self._n_sib_pairs)
+            e = torch.randint(self._n_sib_pairs, (B,), device=self.device)
+            loss_div = geodesic_separation_loss(
+                h_all[self._sib_i[e]], h_all[self._sib_j[e]],
+                manifold, self.config.div_margin,
+            )
+            loss = loss + self.config.lambda_div * loss_div
+            loss_div_t = loss_div.detach()
+
+        # Boundary penalty — keep mass off the rim (anti-saturation).
+        if self.config.lambda_boundary > 0.0:
+            loss = loss + self.config.lambda_boundary * boundary_penalty(h_all, manifold)
+
+        # Robust deterministic decode: a margin around each codebook entry so an
+        # *inexact* query (bridge round-trip / perturbation) still argmins to the
+        # right id. Decode itself is deterministic regardless; this widens the basin.
+        loss_dec_t = torch.zeros((), device=self.device)
+        if self.config.lambda_decode > 0.0:
+            n_nodes = h_all.shape[0]
+            B = min(self.config.batch_size, n_nodes)
+            M = 32                                       # sampled negatives per anchor
+            anc = torch.randint(n_nodes, (B,), device=self.device)
+            neg = torch.randint(n_nodes, (B, M), device=self.device)
+            d = manifold.distance(h_all[anc].unsqueeze(1), h_all[neg]).squeeze(-1)  # (B, M)
+            d = d.masked_fill(neg == anc.unsqueeze(1), float("inf"))
+            nearest = d.min(dim=1).values
+            loss_dec = F.relu(self.config.decode_margin - nearest).mean()
+            loss = loss + self.config.lambda_decode * loss_dec
+            loss_dec_t = loss_dec.detach()
 
         loss.backward()
 
@@ -233,6 +291,8 @@ class Trainer:
             "loss_lp":     loss_lp.detach().reshape(()),
             "loss_sparse": loss_sparse.detach().reshape(()),
             "loss_struct": loss_struct_t,
+            "loss_div":    loss_div_t,
+            "loss_dec":    loss_dec_t,
         }
 
     def train(self) -> None:
@@ -276,6 +336,8 @@ class Trainer:
                         f"loss {metrics['loss'].item():.4f} | "
                         f"lp {metrics['loss_lp'].item():.4f} | "
                         f"struct {metrics['loss_struct'].item():.4f} | "
+                        f"div {metrics['loss_div'].item():.4f} | "
+                        f"dec {metrics['loss_dec'].item():.4f} | "
                         f"gate_bias {gate_bias:.2f}"
                     )
 

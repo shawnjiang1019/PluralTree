@@ -76,6 +76,23 @@ def parse_args():
     p.add_argument("--struct_margin", type=float, default=1.0,
                    help="Margin for the structure-fidelity loss (parent closer than "
                         "a non-ancestor by this much).")
+    # --- Diversity-as-objective (anti-collapse) + robust deterministic decode ---
+    p.add_argument("--lambda_div", type=float, default=0.0,
+                   help="Weight on the sibling-separation floor. >0 makes the "
+                        "embedding a faithful diversity instrument (anti-collapse); "
+                        "validate via branch_divergence_rel_mean up, sibling_ratio off 0.")
+    p.add_argument("--div_margin", type=float, default=1.0,
+                   help="Min geodesic distance siblings are pushed to (floor only).")
+    p.add_argument("--lambda_boundary", type=float, default=0.0,
+                   help="Weight on the boundary penalty (keep mass off the rim; "
+                        "replaces manual CURV/LSTR anti-saturation tuning).")
+    p.add_argument("--lambda_decode", type=float, default=0.0,
+                   help="Weight on the codebook-separation floor — widens each "
+                        "node's basin so an inexact query still NN-decodes to the "
+                        "right id. Decode is deterministic regardless; this is for "
+                        "robustness. Leave 0 if you only decode exact embeddings.")
+    p.add_argument("--decode_margin", type=float, default=1.0,
+                   help="Min geodesic gap to a node's nearest other (decode basin).")
     p.add_argument("--inductive_holdout", type=float, default=0.0,
                    help="WN18RR only: hold out this fraction of leaf entities from "
                         "training and evaluate their links inductively (embedded "
@@ -91,7 +108,7 @@ def parse_args():
                    help="Path to append per-eval validation metrics (step, epoch, "
                         "MRR, Hits) for offline plotting (scripts/plot_metrics.py).")
     p.add_argument("--dataset",       type=str,   default="culturalbench",
-                   choices=["culturalbench", "wn18rr", "globalopinionqa"],
+                   choices=["culturalbench", "wn18rr", "globalopinionqa", "grailqa"],
                    help="Which dataset/loader to use.")
     p.add_argument("--data_dir",      type=str,   default="data/wn18rr",
                    help="Directory of WN18RR train/valid/test.txt (wn18rr only).")
@@ -146,6 +163,13 @@ def main():
     elif args.dataset == "globalopinionqa":
         from data.globalopinionqa import load_globalopinionqa
         graph = load_globalopinionqa(
+            split_seed=args.seed,
+            leakage_safe=not args.allow_leakage,
+        )
+        print(f"  leakage_safe = {not args.allow_leakage}")
+    elif args.dataset == "grailqa":
+        from data.grailqa import load_grailqa
+        graph = load_grailqa(
             split_seed=args.seed,
             leakage_safe=not args.allow_leakage,
         )
@@ -241,6 +265,11 @@ def main():
         gate_bias_init = args.gate_bias,
         lambda_struct  = args.lambda_struct,
         struct_margin  = args.struct_margin,
+        lambda_div      = args.lambda_div,
+        div_margin      = args.div_margin,
+        lambda_boundary = args.lambda_boundary,
+        lambda_decode   = args.lambda_decode,
+        decode_margin   = args.decode_margin,
         encode_every   = args.encode_every,
         metrics_csv    = args.metrics_csv,
         device         = args.device,

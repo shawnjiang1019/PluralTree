@@ -401,7 +401,7 @@ def _main():
 
     ap = argparse.ArgumentParser(description="Rank Divergence Anchors in a frozen embedding")
     ap.add_argument("--embeddings", required=True, help=".pt of h_all on the ball")
-    ap.add_argument("--dataset", choices=["wn18rr", "culturalbench", "globalopinionqa"], default="wn18rr")
+    ap.add_argument("--dataset", choices=["wn18rr", "culturalbench", "globalopinionqa", "grailqa"], default="wn18rr")
     ap.add_argument("--data_dir", default="data/wn18rr")
     ap.add_argument("--curvature", type=float, default=1.0)
     ap.add_argument("--euclidean", action="store_true", help="use Euclidean ground metric")
@@ -424,6 +424,9 @@ def _main():
     elif args.dataset == "globalopinionqa":
         from data.globalopinionqa import load_globalopinionqa
         graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+    elif args.dataset == "grailqa":
+        from data.grailqa import load_grailqa
+        graph = load_grailqa(split_seed=args.seed, leakage_safe=True)
     else:
         from data.culturalbench import load_culturalbench
         graph = load_culturalbench(split_seed=args.seed, leakage_safe=True)
