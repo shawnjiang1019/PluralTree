@@ -1,0 +1,92 @@
+OVERTONBENCH EVALUATION OF SCOUT-INJECTED GENERATION
+====================================================
+
+Benchmark: "Benchmarking Overton Pluralism in LLMs" (Poole-Dayan et al., ICLR
+2026). 60 politically salient US questions; humans (N=1208) rated 8 LLMs'
+answers 1-5 on "to what extent is YOUR perspective represented in this
+response?". OvertonScore = fraction of viewpoint clusters whose members' mean
+rating is >= 4, averaged over questions. Dataset: HF elinorpd/overtonbench
+(splits: full / prism / modelslant; fields: question_id, question,
+freeresponse, cluster_kmeans, model, llm_response, representation_rating, ...).
+
+Hypothesis: injecting scout-retrieved divergent forks (from the GOQA graph)
+into the generator raises OvertonScore vs the same generator alone.
+
+
+1. CONDITIONS (same generator LLM for all)
+------------------------------------------
+  A  baseline   plain question + generic answer instruction
+  B  scout      question + injected forks (tau=0.25, alpha=1) + pluralism
+                instruction ("represent each perspective faithfully, attribute
+                claims, do NOT average the disagreement away")
+  C  div_only   like B but tau=0, alpha=0 (pure divergence, no relevance) —
+                ablation isolating the relevance gating
+
+  B > A  => retrieval helps.   B > C  => relevance gating specifically helps.
+
+
+2. JUDGE (open-weight, self-validated)
+--------------------------------------
+The paper's best judge (Gemini 2.5 Pro, few-shot) hit per-rating MAE 0.66 /
+rho 0.66; dumb baselines are close (mean-of-others rho 0.64), so a 70B-class
+open model is plausible. No API keys: serve via vLLM (OpenAI-compatible).
+
+VALIDATE FIRST (the dataset contains the ground truth to do this):
+  For sampled (participant, question, target_model) triples, show the judge
+  the participant's freeresponse + their ratings of the OTHER 7 models'
+  responses (few-shot), predict the held-out rating. Report MAE + Spearman
+  vs the human rating, alongside the mean-of-others baseline. Use the judge
+  only if it beats the baseline and lands near the paper's numbers; report
+  its validation stats with any result.
+
+  Bias check: correlate predicted rating with response length; confirm the
+  human ratings show a similar slope (injection lengthens responses — a
+  length-biased judge would confound B vs A).
+
+SCORING OUR RESPONSES:
+  For each generated response and every participant who answered that
+  question: few-shot = all 8 of that participant's rated examples; predict
+  the participant's 1-5 rating of OUR response. Aggregate exactly like the
+  paper: mean predicted rating per cluster_kmeans; covered iff mean >= 4;
+  coverage = covered / n_clusters; OvertonScore(condition) = mean coverage
+  over questions.
+
+Comparisons are judge-relative: A/B/C under the same judge are paired, so
+judge noise largely cancels. Absolute scores are NOT comparable to the
+paper's Gemini-judged numbers.
+
+
+3. FILES
+--------
+  retrieval/answer.py             prompt assembly + OpenAI-compatible chat()
+                                  client (stdlib urllib -> vLLM); expands
+                                  opinion leaves into answer-distribution
+                                  tables; conditions baseline/scout/div_only
+  evaluation/eval_overtonbench.py 60 questions -> responses.jsonl per condition
+  evaluation/judge_overtonbench.py  --validate and --score modes (above)
+  jobs/job_judge_validate.sh      vLLM serve + validation on Narval
+
+
+4. COMMANDS
+-----------
+Login node, once (compute nodes are offline):
+  export HF_HOME=~/projects/def-enaskt/shawnj/hf_cache
+  python -c "from datasets import load_dataset; load_dataset('elinorpd/overtonbench')"
+  huggingface-cli download Qwen/Qwen2.5-72B-Instruct     # judge/generator weights
+
+Validate the judge (GPU node):
+  sbatch jobs/job_judge_validate.sh                      # MODEL=... to override
+
+Generate responses (GPU node running vLLM, or reuse the serve pattern):
+  python -m evaluation.eval_overtonbench \
+      --embeddings embeddings_goqa.pt --curvature 0.5 --text_feat feats_goqa.pt \
+      --base_url http://localhost:8000/v1 --model Qwen/Qwen2.5-72B-Instruct \
+      --conditions baseline,scout,div_only --out overton_responses.jsonl
+
+Score them:
+  python -m evaluation.judge_overtonbench --score overton_responses.jsonl \
+      --base_url http://localhost:8000/v1 --model Qwen/Qwen2.5-72B-Instruct \
+      --out overton_scores.csv
+
+Judge calls scale: ~60 participants/question x 60 questions x 3 conditions
+~= 11k predictions per full run; cap with --max_users for smoke tests.

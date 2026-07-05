@@ -1,0 +1,83 @@
+SCOUT — RELEVANT + DIVERGENT PATH RETRIEVAL (ONE-SHOT)
+======================================================
+
+Goal: given a natural-language question, return the top-k forks in the knowledge
+graph that are BOTH on-topic (relevance) and genuinely plural (divergence),
+formatted for injection into an LLM prompt.
+
+Failure mode being prevented: the Wasserstein scout alone optimizes divergence,
+not relevance — the most divergent subtree pairs may be off-topic. Fixes wired
+in here: (1) relevance gate before OT, (2) relevance-weighted OT mass
+(question-conditioned divergence), (3) combined score rel^alpha * W.
+
+
+1. PIPELINE (retrieval/scout.py, run as `python -m retrieval.scout`)
+--------------------------------------------------------------------
+question
+  -> anchors      lexical entity match (hashmap), pluggable anchor_fn hook for
+                  an LLM extractor; fallback = most question-relevant internal
+                  nodes when nothing matches lexically
+  -> relevance    rel_i = cosine( MiniLM(question), text_feat_i )   (text space)
+  -> gate         subtree clouds keep only nodes with rel >= tau
+                  (branch root always kept; min_keep floor by top-rel);
+                  a branch whose gated cloud has mean rel < tau is dropped
+  -> divergence   pairwise W(P_i, P_j) between gated child clouds of each
+                  anchor, ground metric = Poincare geodesic on frozen h_all,
+                  OT mass a ∝ softmax(rel / temp)  -- divergence measured
+                  AMONG and WEIGHTED BY on-topic nodes only
+  -> score        score = max(rel_pair, 0)^alpha * W,
+                  rel_pair = mean relevance of the two gated clouds
+  -> output       top-k ScoredFork: anchor, branch pair, W, rel, score, and the
+                  top transport pairs (gamma*C) naming the exact node pairs
+                  that drive the split
+  -> inject       format_for_prompt() renders forks with node texts
+
+Two geometries, on purpose:
+  relevance  = Euclidean/cosine in MiniLM TEXT space (question is not on the ball)
+  divergence = Wasserstein under the LEARNED hyperbolic metric (h_all)
+
+
+2. KNOBS (ScoutConfig)
+----------------------
+  tau          relevance gate threshold (cosine)          default 0.25
+  alpha        relevance exponent in combined score       default 1.0
+  temp         softmax temperature for OT mass            default 0.1
+  max_anchors  anchors examined per question              default 4
+  max_children children per anchor (bounds O(c^2) pairs)  default 8
+  max_nodes    subtree cloud cap (bounds OT size)         default 32
+  min_keep     gate floor per cloud                       default 2
+  top_k        forks returned                             default 5
+
+tau=0 disables the gate; alpha=0 ignores relevance in the score (pure
+divergence, the old behavior); temp -> inf gives uniform OT mass.
+
+
+3. REUSE
+--------
+  evaluation/branch_divergence.py : subtree_nodes, wasserstein, _ground_cost,
+                                    _transport_plan (exact EMD via POT, else
+                                    log-domain Sinkhorn)
+  data/globalopinionqa.py         : compute_features (GOQA node features)
+  data/culturalbench.py           : compute_text_embeddings (other datasets)
+
+Text features are slow to compute -> cached to a .pt via --text_feat (loaded
+if present, computed and saved otherwise).
+
+
+4. CLI
+------
+  python -m retrieval.scout \
+      --embeddings embeddings_goqa.pt --dataset globalopinionqa \
+      --curvature 0.5 --text_feat feats_goqa.pt \
+      --question "How much of a danger is North Korea?" \
+      --tau 0.25 --alpha 1.0 --top 5
+
+  --anchors "Germany,Asia Pacific"   bypass extraction, anchor these entities
+  --prompt                            also print the format_for_prompt block
+
+
+5. NEXT (not in this file)
+--------------------------
+Interactive mode: ScoutSession exposing anchor/forks/expand/profile/peek ops +
+a driver loop where an LLM chooses the next op (ToG-style back-and-forth).
+One-shot then becomes a scripted policy over the same session.

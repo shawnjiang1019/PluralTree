@@ -1,0 +1,60 @@
+#!/bin/bash
+#SBATCH --job-name=judge_validate
+#SBATCH --gres=gpu:4
+#SBATCH --mem=128G
+#SBATCH --cpus-per-task=16
+#SBATCH --time=03:00:00
+#SBATCH --account=def-enaskt
+#SBATCH --output=logs/judge_validate_%j.out
+#SBATCH --error=logs/judge_validate_%j.err
+
+# Validate an open-weight OvertonBench judge (docs/overtonbench_eval.txt §2):
+# serve MODEL with vLLM, predict held-out human ratings, report MAE/Spearman
+# vs the mean-of-others baseline and the paper's Gemini numbers.
+#
+# Overridable:  MODEL=Qwen/Qwen2.5-32B-Instruct N=150 sbatch jobs/job_judge_validate.sh
+#
+# Login node, once (compute nodes are offline):
+#   export HF_HOME=~/projects/def-enaskt/shawnj/hf_cache
+#   python -c "from datasets import load_dataset; load_dataset('elinorpd/overtonbench')"
+#   huggingface-cli download "$MODEL"
+
+module load python/3.11 gcc cuda/13.2 arrow/24.0.0
+source ~/pluraltree-env/bin/activate
+
+export HF_HOME="${HF_HOME:-$HOME/projects/def-enaskt/shawnj/hf_cache}"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
+mkdir -p logs
+
+MODEL="${MODEL:-Qwen/Qwen2.5-72B-Instruct}"
+N="${N:-300}"
+PORT="${PORT:-8000}"
+TP="${TP:-4}"                    # tensor parallel = GPUs requested above
+echo "MODEL=${MODEL}  N=${N}  TP=${TP}"
+
+vllm serve "${MODEL}" --port "${PORT}" --tensor-parallel-size "${TP}" \
+    --max-model-len 8192 > logs/vllm_${SLURM_JOB_ID}.log 2>&1 &
+VLLM_PID=$!
+trap "kill ${VLLM_PID} 2>/dev/null" EXIT
+
+# Wait for the server (72B load takes several minutes).
+for i in $(seq 1 120); do
+    if curl -sf "http://localhost:${PORT}/health" > /dev/null; then
+        echo "vLLM up after ~$((i * 10))s"; break
+    fi
+    if ! kill -0 ${VLLM_PID} 2>/dev/null; then
+        echo "vLLM died — see logs/vllm_${SLURM_JOB_ID}.log"; exit 1
+    fi
+    sleep 10
+done
+curl -sf "http://localhost:${PORT}/health" > /dev/null \
+    || { echo "vLLM never became healthy"; exit 1; }
+
+python -m evaluation.judge_overtonbench --validate --n "${N}" \
+    --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
+    || { echo "VALIDATION FAILED (see .err)"; exit 1; }

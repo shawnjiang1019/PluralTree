@@ -90,17 +90,24 @@ def main():
         parts = graph.id_to_entity[nid].split("_", 2)
         return parts[2] if len(parts) >= 3 else "?"
 
-    def qtext(nid: int) -> str:
-        return graph.entity_text.get(nid, "").rsplit(" [", 1)[0]
+    import os
 
-    def options_of(nid: int) -> list[str]:
-        """Recover the answer options by stripping the shared question prefix."""
-        import os
+    def _prefix(nid: int) -> str:
+        """Shared '{question} ' prefix of an opinion's option strings."""
         texts = graph.opinion_texts.get(nid, [])
         pref = os.path.commonprefix(texts)
         cut = pref.rfind(" ")
-        pref = pref[:cut + 1] if cut > 0 else pref
-        return [t[len(pref):] for t in texts]
+        return pref[:cut + 1] if cut > 0 else pref
+
+    def qtext(nid: int) -> str:
+        # opinion_texts keeps the FULL (untruncated) question; entity_text is capped.
+        p = _prefix(nid).strip()
+        return p or graph.entity_text.get(nid, "").rsplit(" [", 1)[0]
+
+    def options_of(nid: int) -> list[str]:
+        """Recover the answer options by stripping the shared question prefix."""
+        pref = _prefix(nid)
+        return [t[len(pref):] for t in graph.opinion_texts.get(nid, [])]
 
     def pairwise(oids):
         """All country-pair (JS, geodesic) for one question's opinion leaves."""
@@ -125,7 +132,7 @@ def main():
             print(f"question {args.question!r} not found "
                   f"(keys are row indices: {sorted(by_q)[:8]}...)")
             return
-        print(f"Q[{args.question}] {qtext(oids[0])[:110]}")
+        print(f"Q[{args.question}] {qtext(oids[0])}")
         print(f"  {len(oids)} countries responding")
         js, geo, pr = pairwise(oids)
         if not js:
