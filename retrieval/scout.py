@@ -252,6 +252,39 @@ def scout(
 
 
 # ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+def _opinion_prefix(texts: list[str]) -> str:
+    """Shared '{question} ' prefix of an opinion's option strings."""
+    import os
+
+    pref = os.path.commonprefix(texts)
+    cut = pref.rfind(" ")
+    return pref[: cut + 1] if cut > 0 else pref
+
+
+def describe_node(graph, nid: int, width: int = 120, show_q: bool = False) -> str:
+    """Human-readable node line; opinion leaves get their answer distribution.
+
+    ``width=0`` disables truncation. ``show_q=True`` prefixes opinion leaves
+    with their survey question (drivers can come from different questions).
+    """
+    texts = getattr(graph, "opinion_texts", {}).get(nid)
+    dist = getattr(graph, "opinion_dist", {}).get(nid)
+    if texts and dist:
+        pref = _opinion_prefix(texts)
+        country = graph.id_to_entity[nid].split("_", 2)[-1]
+        opts = ", ".join(f"\"{t[len(pref):].strip()}\" {p:.0%}"
+                         for t, p in zip(texts, dist) if p >= 0.05)
+        head = f"{country} re \"{pref.strip()}\"" if show_q else f"{country} answered"
+        return f"{head}: {opts}"
+    s = graph.entity_text.get(nid) or graph.id_to_entity[nid]
+    if width and len(s) > width:
+        return s[: width - 1] + "…"
+    return s
+
+
+# ---------------------------------------------------------------------------
 # Prompt injection
 # ---------------------------------------------------------------------------
 def format_for_prompt(forks: list[ScoredFork], graph, width: int = 90) -> str:
@@ -362,22 +395,21 @@ def _main():
     forks = scout(args.question, graph, h_all, text_feat, manifold,
                   cfg=cfg, anchor_fn=anchor_fn)
 
-    def label(nid: int, width: int = 30) -> str:
-        s = graph.entity_text.get(nid) or graph.id_to_entity[nid]
-        s = s.split(",")[0].strip()
-        return s if len(s) <= width else s[: width - 1] + "…"
-
     print(f"Q: {args.question}")
     if not forks:
         print("no forks passed the relevance gate — lower --tau or add --anchors")
         return
     print(f"top {len(forks)} forks (score = rel^{cfg.alpha} * W, tau={cfg.tau}):")
     for f in forks:
-        print(f"  [{f.anchor}] {label(f.anchor)}: "
-              f"{label(f.branch_a, 22)} <-> {label(f.branch_b, 22)}  "
-              f"score={f.score:.3f}  W={f.w:.3f}  rel={f.relevance:.3f}")
-        for na, nb, c in f.top_pairs:
-            print(f"      drives: {label(na, 34)} <-> {label(nb, 34)}")
+        print(f"\n[{f.anchor}] anchor: {describe_node(graph, f.anchor, 0)}")
+        print(f"  branch A: {describe_node(graph, f.branch_a, 0)}")
+        print(f"  branch B: {describe_node(graph, f.branch_b, 0)}")
+        print(f"  score={f.score:.3f}  W={f.w:.3f}  rel={f.relevance:.3f}")
+        if f.top_pairs:
+            print("  drivers:")
+            for na, nb, c in f.top_pairs:
+                print(f"    A: {describe_node(graph, na, 0, show_q=True)}")
+                print(f"    B: {describe_node(graph, nb, 0, show_q=True)}")
     if args.prompt:
         print("\n" + format_for_prompt(forks, graph))
 

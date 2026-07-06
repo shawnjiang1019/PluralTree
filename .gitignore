@@ -7,3 +7,4 @@ __pycache__/
 # Raw datasets are fetched, not committed (too large; see scripts/get_*.py)
 data/grailqa/
 *.pt
+CLAUDE.md
