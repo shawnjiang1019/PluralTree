@@ -36,6 +36,8 @@ def load_questions(split: str = "full") -> list[tuple[int, str]]:
 def main():
     ap = argparse.ArgumentParser(description="OvertonBench answer generation")
     ap.add_argument("--embeddings", required=True, help=".pt of h_all on the ball")
+    ap.add_argument("--dataset", choices=["globalopinionqa", "opinionqa"],
+                    default="globalopinionqa")
     ap.add_argument("--curvature", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--text_feat", default=None)
@@ -51,7 +53,6 @@ def main():
 
     import torch
     from pluraltree.manifolds.poincare import PoincareBall
-    from data.globalopinionqa import load_globalopinionqa
     from retrieval.answer import CONDITIONS, answer
     from retrieval.scout import embed_question, load_or_compute_text_feat
 
@@ -60,12 +61,17 @@ def main():
     if unknown:
         ap.error(f"unknown conditions {unknown}; choose from {sorted(CONDITIONS)}")
 
-    graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+    if args.dataset == "opinionqa":
+        from data.opinionqa import load_opinionqa
+        graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
+    else:
+        from data.globalopinionqa import load_globalopinionqa
+        graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
     h_all = torch.load(args.embeddings, map_location="cpu")
     if not isinstance(h_all, torch.Tensor):
         h_all = h_all["h_all"]
     manifold = PoincareBall(c=args.curvature)
-    text_feat = load_or_compute_text_feat(graph, "globalopinionqa", args.text_feat)
+    text_feat = load_or_compute_text_feat(graph, args.dataset, args.text_feat)
 
     questions = load_questions(args.split)
     if args.max_questions:

@@ -273,10 +273,15 @@ def describe_node(graph, nid: int, width: int = 120, show_q: bool = False) -> st
     dist = getattr(graph, "opinion_dist", {}).get(nid)
     if texts and dist:
         pref = _opinion_prefix(texts)
-        country = graph.id_to_entity[nid].split("_", 2)[-1]
+        name = graph.id_to_entity[nid]
+        if name.startswith("op:"):                   # opinionqa: op:{qkey}:{attr}:{group}
+            _, attr, group = name.rsplit(":", 2)
+            who = f"{group} ({attr})"
+        else:                                        # goqa: op_{row}_{country}
+            who = name.split("_", 2)[-1]
         opts = ", ".join(f"\"{t[len(pref):].strip()}\" {p:.0%}"
                          for t, p in zip(texts, dist) if p >= 0.05)
-        head = f"{country} re \"{pref.strip()}\"" if show_q else f"{country} answered"
+        head = f"{who} re \"{pref.strip()}\"" if show_q else f"{who} answered"
         return f"{head}: {opts}"
     s = graph.entity_text.get(nid) or graph.id_to_entity[nid]
     if width and len(s) > width:
@@ -314,7 +319,7 @@ def load_or_compute_text_feat(graph, dataset: str, path: str | None) -> Tensor:
 
     if path and os.path.exists(path):
         return torch.load(path, map_location="cpu")
-    if dataset == "globalopinionqa":
+    if dataset in ("globalopinionqa", "opinionqa"):
         from data.globalopinionqa import compute_features
         feat = compute_features(graph).cpu()
     else:
@@ -338,7 +343,7 @@ def _main():
     ap = argparse.ArgumentParser(description="One-shot relevant+divergent fork scout")
     ap.add_argument("--embeddings", required=True, help=".pt of h_all on the ball")
     ap.add_argument("--dataset", choices=["wn18rr", "culturalbench",
-                                          "globalopinionqa", "grailqa"],
+                                          "globalopinionqa", "grailqa", "opinionqa"],
                     default="globalopinionqa")
     ap.add_argument("--data_dir", default="data/wn18rr")
     ap.add_argument("--curvature", type=float, default=0.5)
@@ -367,6 +372,9 @@ def _main():
     elif args.dataset == "grailqa":
         from data.grailqa import load_grailqa
         graph = load_grailqa(split_seed=args.seed, leakage_safe=True)
+    elif args.dataset == "opinionqa":
+        from data.opinionqa import load_opinionqa
+        graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
     else:
         from data.culturalbench import load_culturalbench
         graph = load_culturalbench(split_seed=args.seed, leakage_safe=True)

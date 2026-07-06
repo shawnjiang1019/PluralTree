@@ -126,6 +126,8 @@ def _main():
     ap.add_argument("--question", required=True)
     ap.add_argument("--condition", choices=sorted(CONDITIONS), default="scout")
     ap.add_argument("--embeddings", default=None, help=".pt of h_all on the ball")
+    ap.add_argument("--dataset", choices=["globalopinionqa", "opinionqa"],
+                    default="globalopinionqa")
     ap.add_argument("--curvature", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--text_feat", default=None)
@@ -149,15 +151,19 @@ def _main():
     if args.condition != "baseline":
         import torch
         from pluraltree.manifolds.poincare import PoincareBall
-        from data.globalopinionqa import load_globalopinionqa
         from retrieval.scout import load_or_compute_text_feat
 
-        graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+        if args.dataset == "opinionqa":
+            from data.opinionqa import load_opinionqa
+            graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
+        else:
+            from data.globalopinionqa import load_globalopinionqa
+            graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
         h_all = torch.load(args.embeddings, map_location="cpu")
         if not isinstance(h_all, torch.Tensor):
             h_all = h_all["h_all"]
         manifold = PoincareBall(c=args.curvature)
-        text_feat = load_or_compute_text_feat(graph, "globalopinionqa", args.text_feat)
+        text_feat = load_or_compute_text_feat(graph, args.dataset, args.text_feat)
 
     print(answer(args.question, args.condition, graph=graph, h_all=h_all,
                  text_feat=text_feat, manifold=manifold, base_url=args.base_url,
