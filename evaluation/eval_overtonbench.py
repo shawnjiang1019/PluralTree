@@ -44,6 +44,9 @@ def main():
     ap.add_argument("--base_url", default="http://localhost:8000/v1")
     ap.add_argument("--model", required=True)
     ap.add_argument("--conditions", default="baseline,scout,div_only")
+    ap.add_argument("--tau", type=float, default=None,
+                    help="override the scout condition's relevance gate "
+                         "(GOQA cross-domain rel ceiling is ~0.14 — use ~0.1)")
     ap.add_argument("--split", default="full")
     ap.add_argument("--max_questions", type=int, default=0, help="0 = all")
     ap.add_argument("--out", default="overton_responses.jsonl")
@@ -54,7 +57,7 @@ def main():
     import torch
     from pluraltree.manifolds.poincare import PoincareBall
     from retrieval.answer import CONDITIONS, answer
-    from retrieval.scout import embed_question, load_or_compute_text_feat
+    from retrieval.scout import ScoutConfig, embed_question, load_or_compute_text_feat
 
     conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
     unknown = [c for c in conditions if c not in CONDITIONS]
@@ -93,10 +96,13 @@ def main():
             for cond in conditions:
                 if (qid, cond) in done:
                     continue
+                cfg = None
+                if cond == "scout" and args.tau is not None:
+                    cfg = ScoutConfig(tau=args.tau, alpha=CONDITIONS["scout"].alpha)
                 resp = answer(question, cond, graph=graph, h_all=h_all,
                               text_feat=text_feat, manifold=manifold,
                               base_url=args.base_url, model=args.model,
-                              dry_run=args.dry_run, q_emb=q_emb)
+                              dry_run=args.dry_run, q_emb=q_emb, cfg=cfg)
                 f.write(json.dumps({"question_id": qid, "question": question,
                                     "condition": cond, "response": resp}) + "\n")
                 f.flush()
