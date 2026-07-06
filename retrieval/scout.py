@@ -75,12 +75,23 @@ class ScoredFork:
 # ---------------------------------------------------------------------------
 # Relevance (MiniLM text space)
 # ---------------------------------------------------------------------------
-def embed_question(question: str, model_name: str = MINILM) -> Tensor:
-    """(d,) MiniLM embedding of the question — same space as the node features."""
-    from sentence_transformers import SentenceTransformer
+_ENCODER_CACHE: dict = {}
 
-    model = SentenceTransformer(model_name)
-    return torch.as_tensor(model.encode(question, convert_to_numpy=True)).float()
+
+def embed_question(question: str, model_name: str = MINILM,
+                   device: str = "cpu") -> Tensor:
+    """(d,) MiniLM embedding of the question — same space as the node features.
+
+    CPU by default: this often runs on a node whose GPUs are filled by a
+    colocated vLLM server, and MiniLM on CPU is milliseconds per question.
+    The model is cached across calls (it was being re-loaded per question).
+    """
+    key = (model_name, device)
+    if key not in _ENCODER_CACHE:
+        from sentence_transformers import SentenceTransformer
+        _ENCODER_CACHE[key] = SentenceTransformer(model_name, device=device)
+    enc = _ENCODER_CACHE[key].encode(question, convert_to_numpy=True)
+    return torch.as_tensor(enc).float()
 
 
 def node_relevance(q_emb: Tensor, text_feat: Tensor) -> Tensor:

@@ -64,6 +64,11 @@ done
 curl -sf "http://localhost:${PORT}/health" > /dev/null \
     || { echo "vLLM never became healthy"; exit 1; }
 
+# The GPUs belong to the vLLM server (launched above, env already inherited).
+# Client stages talk to it over HTTP and must not touch CUDA themselves —
+# MiniLM OOMs if it lands on a GPU that is 95% Qwen.
+export CUDA_VISIBLE_DEVICES=""
+
 echo "=== stage 1: generate ==="
 python -m evaluation.eval_overtonbench \
     --embeddings "${EMB}" --text_feat "${FEATS}" --dataset "${DATASET}" \
