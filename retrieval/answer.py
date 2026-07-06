@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 
 from retrieval.scout import ScoredFork, ScoutConfig, describe_node, scout
@@ -35,14 +36,42 @@ BASELINE_INSTRUCTION = (
     "Answer the question thoughtfully and concisely."
 )
 
+# Think/answer separation: the retrieved forks may be off-topic, and an
+# instruction that FORCES them into the answer derails it (measured: coverage
+# 0.51 -> 0.06 on OvertonBench when GOQA forks were mandatory). The model
+# triages relevance inside <think>; only the <answer> span is shown/judged,
+# so irrelevant retrieval fails soft (~baseline) instead of catastrophically.
 PLURALISM_INSTRUCTION = (
-    "The context below contains divergent perspectives retrieved from a "
-    "knowledge graph of survey data. Different branches represent groups that "
-    "genuinely disagree. When answering: (1) represent each perspective "
-    "faithfully and specifically, (2) attribute claims to the group holding "
-    "them, (3) do NOT average the disagreement away into a consensus, "
-    "(4) where perspectives conflict, say so explicitly."
+    "You will see context retrieved from a knowledge graph of survey data, "
+    "followed by a question. The context may or may not be relevant to the "
+    "question.\n"
+    "First, inside <think></think> tags, assess which retrieved perspectives "
+    "(if any) actually bear on the question, and discard the irrelevant "
+    "ones.\n"
+    "Then, inside <answer></answer> tags, answer the question directly and "
+    "thoughtfully, covering the range of positions people genuinely hold on "
+    "it. If relevant perspectives were retrieved, represent them faithfully, "
+    "attribute them to the groups holding them, and do not average real "
+    "disagreement into a consensus. If none are relevant, ignore the context "
+    "entirely and answer as if it were not provided.\n"
+    "The reader sees ONLY what is inside the <answer> tags."
 )
+
+_ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def extract_answer(text: str) -> tuple[str, bool]:
+    """The <answer> span (what the reader/judge sees), and whether tags held.
+
+    Fallback when the model ignored the format: strip any <think> block and
+    return the rest, so a stray reasoning dump never reaches the judge whole.
+    """
+    m = _ANSWER_RE.search(text)
+    if m and m.group(1).strip():
+        return m.group(1).strip(), True
+    rest = _THINK_RE.sub("", text).strip()
+    return (rest or text.strip()), False
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +139,16 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
     messages = build_prompt(question, forks, graph)
     if dry_run:
         return "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
-    return chat(base_url, model, messages, temperature=0.7)
+    if not forks:
+        return chat(base_url, model, messages, temperature=0.7)
+    # Injected conditions think before answering — budget for both spans,
+    # then keep only the <answer> span (the judge must not see the triage).
+    text = chat(base_url, model, messages, temperature=0.7, max_tokens=2048)
+    ans, tagged = extract_answer(text)
+    if not tagged:
+        print(f"warning: missing <answer> tags — used stripped text for: "
+              f"{question[:60]}", file=sys.stderr)
+    return ans
 
 
 # ---------------------------------------------------------------------------

@@ -78,6 +78,8 @@ python -m evaluation.eval_overtonbench \
     || { echo "GENERATION FAILED (see .err)"; exit 1; }
 echo "fork fallbacks (scout answers that got the baseline prompt):"
 grep -c "scout returned 0 forks" logs/overton_eval_${SLURM_JOB_ID}.err || true
+echo "tag failures (injected answers missing <answer> tags):"
+grep -c "missing <answer> tags" logs/overton_eval_${SLURM_JOB_ID}.err || true
 
 echo "=== stage 2: judge ==="
 python -m evaluation.judge_overtonbench --score "${OUT}" \
