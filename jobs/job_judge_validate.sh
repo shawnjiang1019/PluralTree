@@ -19,7 +19,7 @@
 #   python -c "from datasets import load_dataset; load_dataset('elinorpd/overtonbench')"
 #   huggingface-cli download "$MODEL"
 
-module load python/3.11 gcc cuda/13.2 arrow/24.0.0
+module load python/3.11 gcc cuda/13.2 arrow/24.0.0 opencv/4.13.0
 source ~/pluraltree-env/bin/activate
 
 export HF_HOME="${HF_HOME:-$HOME/projects/def-enaskt/shawnj/hf_cache}"
