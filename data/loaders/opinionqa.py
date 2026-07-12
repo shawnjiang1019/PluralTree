@@ -8,6 +8,12 @@ answer distributions for 22 US subpopulations across 8 demographic attributes
 NOTE: the HF dataset is GATED (CC-BY-NC-SA). Accept the terms on the dataset
 page with your HF account, then ``huggingface-cli login`` before first load.
 
+OFFLINE ALTERNATIVE (no HF gate): the raw OpinionQA CodaLab release. Point
+``data_dir=`` (or the ``OPINIONQA_DIR`` env var) at its ``human_resp/`` folder
+and the same subgroup distributions are derived directly from the Pew ATP wave
+CSVs (post-stratification-weighted, Refused excluded) — see ``parse_atp_dir``.
+Everything downstream (clustering, graph, features) is identical.
+
 GOQA's World->Region->Country tree is only depth 4; here we mint topic layers
 by clustering question embeddings so the hierarchy is deep enough for the
 geometry (rho/abstraction) and for multi-level forks:
@@ -33,6 +39,7 @@ Relations:
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 from dataclasses import dataclass
 
@@ -95,6 +102,89 @@ def parse_records(rows) -> list[dict]:
                     "attribute": str(attr), "group": str(group), "dist": probs})
     if skipped:
         print(f"  OpinionQA: skipped {skipped} malformed rows")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Raw ATP parsing (offline path: the OpinionQA CodaLab `human_resp/` release)
+# ---------------------------------------------------------------------------
+def _atp_options(info_row) -> list[str] | None:
+    """Ordered answer options from an info.csv row, Refused (code >= 90) dropped."""
+    import ast
+
+    try:
+        mapping = ast.literal_eval(str(info_row["option_mapping"]))
+    except (ValueError, SyntaxError):
+        return None
+    opts = [str(v) for k, v in sorted(mapping.items()) if float(k) < 90]
+    return opts or None
+
+
+def parse_atp_dir(data_dir: str, attributes: list[str] | None = None,
+                  min_group: int = 100) -> list[dict]:
+    """SubPOP-format records derived from the raw Pew ATP wave CSVs.
+
+    ``data_dir`` is the ``human_resp/`` folder of the OpinionQA CodaLab
+    release: one folder per wave with ``info.csv`` (question text + option
+    mapping), ``metadata.csv`` (demographic attribute keys), ``responses.csv``
+    (one row per respondent; answers as option strings + a WEIGHT_Wxx column).
+
+    Distribution = post-stratification-weighted option counts per
+    (question, attribute, group); Refused excluded; groups with fewer than
+    ``min_group`` respondents on a question are dropped (too noisy).
+    Produces the same record dicts as ``parse_records``, so the graph built
+    from either source is structurally identical.
+    """
+    import glob
+
+    import pandas as pd
+
+    want = {a.upper() for a in attributes} if attributes else None
+    out: list[dict] = []
+    waves = sorted(w for w in glob.glob(os.path.join(data_dir, "*"))
+                   if os.path.isfile(os.path.join(w, "responses.csv")))
+    if not waves:
+        raise FileNotFoundError(f"no ATP wave folders with responses.csv under {data_dir}")
+
+    for wdir in waves:
+        info = pd.read_csv(os.path.join(wdir, "info.csv"))
+        md = pd.read_csv(os.path.join(wdir, "metadata.csv"))
+        resp = pd.read_csv(os.path.join(wdir, "responses.csv"), low_memory=False)
+        wcols = [c for c in resp.columns if c.startswith("WEIGHT")]
+        weight = resp[wcols[0]] if wcols else pd.Series(1.0, index=resp.index)
+        attrs = [str(k) for k in md["key"]
+                 if str(k) in resp.columns and (want is None or str(k).upper() in want)]
+
+        for _, row in info.iterrows():
+            qkey, q = str(row["key"]), str(row["question"]).strip()
+            if not q or qkey not in resp.columns:
+                continue
+            options = _atp_options(row)
+            if not options:
+                continue
+            answered = pd.DataFrame({"a": resp[qkey], "w": weight})
+            for attr in attrs:
+                sub = answered.assign(g=resp[attr]).dropna()
+                sub = sub[sub["a"].isin(options)]
+                for group, gdf in sub.groupby("g"):
+                    if str(group).lower().startswith(("refused", "don't know", "dk")):
+                        continue                     # refusal is not a subpopulation
+                    if len(gdf) < min_group:
+                        continue
+                    cnt = gdf.groupby("a")["w"].sum()
+                    probs = [float(cnt.get(o, 0.0)) for o in options]
+                    total = sum(probs)
+                    if total <= 0:
+                        continue
+                    out.append({"qkey": qkey, "question": q, "options": options,
+                                "attribute": attr, "group": str(group),
+                                "dist": [p / total for p in probs]})
+        print(f"  ATP {os.path.basename(wdir)}: cumulative {len(out)} records")
+
+    n_q = len({r['qkey'] for r in out})
+    n_grp = len({(r['attribute'], r['group']) for r in out})
+    print(f"  OpinionQA/ATP: {len(out)} records — {n_q} questions, "
+          f"{n_grp} (attribute, group) subpopulations, min_group={min_group}")
     return out
 
 
@@ -309,20 +399,29 @@ def load_opinionqa(
     k_subtopics: int = 4,
     attributes: list[str] | None = None,
     model_name: str = "all-MiniLM-L6-v2",
+    data_dir: str | None = None,
 ) -> OpinionQAGraph:
     """Load SubPOP from HF (gated — accept terms + huggingface-cli login first).
 
     ``attributes`` optionally restricts to a subset of demographic axes
     (e.g. ["POLIDEOLOGY", "POLPARTY"]).
-    """
-    from datasets import load_dataset
 
-    ds = load_dataset("jjssuh/subpop", split=hf_split)
-    records = parse_records(dict(r) for r in ds)
-    if attributes:
-        want = {a.lower() for a in attributes}
-        records = [r for r in records if r["attribute"].lower() in want]
-        print(f"  OpinionQA: kept {len(records)} records for attributes {sorted(want)}")
+    ``data_dir`` (or the ``OPINIONQA_DIR`` env var) switches to the offline
+    raw-ATP path: point it at the CodaLab release's ``human_resp/`` folder and
+    no HF access is needed (see ``parse_atp_dir``).
+    """
+    data_dir = data_dir or os.environ.get("OPINIONQA_DIR")
+    if data_dir:
+        records = parse_atp_dir(data_dir, attributes=attributes)
+    else:
+        from datasets import load_dataset
+
+        ds = load_dataset("jjssuh/subpop", split=hf_split)
+        records = parse_records(dict(r) for r in ds)
+        if attributes:
+            want = {a.lower() for a in attributes}
+            records = [r for r in records if r["attribute"].lower() in want]
+            print(f"  OpinionQA: kept {len(records)} records for attributes {sorted(want)}")
 
     # Cluster once per unique question, then map assignments back by qkey.
     qkeys, qtexts = [], []
