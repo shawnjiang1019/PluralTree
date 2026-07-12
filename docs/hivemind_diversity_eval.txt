@@ -1,0 +1,116 @@
+PLURALTREE — HIVEMIND OUTPUT-DIVERSITY EVAL
+===========================================
+
+Eval target: the "Artificial Hivemind" mode-collapse setup (Jiang et al., INFINITY-CHAT,
+NeurIPS 2025). We sample N responses per open-ended query and measure how much the pool
+spreads across distinct modes, per generation condition (baseline vs scout vs div_only).
+This is a diversity metric that needs NO graph and NO gold answer — the graph-free baseline
+alone reproduces the paper's finding with our own generator; injected conditions test
+whether retrieved divergence lowers collapse.
+
+Pipeline:
+  data/loaders/infinity_chat.py          load open-ended queries (gated HF; tolerant fields)
+  evaluation/hivemind/generate_hivemind  N samples / (query, condition) at top-p=0.9, T=1.0
+  evaluation/hivemind/diversity_metrics  the diversity panel (this doc)
+  jobs/eval/job_hivemind_diversity.sh    vLLM serve -> generate -> metrics
+
+
+1. WHAT WE MEASURE
+------------------
+A pool = the N responses one model gives to one query. Mode collapse => the pool
+concentrates on one mode => high pairwise self-similarity / few effective modes. We report
+this per condition; the baseline-vs-condition DELTA is the claim, not the absolute value.
+
+
+2. TWO DIVERSITY NOTIONS — KEEP THEM SEPARATE
+---------------------------------------------
+INTRINSIC graph divergence (evaluation/intrinsic/branch_divergence.py): Wasserstein over
+child-subtree EMBEDDINGS. This is the RETRIEVAL-side signal — how the scout finds divergent
+forks in the tree.
+
+EXTRINSIC output diversity (this eval): self-similarity of GENERATED TEXT pools. This is the
+EVAL-side signal — did the generator's behavior actually diversify.
+
+These must not be conflated. The intrinsic Wasserstein machinery must NOT be reused as the
+eval metric (it would measure the retrieval signal against itself).
+
+
+3. CORE PRINCIPLE — EVALUATION INDEPENDENCE
+-------------------------------------------
+The scout retrieves by MiniLM cosine relevance (retrieval/scout.py node_relevance). If the
+eval also scored diversity with MiniLM, retrieval and measurement would share one geometry,
+and a "diversity gain" could be an artifact of that encoder. Two guards:
+
+  (a) Semantic axis uses a HELD-OUT embedder, distinct from MiniLM:
+      default BAAI/bge-large-en-v1.5 (335M, 1024-d), configurable via --eval_model.
+      MiniLM stays scout-only.
+  (b) Lexical axis uses NO learned model at all. If semantic (held-out) and lexical axes
+      agree in direction, the gain is real; a large disagreement flags an encoder artifact.
+
+
+4. THE PANEL — THREE AXES (report all)
+--------------------------------------
+SEMANTIC (held-out embedder):
+  mean_cos          mean upper-triangle cosine of the pool (paper Fig-4 metric). LOWER=diverse.
+  pct_pairs_gt80/70 fraction of pairs above the collapse threshold. LOWER=diverse.
+  vendi             exp(entropy of the cosine-Gram spectrum) = EFFECTIVE NUMBER OF MODES.
+                    Threshold-free headline. 1.0 = full collapse (one mode), N = all distinct.
+                    HIGHER=diverse. (numpy.linalg.eigvalsh; no new deps.)
+
+LEXICAL (surface, embedder-free -> zero circularity):
+  distinct_2/3      unique n-grams / total n-grams over the pool. HIGHER=diverse.
+  inv_self_bleu     1 - mean(self-BLEU); self-BLEU = each response's BLEU vs the rest
+                    (Zhu et al. 2018). HIGHER=diverse. Pool capped at 30 for the O(N^2) cost.
+
+Direction is encoded in METRIC_DIR so paired win/loss counting reads "condition improved?"
+uniformly across axes.
+
+
+5. QUALITY GUARDRAIL (anti-gaming)
+----------------------------------
+Diversity is trivially maximized by incoherent text — and truncation/tag-failure already
+confounded OvertonBench. So BEFORE scoring, degeneracy_filter drops:
+  - empty / near-empty samples (< 3 chars)
+  - token-degenerate samples: len>=12 tokens AND type/token ratio < 0.1 (a single token
+    looped — the classic truncation artifact).
+frac_dropped is carried per pool. Diversity is only meaningful at fixed quality; a
+judge-based per-pool quality scalar (matched-quality reporting) is DEFERRED to a later pass
+and attaches to these same rows.
+
+
+6. AGGREGATION & STATISTICS
+---------------------------
+  - Per-query panel -> mean over queries per condition (matches the paper).
+  - Per-category x condition Vendi table, sliced by the INFINITY-CHAT taxonomy label
+    (threaded through generate_hivemind.py as `category`) — tests the paper's claim that
+    Brainstorm & Ideation collapses most, and where injection helps most.
+  - Paired significance: per-query baseline-vs-condition deltas + two-sided SIGN TEST
+    (wins/losses over shared queries), same style as the OvertonBench paired-delta report.
+    A mean shift without a paired test is not evidence.
+
+Interpretation anchors: random-pair pool similarity ~ 0.1-0.2 (paper's fully-diverse floor);
+full collapse = mean_cos 1.0 / vendi 1.0.
+
+
+7. CAVEATS
+----------
+  - Held-out bge-large != the paper's text-embedding-3-small, so absolute cosine differs
+    from their 0.8 headline. Only the baseline-vs-condition delta is comparable across our
+    own runs — which is what the claim rests on.
+  - On creative queries an opinion-domain graph yields off-topic forks (triaged out ->
+    scout ~ baseline). The clean result here is the graph-free BASELINE collapse; injection
+    only moves the metric when the graph domain overlaps the queries.
+
+
+8. COMMANDS
+-----------
+Prereq (login node, once): pre-download the eval embedder into HF_HOME:
+  huggingface-cli download BAAI/bge-large-en-v1.5
+
+Smoke (graph-free baseline):
+  NQ=5 NS=8 CONDS=baseline sbatch jobs/eval/job_hivemind_diversity.sh
+Full (all conditions):
+  sbatch jobs/eval/job_hivemind_diversity.sh
+Metrics only (on an existing generations JSONL):
+  python -m evaluation.hivemind.diversity_metrics hivemind_gen.jsonl \
+      --out hivemind_diversity.csv --eval_model BAAI/bge-large-en-v1.5

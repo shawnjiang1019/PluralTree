@@ -15,10 +15,14 @@
 # Smoke test:  NQ=5 NS=8 CONDS=baseline sbatch jobs/eval/job_hivemind_diversity.sh
 # Baseline:    CONDS=baseline sbatch jobs/eval/job_hivemind_diversity.sh
 # Full:        sbatch jobs/eval/job_hivemind_diversity.sh   (100 q x 50 x 3 conds)
-# Knobs: MODEL, CONDS, NS(samples), NQ(queries), EMB, FEATS, DATASET, TAU, TP
+# Knobs: MODEL, CONDS, NS(samples), NQ(queries), EMB, FEATS, DATASET, TAU, TP, EVAL_MODEL
 #
 # Generation is resumable: rerunning tops each (query,condition) pool back up to
 # NS samples, so a timeout just needs a resubmit.
+#
+# Prereq (login node, once): the held-out eval embedder must be in HF_HOME —
+#   huggingface-cli download BAAI/bge-large-en-v1.5
+# (distinct from the scout's MiniLM to keep the eval independent of retrieval).
 
 module load python/3.11 gcc cuda/13.2 arrow/24.0.0 opencv/4.13.0
 source ~/pluraltree-env/bin/activate
@@ -42,6 +46,7 @@ FEATS="${FEATS:-feats_opinionqa.pt}"
 DATASET="${DATASET:-opinionqa}"
 GEN="${GEN:-hivemind_gen.jsonl}"
 DIV="${DIV:-hivemind_diversity.csv}"
+EVAL_MODEL="${EVAL_MODEL:-BAAI/bge-large-en-v1.5}"   # held-out eval embedder (NOT MiniLM)
 PORT="${PORT:-8000}"
 TP="${TP:-4}"
 VLLM="${VLLM:-vllm}"
@@ -84,6 +89,7 @@ grep -c "0 forks" logs/hivemind_div_${SLURM_JOB_ID}.err || true
 
 echo "=== stage 2: diversity metrics ==="
 python -m evaluation.hivemind.diversity_metrics "${GEN}" --out "${DIV}" \
+    --eval_model "${EVAL_MODEL}" \
     || { echo "METRICS FAILED (see .err)"; exit 1; }
 
 echo "Done. Generations: ${GEN}  Diversity: ${DIV}"
