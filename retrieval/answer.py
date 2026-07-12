@@ -60,6 +60,8 @@ PLURALISM_INSTRUCTION = (
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 _ANSWER_OPEN_RE = re.compile(r"<answer>(.*)", re.DOTALL | re.IGNORECASE)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_SPAN_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think>(.*?)(?:<answer>|$)", re.DOTALL | re.IGNORECASE)
 
 
 def extract_answer(text: str) -> tuple[str, bool]:
@@ -79,6 +81,20 @@ def extract_answer(text: str) -> tuple[str, bool]:
     rest = _THINK_RE.sub("", text)
     rest = re.sub(r"</?(answer|think)>", "", rest, flags=re.IGNORECASE).strip()
     return (rest or text.strip()), False
+
+
+def extract_think(text: str) -> str:
+    """The <think> span — the model's relevance-triage trace ('' if none).
+
+    An unclosed <think> (generation truncated, or the model jumped straight to
+    <answer> without closing) still yields the reasoning up to <answer>/EOS, so
+    traces stay observable even for malformed generations.
+    """
+    m = _THINK_SPAN_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    m = _THINK_OPEN_RE.search(text)
+    return m.group(1).strip() if m else ""
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +133,17 @@ def fork_context(fork: ScoredFork, graph, k: int = 1) -> str:
     return "\n".join(lines)
 
 
+def forks_to_context(forks: list[ScoredFork], graph) -> str:
+    """All fork blocks joined — exactly the context string the LLM sees."""
+    return "\n\n".join(fork_context(f, graph, k) for k, f in enumerate(forks, 1))
+
+
 def build_prompt(question: str, forks: list[ScoredFork] | None, graph) -> list[dict]:
     """Chat messages: pluralism instruction + fork blocks + question (last)."""
     if not forks:
         return [{"role": "system", "content": BASELINE_INSTRUCTION},
                 {"role": "user", "content": question}]
-    ctx = "\n\n".join(fork_context(f, graph, k) for k, f in enumerate(forks, 1))
+    ctx = forks_to_context(forks, graph)
     return [{"role": "system", "content": PLURALISM_INSTRUCTION},
             {"role": "user", "content": ctx + "\n\nQuestion: " + question}]
 
@@ -130,12 +151,21 @@ def build_prompt(question: str, forks: list[ScoredFork] | None, graph) -> list[d
 def answer(question: str, condition: str, *, graph=None, h_all=None,
            text_feat=None, manifold=None, base_url: str = "",
            model: str = "", dry_run: bool = False, q_emb=None,
-           cfg: ScoutConfig | None = None, with_raw: bool = False):
+           cfg: ScoutConfig | None = None, with_raw: bool = False,
+           with_trace: bool = False):
     """Generate one answer under a condition; returns the prompt if dry_run.
 
     ``cfg`` overrides the condition's ScoutConfig (e.g. a recalibrated tau).
     ``with_raw=True`` returns ``(answer, raw_generation)`` so the <think>
     triage trace is inspectable (raw == answer when there was no tagging).
+    ``with_trace=True`` (supersedes with_raw) returns ``(answer, trace)`` with
+    the COMPLETE reasoning record for the row::
+
+        {"raw": full generation, "think": extracted <think> span,
+         "fork_context": the injected fork blocks ('' for baseline/no-forks),
+         "n_forks": how many forks were injected}
+
+    so retrieval -> triage -> answer is observable end to end.
     """
     import sys
 
@@ -148,12 +178,20 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             print(f"warning: scout returned 0 forks (tau={cfg.tau}) — "
                   f"baseline prompt used for: {question[:60]}", file=sys.stderr)
     messages = build_prompt(question, forks, graph)
+    ctx = forks_to_context(forks, graph) if forks else ""
+
+    def _pack(ans: str, raw: str):
+        if with_trace:
+            return ans, {"raw": raw, "think": extract_think(raw),
+                         "fork_context": ctx, "n_forks": len(forks or [])}
+        return (ans, raw) if with_raw else ans
+
     if dry_run:
         prompt = "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
-        return (prompt, prompt) if with_raw else prompt
+        return _pack(prompt, prompt)
     if not forks:
         text = chat(base_url, model, messages, temperature=0.7)
-        return (text, text) if with_raw else text
+        return _pack(text, text)
     # Injected conditions think before answering — budget for both spans,
     # then keep only the <answer> span (the judge must not see the triage).
     # 4096: at 2048, ~58% of answers lost their closing tag to the token cap.
@@ -162,7 +200,7 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
     if not tagged:
         print(f"warning: missing <answer> tags — used stripped text for: "
               f"{question[:60]}", file=sys.stderr)
-    return (ans, text) if with_raw else ans
+    return _pack(ans, text)
 
 
 # ---------------------------------------------------------------------------

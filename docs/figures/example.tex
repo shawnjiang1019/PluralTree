@@ -1,0 +1,112 @@
+% PluralTree worked example: a retrieved SUBTREE (anchor + attributed branches,
+% the divergent fork highlighted) and how that fork is INJECTED into the reasoner.
+% Compile:  pdflatex example.tex
+\documentclass[border=12pt]{standalone}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usetikzlibrary{positioning,arrows.meta,calc,fit,backgrounds}
+
+\begin{document}
+\colorlet{enc}{teal}
+\colorlet{rsn}{violet}
+\colorlet{sct}{orange!90!black}
+\colorlet{grpA}{blue!55!cyan}
+\colorlet{grpB}{red!70!orange}
+\colorlet{grpN}{black!45}
+
+% opinion bar: (cx)(cy)(family-care fraction). teal = family, orange = prof./state.
+\newcommand{\opbar}[3]{%
+  \fill[teal!60!black]   (#1-0.9,#2-0.075) rectangle (#1-0.9+1.8*#3,#2+0.075);
+  \fill[orange!75!black] (#1-0.9+1.8*#3,#2-0.075) rectangle (#1+0.9,#2+0.075);
+  \draw[black!45,line width=.4pt] (#1-0.9,#2-0.075) rectangle (#1+0.9,#2+0.075);
+}
+% leaf frame: (name)(cx)(cy)(colour)(line width)
+\newcommand{\leafbox}[5]{%
+  \node[rounded corners=3pt, draw=#4, line width=#5, fill=#4!7,
+        minimum width=28mm, minimum height=18mm] (#1) at (#2,#3) {};
+}
+
+\begin{tikzpicture}[
+  font=\small,
+  >={Stealth[length=2.4mm]},
+  io/.style={rounded corners=9pt, draw=black!55, fill=black!4, line width=.7pt,
+             align=center, inner sep=5pt, text width=54mm},
+  anc/.style={rounded corners=3pt, draw=enc!65, fill=enc!8, line width=.7pt,
+              align=center, inner sep=4pt, text width=48mm, font=\footnotesize},
+  rbox/.style={rounded corners=3pt, draw=rsn!70, fill=rsn!7, line width=.7pt,
+               align=left, inner sep=5pt, text width=54mm, font=\scriptsize},
+  flow/.style={->, line width=1pt, draw=black!75},
+  note/.style={font=\scriptsize\itshape, text=black!60},
+  lbl/.style={rounded corners=2.5pt, draw=#1!65, fill=#1!14, line width=.6pt,
+              font=\scriptsize, inner sep=3pt, align=center},
+]
+
+%======================= PANEL 1 : retrieved subtree =======================
+\node[io] (Q) at (0,3.3)
+  {\textbf{Open-ended question}\\[1pt]\itshape ``How should aging parents be cared for?''};
+\node[anc] (anchor) at (0,1.4)
+  {\textbf{subtree anchor}\ \ (rel $=0.68$)\\ eldercare responsibility};
+
+% three attributed branches; the fork = the two most divergent (highlighted)
+\leafbox{Lc}{-3.0}{-1.1}{grpA}{1.1pt}
+\node[font=\scriptsize] at (-3.0,-0.6) {\textbf{collectivist}};
+\opbar{-3.0}{-1.1}{0.80}
+\node[font=\tiny] at (-3.0,-1.55) {80\% \emph{family care}};
+
+\leafbox{Ls}{0}{-1.1}{grpN}{.6pt}
+\node[font=\scriptsize,text=black!60] at (0,-0.6) {\textbf{state-funded}};
+\opbar{0}{-1.1}{0.35}
+\node[font=\tiny,text=black!55] at (0,-1.55) {35\% \emph{family care}};
+
+\leafbox{Li}{3.0}{-1.1}{grpB}{1.1pt}
+\node[font=\scriptsize] at (3.0,-0.6) {\textbf{individualist}};
+\opbar{3.0}{-1.1}{0.20}
+\node[font=\tiny] at (3.0,-1.55) {20\% \emph{family care}};
+
+\draw[flow] (Q) -- (anchor);
+\draw[enc!70,line width=.9pt,->]  (anchor.south) -- (Lc.north);
+\draw[black!45,line width=.7pt,->] (anchor.south) -- (Ls.north);
+\draw[enc!70,line width=.9pt,->]  (anchor.south) -- (Li.north);
+
+% scout's top fork = the two most divergent branches
+\draw[<->, sct, line width=1pt] (Lc.south) to[bend right=28] (Li.south);
+\node[lbl=sct] (forklbl) at (0,-2.65) {top fork\ \ ($\max W$)};
+
+%===================== PANEL 2 : injected into the reasoner =====================
+\node[rbox] (ctx) at (9.5,2.6)
+  {\textbf{Injected context}\ \ (top fork)\\[2pt]
+   eldercare $\to$ \textbf{collectivist}:\\ \hspace*{2mm}co-reside; filial duty\\
+   eldercare $\to$ \textbf{individualist}:\\ \hspace*{2mm}professional care; autonomy\\
+   \textbf{Q:} How should aging parents be cared for?};
+\node[rbox] (llm) at (9.5,-0.4)
+  {\textbf{Frozen LLM (reasoner)}\\[2pt]
+   \texttt{<think>} both branches on-topic\\ and divergent $\to$ represent both\\
+   \texttt{<answer>} $\ldots$};
+\node[rbox] (ans) at (9.5,-2.9)
+  {\textbf{Pluralistic answer}\\[2pt]
+   \itshape ``Culturally shaped: collectivist traditions favour family co-residence out of
+   filial duty; individualist ones prefer professional care for autonomy --- both are valid.''};
+
+% serialize + inject the fork subtree
+\draw[flow] (Li.east) -- (5.6,-1.1) |- (ctx.west);
+\node[lbl=rsn, align=center, text width=13mm] at (5.6,0.8) {inject top fork};  % arrow passes through
+\draw[flow] (ctx) -- (llm);
+\draw[flow] (llm) -- (ans);
+
+%============================ panel containers ============================
+\begin{scope}[on background layer]
+  \node[draw=enc!45, fill=enc!4, rounded corners=6pt, inner sep=10pt,
+        fit=(Q)(anchor)(Lc)(Ls)(Li)(forklbl)] (BoxL) {};
+  \node[draw=rsn!45, fill=rsn!4, rounded corners=6pt, inner sep=10pt,
+        fit=(ctx)(llm)(ans)] (BoxR) {};
+\end{scope}
+\node[anchor=south west, font=\bfseries\footnotesize, text=enc!45!black] at (BoxL.north west) {1\,\textbullet\,Retrieved subtree};
+\node[anchor=south west, font=\bfseries\footnotesize, text=rsn!55!black] at (BoxR.north west) {2\,\textbullet\,Injected into reasoner};
+
+% legend for the opinion bars
+\node[note, anchor=north west] at (BoxL.south west)
+  {\tikz{\fill[teal!60!black](0,0)rectangle(.24,.14);}\, family care\ \
+   \tikz{\fill[orange!75!black](0,0)rectangle(.24,.14);}\, professional / state};
+
+\end{tikzpicture}
+\end{document}

@@ -2,7 +2,10 @@
 
 Pulls the 60 unique questions from HF ``elinorpd/overtonbench``, generates one
 answer per (question, condition) with retrieval/answer.py, and writes a JSONL
-of ``{question_id, question, condition, response}`` for judging by
+of ``{question_id, question, condition, response, raw, think, fork_context,
+n_forks}`` — 'response' is what the judge scores; the remaining fields are the
+complete reasoning trace (what the scout injected, how the model triaged it in
+<think>, and the untruncated generation) for post-hoc analysis. Judged by
 evaluation/judge_overtonbench.py. See docs/overtonbench_eval.txt.
 
 Usage (needs a vLLM/OpenAI-compatible endpoint serving the generator):
@@ -99,16 +102,20 @@ def main():
                 cfg = None
                 if cond == "scout" and args.tau is not None:
                     cfg = ScoutConfig(tau=args.tau, alpha=CONDITIONS["scout"].alpha)
-                resp, raw = answer(question, cond, graph=graph, h_all=h_all,
-                                   text_feat=text_feat, manifold=manifold,
-                                   base_url=args.base_url, model=args.model,
-                                   dry_run=args.dry_run, q_emb=q_emb, cfg=cfg,
-                                   with_raw=True)
-                # 'raw' keeps the <think> triage trace for inspection; the
-                # judge reads only 'response'.
+                resp, trace = answer(question, cond, graph=graph, h_all=h_all,
+                                     text_feat=text_feat, manifold=manifold,
+                                     base_url=args.base_url, model=args.model,
+                                     dry_run=args.dry_run, q_emb=q_emb, cfg=cfg,
+                                     with_trace=True)
+                # Complete reasoning record per row — the judge reads only
+                # 'response'; the rest is for observing retrieval -> triage ->
+                # answer: 'fork_context' = what the scout injected, 'think' =
+                # how the model triaged it, 'raw' = the full generation.
                 f.write(json.dumps({"question_id": qid, "question": question,
                                     "condition": cond, "response": resp,
-                                    "raw": raw}) + "\n")
+                                    "raw": trace["raw"], "think": trace["think"],
+                                    "fork_context": trace["fork_context"],
+                                    "n_forks": trace["n_forks"]}) + "\n")
                 f.flush()
                 print(f"  Q{qid} [{cond}] {len(resp)} chars")
 

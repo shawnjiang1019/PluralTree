@@ -1,0 +1,97 @@
+% PluralTree training: (1) train the hyperbolic KG embedding from scratch with a
+% composite geometric loss; (2) tune the reasoner LLM with LoRA SFT (EoG phase-1
+% replica: 2Wiki edges -> <think>/<answer>). Compile: pdflatex training.tex
+\documentclass[border=12pt]{standalone}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usetikzlibrary{positioning,arrows.meta,calc,fit,backgrounds}
+
+\begin{document}
+\colorlet{enc}{teal}
+\colorlet{rsn}{violet}
+\colorlet{sct}{orange!90!black}
+
+\begin{tikzpicture}[
+  font=\small,
+  >={Stealth[length=2.4mm]},
+  data/.style={rounded corners=3pt, draw=black!50, fill=black!4, line width=.7pt,
+               align=center, inner sep=4pt, text width=44mm, font=\scriptsize},
+  train/.style={rounded corners=3pt, draw=#1!75, fill=#1!10, line width=1.2pt,
+                align=center, inner sep=4pt, text width=44mm, font=\scriptsize},
+  frozen/.style={rounded corners=3pt, draw=black!45, fill=black!7, line width=.6pt,
+                 align=center, inner sep=4pt, font=\scriptsize},
+  loss/.style={rounded corners=3pt, draw=sct!70, fill=sct!9, line width=.8pt,
+               align=center, inner sep=4pt, text width=46mm, font=\scriptsize},
+  obox/.style={rounded corners=6pt, draw=black!45, fill=black!3, line width=.6pt,
+              align=center, inner sep=3pt, text width=40mm, font=\scriptsize},
+  flow/.style={->, line width=1pt, draw=black!75},
+  upd/.style={->, line width=.8pt, draw=sct!70, dashed},
+  msmall/.style={rounded corners=1.5pt, minimum size=6.5mm, font=\scriptsize,
+                 inner sep=1.5pt, align=center, line width=.7pt},
+  note/.style={font=\scriptsize\itshape, text=black!60, align=center},
+]
+
+%================= TRACK 1 : train the KG embedding (from scratch) =================
+\node[data]      (inA)  at (0,3.8)  {\textbf{Inputs}\\ curated hierarchy (tree edges)\\ $+$ MiniLM text features \emph{(frozen)}};
+\node[train=enc] (encA) at (0,1.9)  {\textbf{Tree-GRU + GKI encoder}\\ hyperbolic, Poincar\'e ball\\ \emph{trainable}};
+\node[obox]      (hA)   at (0,0.5)  {$h_{\text{all}}$ node embeddings on the ball};
+\node[loss]      (lossA) at (0,-2.1)
+  {\textbf{composite loss} $\mathcal{L}$\\[1pt]
+   link-prediction $+\ \lambda_{\text{str}}$ structure-fidelity\\
+   $+\ \lambda_{\text{div}}$ sibling-separation $+\ \lambda_{\text{bnd}}$ boundary\\
+   $+\ \lambda_{\text{dec}}$ codebook};
+
+\draw[flow] (inA)  -- (encA);
+\draw[flow] (encA) -- (hA);
+\draw[flow] (hA)   -- (lossA);
+\draw[upd] (lossA.west) to[out=180,in=180]
+  node[note,left,pos=.5]{backprop\\ update encoder} (encA.west);
+
+%================= TRACK 2 : tune the reasoner (LoRA SFT) =================
+\node[data]      (inB)  at (8,3.8)  {\textbf{Data: 2WikiMultiHop}\\ prompt $=$ graph edges\\ target $=$ \texttt{<think>}\ldots\texttt{</think>}\texttt{<answer>}\ldots\texttt{</answer>}};
+\node[train=rsn] (modelB) at (8,1.9) {\textbf{Reasoner LLM}\\ frozen base $+$ LoRA adapters\\ \emph{only LoRA trainable}};
+\node[obox]      (hB)   at (8,0.5)  {next-token logits};
+\node[loss]      (lossB) at (8,-2.1)
+  {\textbf{SFT cross-entropy}\\[1pt]
+   next-token loss on the target\\
+   completion (\texttt{<think>} $+$ \texttt{<answer>})};
+
+\draw[flow] (inB)    -- (modelB);
+\draw[flow] (modelB) -- (hB);
+\draw[flow] (hB)     -- (lossB);
+\draw[upd] (lossB.west) to[out=180,in=180]
+  node[note,left,pos=.5]{update\\ LoRA only} (modelB.west);
+
+% ---- LoRA low-rank inset (the "tuning" mechanism) ----
+\node[msmall, draw=black!55, fill=black!4] (x)  at (12.3,2.7) {$x$};
+\node[msmall, frozen]        (W)  at (13.6,3.3) {$W$\\ \emph{frozen}};
+\node[msmall, draw=rsn!75, fill=rsn!12] (A) at (13.2,2.1) {$A$};
+\node[msmall, draw=rsn!75, fill=rsn!12] (B) at (14.1,2.1) {$B$};
+\node[circle, draw=black!55, inner sep=1pt, font=\scriptsize] (sum) at (14.9,2.7) {$+$};
+\node[msmall, draw=black!55, fill=black!4] (h) at (15.9,2.7) {$h$};
+\draw[->,line width=.6pt] (x) |- (W);   \draw[->,line width=.6pt] (W) -| (sum);
+\draw[->,line width=.6pt,rsn!80] (x) |- (A); \draw[->,line width=.6pt,rsn!80] (A) -- (B);
+\draw[->,line width=.6pt,rsn!80] (B) -| (sum);
+\draw[->,line width=.6pt] (sum) -- (h);
+\node[note, text width=42mm] at (14.1,1.15)
+  {$h = Wx + BAx$,\ \ rank $r \ll d$\\ base $W$ frozen; train $A,B$ only};
+\draw[dashed,black!45,line width=.5pt] (modelB.north east) to[out=30,in=180] (x.west);
+
+%================= containers + titles =================
+\begin{scope}[on background layer]
+  \node[draw=enc!45, fill=enc!4, rounded corners=6pt, inner sep=10pt,
+        fit=(inA)(encA)(hA)(lossA)] (BoxA) {};
+  \node[draw=rsn!45, fill=rsn!4, rounded corners=6pt, inner sep=10pt,
+        fit=(inB)(modelB)(hB)(lossB)(W)(h)] (BoxB) {};
+\end{scope}
+\node[anchor=south west, font=\bfseries\footnotesize, text=enc!45!black] at (BoxA.north west) {1\,\textbullet\,Train the KG embedding (from scratch)};
+\node[anchor=south west, font=\bfseries\footnotesize, text=rsn!55!black] at (BoxB.north west) {2\,\textbullet\,Tune the reasoner (LoRA SFT)};
+
+% legend
+\node[note, anchor=north west, text width=90mm] at ([yshift=-2mm]BoxA.south west)
+  {\tikz{\node[rounded corners=1.5pt,draw=black!45,fill=black!7,minimum size=3.5mm]{};}\, frozen\ \ \ \
+   \tikz{\node[rounded corners=1.5pt,draw=enc!75,fill=enc!12,line width=1pt,minimum size=3.5mm]{};}\, trainable\ \ \ \
+   dashed orange $=$ gradient update};
+
+\end{tikzpicture}
+\end{document}
