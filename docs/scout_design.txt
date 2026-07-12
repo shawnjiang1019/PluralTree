@@ -54,11 +54,11 @@ divergence, the old behavior); temp -> inf gives uniform OT mass.
 
 3. REUSE
 --------
-  evaluation/branch_divergence.py : subtree_nodes, wasserstein, _ground_cost,
+  evaluation/intrinsic/branch_divergence.py : subtree_nodes, wasserstein, _ground_cost,
                                     _transport_plan (exact EMD via POT, else
                                     log-domain Sinkhorn)
-  data/globalopinionqa.py         : compute_features (GOQA node features)
-  data/culturalbench.py           : compute_text_embeddings (other datasets)
+  data/loaders/globalopinionqa.py         : compute_features (GOQA node features)
+  data/loaders/culturalbench.py           : compute_text_embeddings (other datasets)
 
 Text features are slow to compute -> cached to a .pt via --text_feat (loaded
 if present, computed and saved otherwise).

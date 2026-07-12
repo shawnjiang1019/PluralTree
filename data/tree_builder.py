@@ -12,7 +12,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from data.culturalbench import CulturalGraph
+from data.loaders.culturalbench import CulturalGraph
 
 
 def build_full_tree_inputs(

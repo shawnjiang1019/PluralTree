@@ -4,7 +4,12 @@ __pycache__/
 **/__init__.py
 *.egg-info/
 
-# Raw datasets are fetched, not committed (too large; see scripts/get_*.py)
+# LaTeX build artifacts
+docs/**/*.aux
+docs/**/*.log
+docs/**/*.out
+
+# Raw datasets are fetched, not committed (too large; see scripts/fetch/get_*.py)
 data/grailqa/
 *.pt
 CLAUDE.md

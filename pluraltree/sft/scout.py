@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from evaluation.structure_metrics import (
+from evaluation.intrinsic.structure_metrics import (
     _parents_from_children,
     _depths,
     _ancestors_inclusive,

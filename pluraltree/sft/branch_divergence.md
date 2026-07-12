@@ -63,7 +63,7 @@ ranking (the polarizing "Divergence Anchors").
 compute_structure_metrics(..., branch_divergence=True)
 
 # standalone ranking on a saved embedding:
-python -m evaluation.branch_divergence --embeddings EMB.pt \
+python -m evaluation.intrinsic.branch_divergence --embeddings EMB.pt \
     --dataset culturalbench --top 20
 ```
 

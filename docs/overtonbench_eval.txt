@@ -62,9 +62,9 @@ paper's Gemini-judged numbers.
                                   client (stdlib urllib -> vLLM); expands
                                   opinion leaves into answer-distribution
                                   tables; conditions baseline/scout/div_only
-  evaluation/eval_overtonbench.py 60 questions -> responses.jsonl per condition
-  evaluation/judge_overtonbench.py  --validate and --score modes (above)
-  jobs/job_judge_validate.sh      vLLM serve + validation on Narval
+  evaluation/overton/eval_overtonbench.py 60 questions -> responses.jsonl per condition
+  evaluation/overton/judge_overtonbench.py  --validate and --score modes (above)
+  jobs/eval/job_judge_validate.sh      vLLM serve + validation on Narval
 
 
 4. COMMANDS
@@ -75,16 +75,16 @@ Login node, once (compute nodes are offline):
   huggingface-cli download Qwen/Qwen2.5-72B-Instruct     # judge/generator weights
 
 Validate the judge (GPU node):
-  sbatch jobs/job_judge_validate.sh                      # MODEL=... to override
+  sbatch jobs/eval/job_judge_validate.sh                      # MODEL=... to override
 
 Generate responses (GPU node running vLLM, or reuse the serve pattern):
-  python -m evaluation.eval_overtonbench \
+  python -m evaluation.overton.eval_overtonbench \
       --embeddings embeddings_goqa.pt --curvature 0.5 --text_feat feats_goqa.pt \
       --base_url http://localhost:8000/v1 --model Qwen/Qwen2.5-72B-Instruct \
       --conditions baseline,scout,div_only --out overton_responses.jsonl
 
 Score them:
-  python -m evaluation.judge_overtonbench --score overton_responses.jsonl \
+  python -m evaluation.overton.judge_overtonbench --score overton_responses.jsonl \
       --base_url http://localhost:8000/v1 --model Qwen/Qwen2.5-72B-Instruct \
       --out overton_scores.csv
 

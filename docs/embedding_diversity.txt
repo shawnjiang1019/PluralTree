@@ -56,7 +56,7 @@ Validation signal for the diversity objective:
 4. GIVEN A ROOT — DIVERSITY IN THE SUBTREE ANCHORED THERE
 ---------------------------------------------------------
 Question: how divergent are the branches hanging off a chosen anchor node R?
-Tool: evaluation/branch_divergence.py (optimal transport over child subtrees).
+Tool: evaluation/intrinsic/branch_divergence.py (optimal transport over child subtrees).
 
 Setup:
   - R has children c_1..c_m. Each child c_k defines a subtree; collect the point
@@ -106,11 +106,11 @@ So from a root R we get: (a) how divergent its branches are (W, z, rel_mean),
 6. COMMANDS
 -----------
 Train (diversity on):
-  sbatch jobs/job_embed_grailqa.sh                 # LDIV=0.1 DIVM=1.0 default
-  LDIV=0.3 DIVM=1.5 sbatch jobs/job_embed_grailqa.sh
+  sbatch jobs/embed/job_embed_grailqa.sh                 # LDIV=0.1 DIVM=1.0 default
+  LDIV=0.3 DIVM=1.5 sbatch jobs/embed/job_embed_grailqa.sh
 
 Measure subtree diversity / divergence:
-  python evaluation/branch_divergence.py \
+  python -m evaluation.intrinsic.branch_divergence \
       --embeddings embeddings_grailqa.pt --dataset grailqa \
       --curvature 0.5 --profile --detail
 

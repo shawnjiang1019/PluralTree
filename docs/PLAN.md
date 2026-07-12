@@ -182,7 +182,7 @@ World
 
 ### Files to create
 
-**`data/culturalbench.py`**
+**`data/loaders/culturalbench.py`**
 
 - Load CulturalBench from HuggingFace datasets library
 - Extract entities: geographic nodes (continent, country) + cultural practice nodes (one per unique question topic)
@@ -270,7 +270,7 @@ for each batch:
 
 ## Phase 12: Evaluation
 
-**`evaluation/link_prediction.py`**
+**`evaluation/kgc/link_prediction.py`**
 
 For each test triple `(s, r, o)`:
 1. Score `(s, r, o)` against all candidate objects
@@ -339,16 +339,16 @@ The depth-aware gates are what make this useful — the retriever naturally retu
 
 | Phase | Files | Depends on |
 |-------|-------|------------|
-| 10a | `data/culturalbench.py` | HuggingFace datasets, sentence-transformers |
+| 10a | `data/loaders/culturalbench.py` | HuggingFace datasets, sentence-transformers |
 | 10b | `data/tree_builder.py` | 10a, `utils/tree_utils.py` |
 | 10c | `data/negative_sampler.py` | 10a |
 | 10d | `data/collate.py` | 10b, 10c |
 | 11a | `training/scoring.py` | `manifolds/poincare.py` |
 | 11b | `training/trainer.py` | 10d, 11a, `training/losses.py`, `utils/riemannian_optim.py` |
-| 12a | `evaluation/link_prediction.py` | 11a |
+| 12a | `evaluation/kgc/link_prediction.py` | 11a |
 | 12b | `evaluation/gate_analysis.py` | trained model |
 | 13 | `pluraltree/inference/retriever.py` | trained model, sentence-transformers |
-| — | `scripts/train.py` | 11b, 12a |
+| — | `scripts/train/train.py` | 11b, 12a |
 
 ---
 

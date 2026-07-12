@@ -13,7 +13,7 @@ early A1 numbers were misleadingly high, and what we changed.
 
 After fixing the earlier *graph* leakage (structural triples in every split;
 held-out practices aggregated into their country's embedding — see
-`data/culturalbench.py`, `leakage_safe`), the leakage-safe A1 ablation still
+`data/loaders/culturalbench.py`, `leakage_safe`), the leakage-safe A1 ablation still
 produced suspiciously high test MRR for the two best variants:
 
 | variant | test MRR |
@@ -46,7 +46,7 @@ construction path) reached the same verdict:
   the ~44 countries (`type_constraints`), and **~89% of question texts literally
   name the country or its demonym**: *"In **Japanese** culture…"*, *"…for
   **Spanish** people?"*, *"In the **Netherlands**…"*. The practice node's feature
-  is the raw `prompt_question` (`data/culturalbench.py`), so the answer is sitting
+  is the raw `prompt_question` (`data/loaders/culturalbench.py`), so the answer is sitting
   in the input. The task had collapsed to **string matching**, not cultural
   inference.
 
@@ -68,14 +68,14 @@ retrieval.** It is the dumbest possible model:
 It is a *control*: "what score do you get with zero learning and zero structure?"
 If the full trained model can't beat it, the architecture isn't justified.
 
-Implementation: `scripts/frozen_baseline.py`. It reuses the same type-constrained
+Implementation: `scripts/train/frozen_baseline.py`. It reuses the same type-constrained
 candidate set and filtered-ranking protocol as the trained model, so the numbers
 are directly comparable.
 
 ```
-python scripts/frozen_baseline.py                      # masked text (default)
-python scripts/frozen_baseline.py --keep_country_text  # leaky text (A/B)
-python scripts/frozen_baseline.py --embed_model all-mpnet-base-v2
+python scripts/train/frozen_baseline.py                      # masked text (default)
+python scripts/train/frozen_baseline.py --keep_country_text  # leaky text (A/B)
+python scripts/train/frozen_baseline.py --embed_model all-mpnet-base-v2
 ```
 
 ## 4. The fix — mask the country in the input text
@@ -86,7 +86,7 @@ node feature, so the model must infer the country from the cultural *content*:
 > "In Japanese culture, how do people greet elders?"
 > → "In [COUNTRY] culture, how do people greet elders?"
 
-- `data/culturalbench.py`: `COUNTRY_ALIASES` (name + demonym + common variants
+- `data/loaders/culturalbench.py`: `COUNTRY_ALIASES` (name + demonym + common variants
   for all 44 countries), `mask_country_text()`, and a `mask_country=True`
   parameter on `load_culturalbench` (default **on**).
 - `[COUNTRY]` is a single constant token, so it reveals *that* a country is
@@ -94,7 +94,7 @@ node feature, so the model must infer the country from the cultural *content*:
   ("South Korea" before "Korea"); matching is word-boundary and case-insensitive.
   Bare ambiguous tokens (e.g. "US") are deliberately excluded to avoid clobbering
   ordinary words ("us").
-- `scripts/train.py`: `--keep_country_text` flag reproduces the leaky text for
+- `scripts/train/train.py`: `--keep_country_text` flag reproduces the leaky text for
   A/B; the run banner and `RESULT` line now report `mask_country=...`.
 
 About 1086/1227 (~88%) of practice texts contain a masked mention.
@@ -126,7 +126,7 @@ Interpretation:
   floor?* Re-running `jobs/job_a1_*.sh` uses masked text automatically.
 - Always report the **frozen-NN floor for the same encoder** alongside trained
   numbers. Get the mpnet floor with
-  `python scripts/frozen_baseline.py --embed_model all-mpnet-base-v2`.
+  `python scripts/train/frozen_baseline.py --embed_model all-mpnet-base-v2`.
 - If trained variants land near the floor, that points to the architectural
   levers (B4 symmetric conditioning, B2 a genuinely distinct knowledge source)
   rather than more tuning.
@@ -140,5 +140,5 @@ those next. This is a known limitation, not a blocker.
 
 ---
 
-**Files:** `data/culturalbench.py` (masking), `scripts/train.py`
-(`--keep_country_text`), `scripts/frozen_baseline.py` (A3 baseline).
+**Files:** `data/loaders/culturalbench.py` (masking), `scripts/train/train.py`
+(`--keep_country_text`), `scripts/train/frozen_baseline.py` (A3 baseline).

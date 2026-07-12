@@ -41,7 +41,7 @@ speedup.
 
 ## 3. What was added / changed
 
-### `data/wordnet.py` (new) — `load_wn18rr(...)`
+### `data/loaders/wordnet.py` (new) — `load_wn18rr(...)`
 Returns the same `CulturalGraph` the trainer/encoder already consume.
 
 - **Tree from hypernym edges.** For each `_hypernym` / `_instance_hypernym`
@@ -62,7 +62,7 @@ Returns the same `CulturalGraph` the trainer/encoder already consume.
   (recommended) → nltk WordNet glosses (if ids are synset offsets and nltk is
   installed) → cleaned raw id (fallback; weak features, prints a warning).
 
-### `evaluation/link_prediction.py` (rewritten ranking)
+### `evaluation/kgc/link_prediction.py` (rewritten ranking)
 The old ranking used a **per-candidate Python loop**, fine for 45 countries but
 ~128M iterations on WN18RR (3,134 × 40,943). It is now **vectorized**:
 
@@ -75,7 +75,7 @@ Per-relation candidate tensors and an `id → position` map are cached. Behavior
 identical to the old loop (verified: vectorized MRR == reference MRR to 1e-6 on a
 synthetic graph), just fast enough for ~40K candidates.
 
-### `scripts/train.py` (dataset switch)
+### `scripts/train/train.py` (dataset switch)
 - `--dataset {culturalbench,wn18rr}` (default `culturalbench`).
 - `--data_dir` for the WN18RR files (default `data/wn18rr`).
 - Branches the loader; everything downstream (`compute_text_embeddings`,
@@ -106,11 +106,11 @@ data/wn18rr/entity2textlong.txt    # optional (id <TAB> definition)
 
 ```bash
 # train on WN18RR (hypernym tree + virtual root, leakage-safe)
-python scripts/train.py --dataset wn18rr --device cuda \
+python scripts/train/train.py --dataset wn18rr --device cuda \
     --d_hidden 128 --n_epochs 300 --embed_model all-mpnet-base-v2
 
 # pure Tree-GRU baseline (no GKI) on WN18RR
-python scripts/train.py --dataset wn18rr --no_gki --device cuda --d_hidden 128
+python scripts/train/train.py --dataset wn18rr --no_gki --device cuda --d_hidden 128
 ```
 
 ## 6. Reading the results (important caveats)
@@ -118,7 +118,7 @@ python scripts/train.py --dataset wn18rr --no_gki --device cuda --d_hidden 128
 - **Absolute MRR will look much lower than CulturalBench.** Ranking is against
   ~40K candidates, not 45 countries; random ≈ 1/40943. Compare variants against
   each other and against a frozen floor, **never across datasets**.
-- **Frozen-NN floor:** `scripts/frozen_baseline.py` currently loads CulturalBench
+- **Frozen-NN floor:** `scripts/train/frozen_baseline.py` currently loads CulturalBench
   only. For a WN18RR floor it needs the same `--dataset` switch and the vectorized
   ranking (its inner loop is also per-candidate). This is the recommended next
   small follow-up so the A3 comparison exists on WN18RR too.
@@ -137,5 +137,5 @@ python scripts/train.py --dataset wn18rr --no_gki --device cuda --d_hidden 128
 
 ---
 
-**Files:** `data/wordnet.py` (loader), `evaluation/link_prediction.py`
-(vectorized ranking), `scripts/train.py` (`--dataset` / `--data_dir`).
+**Files:** `data/loaders/wordnet.py` (loader), `evaluation/kgc/link_prediction.py`
+(vectorized ranking), `scripts/train/train.py` (`--dataset` / `--data_dir`).

@@ -45,9 +45,9 @@ PLURALISM_INSTRUCTION = (
     "You will see context retrieved from a knowledge graph of survey data, "
     "followed by a question. The context may or may not be relevant to the "
     "question.\n"
-    "First, inside <think></think> tags, assess which retrieved perspectives "
-    "(if any) actually bear on the question, and discard the irrelevant "
-    "ones.\n"
+    "First, inside <think></think> tags, BRIEFLY (a few sentences) assess "
+    "which retrieved perspectives (if any) actually bear on the question, "
+    "and discard the irrelevant ones.\n"
     "Then, inside <answer></answer> tags, answer the question directly and "
     "thoughtfully, covering the range of positions people genuinely hold on "
     "it. If relevant perspectives were retrieved, represent them faithfully, "
@@ -58,19 +58,26 @@ PLURALISM_INSTRUCTION = (
 )
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
+_ANSWER_OPEN_RE = re.compile(r"<answer>(.*)", re.DOTALL | re.IGNORECASE)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 def extract_answer(text: str) -> tuple[str, bool]:
     """The <answer> span (what the reader/judge sees), and whether tags held.
 
-    Fallback when the model ignored the format: strip any <think> block and
-    return the rest, so a stray reasoning dump never reaches the judge whole.
+    An unclosed <answer> means generation hit max_tokens mid-answer — keep
+    everything after the opening tag (truncated but real). Final fallback:
+    strip any <think> block and stray tag literals, so a reasoning dump or
+    tag fragment never reaches the judge whole.
     """
     m = _ANSWER_RE.search(text)
     if m and m.group(1).strip():
         return m.group(1).strip(), True
-    rest = _THINK_RE.sub("", text).strip()
+    m = _ANSWER_OPEN_RE.search(text)                 # truncated before </answer>
+    if m and m.group(1).strip():
+        return m.group(1).strip(), True
+    rest = _THINK_RE.sub("", text)
+    rest = re.sub(r"</?(answer|think)>", "", rest, flags=re.IGNORECASE).strip()
     return (rest or text.strip()), False
 
 
@@ -79,11 +86,13 @@ def extract_answer(text: str) -> tuple[str, bool]:
 # ---------------------------------------------------------------------------
 def chat(base_url: str, model: str, messages: list[dict], *,
          temperature: float = 0.0, max_tokens: int = 1024,
-         timeout: float = 120.0) -> str:
+         top_p: float | None = None, timeout: float = 120.0) -> str:
     """One chat-completions call against a vLLM/OpenAI-compatible endpoint."""
-    body = json.dumps({"model": model, "messages": messages,
-                       "temperature": temperature,
-                       "max_tokens": max_tokens}).encode()
+    payload = {"model": model, "messages": messages,
+               "temperature": temperature, "max_tokens": max_tokens}
+    if top_p is not None:
+        payload["top_p"] = top_p
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions", data=body,
         headers={"Content-Type": "application/json",
@@ -121,10 +130,12 @@ def build_prompt(question: str, forks: list[ScoredFork] | None, graph) -> list[d
 def answer(question: str, condition: str, *, graph=None, h_all=None,
            text_feat=None, manifold=None, base_url: str = "",
            model: str = "", dry_run: bool = False, q_emb=None,
-           cfg: ScoutConfig | None = None) -> str:
+           cfg: ScoutConfig | None = None, with_raw: bool = False):
     """Generate one answer under a condition; returns the prompt if dry_run.
 
     ``cfg`` overrides the condition's ScoutConfig (e.g. a recalibrated tau).
+    ``with_raw=True`` returns ``(answer, raw_generation)`` so the <think>
+    triage trace is inspectable (raw == answer when there was no tagging).
     """
     import sys
 
@@ -138,17 +149,20 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
                   f"baseline prompt used for: {question[:60]}", file=sys.stderr)
     messages = build_prompt(question, forks, graph)
     if dry_run:
-        return "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
+        prompt = "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
+        return (prompt, prompt) if with_raw else prompt
     if not forks:
-        return chat(base_url, model, messages, temperature=0.7)
+        text = chat(base_url, model, messages, temperature=0.7)
+        return (text, text) if with_raw else text
     # Injected conditions think before answering — budget for both spans,
     # then keep only the <answer> span (the judge must not see the triage).
-    text = chat(base_url, model, messages, temperature=0.7, max_tokens=2048)
+    # 4096: at 2048, ~58% of answers lost their closing tag to the token cap.
+    text = chat(base_url, model, messages, temperature=0.7, max_tokens=4096)
     ans, tagged = extract_answer(text)
     if not tagged:
         print(f"warning: missing <answer> tags — used stripped text for: "
               f"{question[:60]}", file=sys.stderr)
-    return ans
+    return (ans, text) if with_raw else ans
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +191,9 @@ def _main():
                     help="override the condition's relevance exponent")
     ap.add_argument("--dry_run", action="store_true",
                     help="print the assembled prompt instead of calling the LLM")
+    ap.add_argument("--show_raw", action="store_true",
+                    help="print the full generation (incl. <think> trace) "
+                         "before the extracted answer")
     args = ap.parse_args()
 
     cfg = None
@@ -192,10 +209,10 @@ def _main():
         from retrieval.scout import load_or_compute_text_feat
 
         if args.dataset == "opinionqa":
-            from data.opinionqa import load_opinionqa
+            from data.loaders.opinionqa import load_opinionqa
             graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
         else:
-            from data.globalopinionqa import load_globalopinionqa
+            from data.loaders.globalopinionqa import load_globalopinionqa
             graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
         h_all = torch.load(args.embeddings, map_location="cpu")
         if not isinstance(h_all, torch.Tensor):
@@ -203,9 +220,18 @@ def _main():
         manifold = PoincareBall(c=args.curvature)
         text_feat = load_or_compute_text_feat(graph, args.dataset, args.text_feat)
 
-    print(answer(args.question, args.condition, graph=graph, h_all=h_all,
+    out = answer(args.question, args.condition, graph=graph, h_all=h_all,
                  text_feat=text_feat, manifold=manifold, base_url=args.base_url,
-                 model=args.model, dry_run=args.dry_run, cfg=cfg))
+                 model=args.model, dry_run=args.dry_run, cfg=cfg,
+                 with_raw=args.show_raw)
+    if args.show_raw:
+        ans, raw = out
+        print("=== RAW GENERATION (with <think> trace) ===")
+        print(raw)
+        print("\n=== EXTRACTED ANSWER ===")
+        print(ans)
+    else:
+        print(out)
 
 
 if __name__ == "__main__":

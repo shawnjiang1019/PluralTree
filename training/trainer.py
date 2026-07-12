@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from data.culturalbench import CulturalGraph
+from data.loaders.culturalbench import CulturalGraph
 from data.collate import TripleBatchSampler
 from data.negative_sampler import NegativeSampler
 from data.tree_builder import build_full_tree_inputs
@@ -34,7 +34,7 @@ from pluraltree.manifolds.poincare import PoincareBall
 from pluraltree.combined.gki_tree_encoder import GKITreeEncoder
 from pluraltree.combined.knowledge_schedule import KnowledgeSchedule
 from pluraltree.utils.riemannian_optim import build_optimizer
-from evaluation.link_prediction import evaluate_link_prediction
+from evaluation.kgc.link_prediction import evaluate_link_prediction
 
 
 @dataclass

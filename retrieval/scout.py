@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import Tensor
 
-from evaluation.branch_divergence import (
+from evaluation.intrinsic.branch_divergence import (
     subtree_nodes,
     wasserstein,
     _ground_cost,
@@ -331,10 +331,10 @@ def load_or_compute_text_feat(graph, dataset: str, path: str | None) -> Tensor:
     if path and os.path.exists(path):
         return torch.load(path, map_location="cpu")
     if dataset in ("globalopinionqa", "opinionqa"):
-        from data.globalopinionqa import compute_features
+        from data.loaders.globalopinionqa import compute_features
         feat = compute_features(graph).cpu()
     else:
-        from data.culturalbench import compute_text_embeddings
+        from data.loaders.culturalbench import compute_text_embeddings
         feat = compute_text_embeddings(graph).cpu()
     if path:
         torch.save(feat, path)
@@ -374,20 +374,20 @@ def _main():
 
     from pluraltree.manifolds.poincare import PoincareBall
     if args.dataset == "wn18rr":
-        from data.wordnet import load_wn18rr
+        from data.loaders.wordnet import load_wn18rr
         graph = load_wn18rr(data_dir=args.data_dir, split_seed=args.seed,
                             leakage_safe=True)
     elif args.dataset == "globalopinionqa":
-        from data.globalopinionqa import load_globalopinionqa
+        from data.loaders.globalopinionqa import load_globalopinionqa
         graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
     elif args.dataset == "grailqa":
-        from data.grailqa import load_grailqa
+        from data.loaders.grailqa import load_grailqa
         graph = load_grailqa(split_seed=args.seed, leakage_safe=True)
     elif args.dataset == "opinionqa":
-        from data.opinionqa import load_opinionqa
+        from data.loaders.opinionqa import load_opinionqa
         graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
     else:
-        from data.culturalbench import load_culturalbench
+        from data.loaders.culturalbench import load_culturalbench
         graph = load_culturalbench(split_seed=args.seed, leakage_safe=True)
 
     h_all = torch.load(args.embeddings, map_location="cpu")

@@ -73,14 +73,14 @@ clean geographic tree.
 ## 3. Concrete uses (mapped to existing code)
 
 **A. Drop-in richer KG** — a `load_culturebank()` sibling to `load_culturalbench`
-(`data/culturalbench.py`) returning a `CulturalGraph`. Descriptors → leaf nodes (the
+(`data/loaders/culturalbench.py`) returning a `CulturalGraph`. Descriptors → leaf nodes (the
 templated `actor + behavior + context` text → frozen MiniLM features via
 `compute_text_embeddings`); cultural groups → parent nodes. The geographic subset
 attaches to the existing `REGION_TO_COUNTRIES` tree; non-geo groups form the DAG layer.
 Bigger, culture-themed, community-sourced — vs. the leaky/shallow CulturalBench.
 
 **B. Empirical plurality target — reuse the representativeness metric.**
-`evaluation/representativeness.py` already takes ragged per-group distributions. Feed it
+`evaluation/intrinsic/representativeness.py` already takes ragged per-group distributions. Feed it
 `[agreement, 1 − agreement]` as the 2-bin target per (group, behavior); the model
 predicts the same 2-bin distribution from the per-parent existence `h_{behavior|group}`.
 JS-divergence works unchanged. Instantiates E2/E3 on real data — same machinery, thinner

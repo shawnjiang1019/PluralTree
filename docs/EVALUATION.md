@@ -50,7 +50,7 @@ criteria.
 
 All of these are **intrinsic**: they take the trained `h_all` (the `(N, d_hidden)`
 static embeddings from `encode_tree`) plus `children_indices` / `topo_order`, and
-need no training loop. Target home: `evaluation/structure_metrics.py`, run under
+need no training loop. Target home: `evaluation/intrinsic/structure_metrics.py`, run under
 `torch.no_grad()`. Ordered by closeness to the end goal.
 
 ### Tier 1 — Hierarchy faithfulness (the foundation)
@@ -92,8 +92,8 @@ disease↔gene, …) that pure hierarchy-reconstruction embeddings lack, and bec
 a sudden MRR collapse is a fast bug signal.
 
 - Use the **vectorized, leakage-safe** `evaluate_link_prediction`
-  (`evaluation/link_prediction.py`): filtered MRR, Hits@{1,3,10}.
-- Always pair the number with a **frozen-NN floor** (`scripts/frozen_baseline.py`)
+  (`evaluation/kgc/link_prediction.py`): filtered MRR, Hits@{1,3,10}.
+- Always pair the number with a **frozen-NN floor** (`scripts/train/frozen_baseline.py`)
   — a trained MRR only matters relative to "frozen text + cosine NN" with no
   training and no graph. (See `LABEL_LEAKAGE.md`: unmasked CulturalBench scored
   0.96 *for the wrong reason*.)
@@ -136,12 +136,12 @@ small `λ_struct` and watch the Tier-1/2 metrics move.
 
 ## 6. Status
 
-- [x] `evaluation/structure_metrics.py` — Tier 1–3 + sibling over-smoothing guard
+- [x] `evaluation/intrinsic/structure_metrics.py` — Tier 1–3 + sibling over-smoothing guard
       (intrinsic, no training loop; hyperbolic *and* Euclidean via `manifold=None`)
-- [x] printed every run as a `STRUCT |` line (`scripts/train.py`); keys:
+- [x] printed every run as a `STRUCT |` line (`scripts/train/train.py`); keys:
       `depth_radius_rho`, `dist_tree_rho`, `recon_map`, `subtree_ap`,
       `ancestor_auc`, `sibling_ratio`
 - [ ] structure-fidelity loss term (`λ_struct`) in `Trainer.train_step`
 - [ ] Tier-4 retrieval proxy harness
-- [x] vectorized filtered LP (`evaluation/link_prediction.py`)
-- [x] frozen-NN floor (`scripts/frozen_baseline.py`)
+- [x] vectorized filtered LP (`evaluation/kgc/link_prediction.py`)
+- [x] frozen-NN floor (`scripts/train/frozen_baseline.py`)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from evaluation.structure_metrics import _parents_from_children, _depths, _level_k_ancestors
+from evaluation.intrinsic.structure_metrics import _parents_from_children, _depths, _level_k_ancestors
 
 
 def _name(graph, node_id: int) -> str:
