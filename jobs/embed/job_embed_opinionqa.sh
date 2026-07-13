@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
-#SBATCH --time=03:00:00
+#SBATCH --time=02:00:00
 #SBATCH --account=def-enaskt
 #SBATCH --output=logs/embed_opinionqa_%j.out
 #SBATCH --error=logs/embed_opinionqa_%j.err
@@ -38,12 +38,14 @@ CURV="${CURV:-0.5}"
 LSTR="${LSTR:-0.1}"
 LDIV="${LDIV:-0.1}"        # sibling-separation floor (diversity-as-objective)
 DIVM="${DIVM:-1.0}"        # min geodesic distance between siblings
+EPOCHS="${EPOCHS:-12}"     # val MRR plateaus ~epoch 9 (docs/opinionqa_train_metrics.png)
 EMB="${EMB:-embeddings_opinionqa.pt}"
-echo "CURV=${CURV}  LSTR=${LSTR}  LDIV=${LDIV}  DIVM=${DIVM}  EMB=${EMB}"
+echo "CURV=${CURV}  LSTR=${LSTR}  LDIV=${LDIV}  DIVM=${DIVM}  EPOCHS=${EPOCHS}  EMB=${EMB}"
 
 python scripts/train/train.py --dataset opinionqa \
     --curvature "${CURV}" --lambda_struct "${LSTR}" \
     --lambda_div "${LDIV}" --div_margin "${DIVM}" \
+    --n_epochs "${EPOCHS}" \
     --save_embeddings "${EMB}" --device cuda \
     || { echo "TRAIN FAILED (see .err)"; exit 1; }
 

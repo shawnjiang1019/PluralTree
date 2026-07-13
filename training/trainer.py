@@ -55,6 +55,8 @@ class TrainerConfig:
     decode_margin:   float = 1.0  # min geodesic gap to a node's nearest other
     encode_every:   int   = 1     # re-encode the full tree every N steps (1 = every batch)
     metrics_csv:    str | None = None   # if set, append per-eval val metrics here
+    save_best:      str | None = None   # if set, save h_all here on each new best val MRR
+                                        # (so a timeout/crash never loses the best embeddings)
     lr:             float = 1e-3
     lr_manifold:    float = 1e-2
     eval_every:     int   = 200   # steps
@@ -359,6 +361,11 @@ class Trainer:
                     if val_metrics["mrr"] > self.best_val_mrr:
                         self.best_val_mrr = val_metrics["mrr"]
                         print(f"  [best] new best val MRR: {self.best_val_mrr:.4f}")
+                        if self.config.save_best:
+                            with torch.no_grad():
+                                torch.save(self.encode_tree().detach().cpu(),
+                                           self.config.save_best)
+                            print(f"  [best] saved embeddings -> {self.config.save_best}")
 
             elapsed = time.time() - t0
             mean_loss = (epoch_loss_sum / max(epoch_n, 1)).item()   # one sync / epoch

@@ -1,0 +1,35 @@
+\documentclass[border=8pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+
+\begin{document}
+% Define custom colors
+\colorlet{col1}{teal}        % original enc
+\colorlet{col2}{orange!90!black} % original mint
+\colorlet{col3}{purple!80!black}
+\colorlet{col4}{blue!70!black}
+\colorlet{col5}{green!70!black}
+\colorlet{col6}{red!70!black}
+
+\begin{tikzpicture}[
+  font=\small,
+  >={Stealth[length=2mm]},
+  n/.style={rounded corners=3pt, draw=#1!70, fill=#1!12, line width=.9pt,
+            inner sep=5pt, minimum height=8mm, font=\itshape},
+  edge/.style={->, line width=.9pt, draw=black!75},
+  node distance=7mm,
+]
+\node[n=col1] (root)  {US\_Public};
+\node[n=col2] (top)   [right=of root] {topic};
+\node[n=col3] (sub)   [right=of top]  {subtopic};
+\node[n=col4] (q)     [right=of sub]  {question};
+\node[n=col5] (ax)    [right=of q]    {axis};
+\node[n=col6] (op)    [right=of ax]   {opinion};
+
+\draw[edge] (root) -- (top);
+\draw[edge] (top)  -- (sub);
+\draw[edge] (sub)  -- (q);
+\draw[edge] (q)    -- (ax);
+\draw[edge] (ax)   -- (op);
+\end{tikzpicture}
+\end{document}

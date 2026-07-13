@@ -1,0 +1,58 @@
+% The verbalized fork: the exact text block injected into the reasoner's prompt,
+% annotated. Compile: pdflatex forkblock.tex
+\documentclass[border=10pt]{standalone}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usetikzlibrary{positioning,arrows.meta,calc}
+
+\begin{document}
+\colorlet{enc}{teal}
+\colorlet{sct}{orange!90!black}
+\colorlet{grpA}{blue!55!cyan}
+\colorlet{grpB}{red!70!orange}
+\begin{tikzpicture}[
+  font=\small,
+  >={Stealth[length=1.8mm]},
+  callout/.style={font=\scriptsize\itshape, text=#1, align=left},
+  cl/.style={-, line width=.6pt, draw=#1!70},
+]
+
+% ---- the text block (verbatim structure of fork_context) ----
+\node[rounded corners=4pt, draw=sct!60, fill=sct!4, line width=.9pt,
+      inner sep=8pt, align=left, font=\footnotesize\ttfamily] (blk) at (0,0) {%
+[fork 1] at 'eldercare responsibility'\\
+\hspace*{4mm}(divergence=14.2, relevance=0.68):\\[3pt]
+\hspace*{2mm}Perspective A (\textcolor{grpA!70!black}{collectivist}):\\
+\hspace*{2mm}Perspective B (\textcolor{grpB!80!black}{individualist}):\\[3pt]
+\hspace*{4mm}\textcolor{grpA!70!black}{A: collectivist re "Who should care for}\\
+\hspace*{7mm}\textcolor{grpA!70!black}{aging parents?": "family" 78\%,}\\
+\hspace*{7mm}\textcolor{grpA!70!black}{"professional care" 22\%}\\[2pt]
+\hspace*{4mm}\textcolor{grpB!80!black}{B: individualist re "Who should care for}\\
+\hspace*{7mm}\textcolor{grpB!80!black}{aging parents?": "family" 20\%,}\\
+\hspace*{7mm}\textcolor{grpB!80!black}{"professional care" 80\%}%
+};
+
+% ---- callouts ----
+\node[callout=enc!60!black, anchor=west] (c1) at (5.1,2.05)
+  {\textbf{anchor node}\\ where the branches fork};
+\draw[cl=enc] (c1.west) -- (2.35,2.05);
+
+\node[callout=sct!80!black, anchor=west] (c2) at (5.1,1.0)
+  {\textbf{scout scores}\\ $W$ (Wasserstein) and rel$(v)$};
+\draw[cl=sct] (c2.west) -- (1.15,1.5);
+
+\node[callout=black!60, anchor=west] (c3) at (5.1,-0.1)
+  {\textbf{branch labels}\\ the two divergent subtrees};
+\draw[cl=black] (c3.west) -- (2.0,0.5);
+
+\node[callout=black!60, anchor=west] (c4) at (5.1,-1.5)
+  {\textbf{driver leaves} (top $\gamma\odot C$ pairs)\\
+   opinion nodes expanded to their\\ attributed answer distributions};
+\draw[cl=black] (c4.west) -- (3.0,-1.2);
+
+% ---- caption strip ----
+\node[font=\scriptsize\itshape, text=black!55, anchor=north] at (blk.south)
+  [yshift=-2mm] {one block per fork (top-$k$), prepended to the question in the user message};
+
+\end{tikzpicture}
+\end{document}

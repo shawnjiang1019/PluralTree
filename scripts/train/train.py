@@ -279,6 +279,7 @@ def main():
         decode_margin   = args.decode_margin,
         encode_every   = args.encode_every,
         metrics_csv    = args.metrics_csv,
+        save_best      = args.save_embeddings,   # best-val-MRR checkpointing
         device         = args.device,
     )
 
@@ -308,9 +309,14 @@ def main():
     encoder.eval()
     with torch.no_grad():
         h_all_final = trainer.encode_tree()
-    if args.save_embeddings:
+    # The best-val-MRR embeddings were already saved during training (save_best);
+    # only fall back to the final-epoch state if no eval ever improved on 0.
+    if args.save_embeddings and trainer.best_val_mrr <= 0.0:
         torch.save(h_all_final.detach().cpu(), args.save_embeddings)
-        print(f"  Saved final embeddings to {args.save_embeddings}")
+        print(f"  Saved final embeddings to {args.save_embeddings} (no best checkpoint)")
+    elif args.save_embeddings:
+        print(f"  Best embeddings (val MRR {trainer.best_val_mrr:.4f}) already "
+              f"saved at {args.save_embeddings}")
     struct = compute_structure_metrics(
         h_all_final,
         graph.children_indices,

@@ -1,0 +1,113 @@
+% Future direction: RL alignment phase for pluralistic coverage (minimal style,
+% inline TikZ glyphs). Compile: pdflatex rl_future.tex
+\documentclass[border=12pt]{standalone}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,shapes.geometric}
+
+\begin{document}
+\colorlet{enc}{teal}
+\colorlet{rsn}{violet}
+\colorlet{sct}{orange!90!black}
+
+% ---- tiny glyphs (drawn, so the figure stays self-contained) ----
+\newcommand{\icDB}[1]{\tikz[baseline=-2pt]{
+  \draw[#1,line width=.7pt] (0,.14) ellipse (.16 and .05);
+  \draw[#1,line width=.7pt] (-.16,.14) -- (-.16,-.1) arc (180:360:.16 and .05) -- (.16,.14);}}
+\newcommand{\icTree}[1]{\tikz[baseline=-2pt]{
+  \fill[#1] (0,.14) circle (.045) (-.12,-.06) circle (.045) (.12,-.06) circle (.045);
+  \draw[#1,line width=.6pt] (0,.14)--(-.12,-.06) (0,.14)--(.12,-.06);}}
+\newcommand{\icDisk}[1]{\tikz[baseline=-2pt]{
+  \draw[#1,line width=.7pt] (0,0) circle (.16);
+  \fill[#1] (.07,.06) circle (.028) (-.09,.03) circle (.028) (.02,-.09) circle (.028) (-.03,.11) circle (.028);}}
+\newcommand{\icScope}[1]{\tikz[baseline=-2pt]{
+  \draw[#1,line width=.8pt] (-.04,.04) circle (.11);
+  \draw[#1,line width=1pt] (.045,-.05) -- (.15,-.15);}}
+\newcommand{\icFolder}[1]{\tikz[baseline=-2pt]{
+  \draw[#1,line width=.7pt,rounded corners=.6pt]
+    (-.16,-.1) -- (-.16,.08) -- (-.06,.08) -- (-.02,.13) -- (.16,.13) -- (.16,-.1) -- cycle;}}
+\newcommand{\icClip}[1]{\tikz[baseline=-2pt]{
+  \draw[#1,line width=.7pt,rounded corners=.6pt] (-.11,-.14) rectangle (.11,.14);
+  \draw[#1,line width=.7pt] (-.04,.14) rectangle (.04,.18);
+  \draw[#1,line width=.5pt] (-.06,.05)--(.06,.05) (-.06,0)--(.06,0) (-.06,-.05)--(.06,-.05);}}
+\newcommand{\icBot}[1]{\tikz[baseline=-2pt]{
+  \draw[#1,line width=.7pt,rounded corners=1pt] (-.13,-.1) rectangle (.13,.1);
+  \fill[#1] (-.055,.02) circle (.026) (.055,.02) circle (.026);
+  \draw[#1,line width=.6pt] (0,.1) -- (0,.16);  \fill[#1] (0,.17) circle (.02);}}
+\newcommand{\icStack}[1]{\tikz[baseline=-2pt]{
+  \draw[#1,line width=.7pt] (-.07,-.13) rectangle (.15,.09);
+  \draw[#1,line width=.7pt,fill=white] (-.14,-.07) rectangle (.08,.15);}}
+\newcommand{\icStar}[1]{\tikz[baseline=-2pt]{
+  \node[star, star points=5, star point ratio=2.6, fill=#1,
+        inner sep=0pt, minimum size=5.4mm] at (0,0) {};}}
+\newcommand{\icBars}[1]{\tikz[baseline=-2pt]{
+  \draw[#1,line width=2.4pt] (-.14,-.13) -- (-.14,-.02);
+  \draw[#1,line width=2.4pt] (0,-.13)    -- (0,.13);
+  \draw[#1,line width=2.4pt] (.14,-.13)  -- (.14,-.06);}}
+\newcommand{\icSpark}[1]{\tikz[baseline=-2pt]{
+  \node[star, star points=4, star point ratio=2.4, fill=#1,
+        inner sep=0pt, minimum size=4.6mm] at (0,0) {};}}
+
+\begin{tikzpicture}[
+  font=\small,
+  >={Stealth[length=2.2mm]},
+  b/.style={rounded corners=3pt, draw=#1!70, fill=#1!8, line width=.8pt,
+            align=center, inner sep=5pt, text width=27mm, minimum height=13mm,
+            font=\footnotesize},
+  wide/.style={rounded corners=3pt, draw=#1!70, fill=#1!8, line width=.8pt,
+               align=center, inner sep=5pt, text width=96mm, minimum height=9mm,
+               font=\footnotesize},
+  flow/.style={->, line width=.9pt, draw=black!70},
+  big/.style={-{Stealth[length=4mm, width=4.5mm]}, line width=2.2mm, draw=enc!45},
+]
+
+%---------------- panel 1 : data construction ----------------
+\node[wide=enc] (src) at (0,0) {\icDB{enc!70}\ \ \textbf{Pew ATP / OpinionQA}};
+
+\node[b=enc] (tree)  at (-3.6,-1.8) {\icTree{enc!70}\\ Hierarchy\\ minting};
+\node[b=enc] (embed) at (0,-1.8)    {\icDisk{enc!70}\\ Hyperbolic\\ embedding};
+\node[b=enc] (scout) at (3.6,-1.8)  {\icScope{enc!70}\\ Divergence\\ scout};
+
+\node[b=enc] (corpus) at (-1.8,-3.7) {\icFolder{enc!70}\\ Fork-conditioned\\ corpus};
+\node[b=enc] (bench)  at (1.8,-3.7)  {\icClip{enc!70}\\ Coverage\\ benchmark};
+
+\draw[flow] (src.south -| tree)  -- (tree.north);
+\draw[flow] (src.south -| embed) -- (embed.north);
+\draw[flow] (src.south -| scout) -- (scout.north);
+\draw[flow] (tree.south)  -- (corpus.north west);
+\draw[flow] (embed.south) -- (corpus.north east);
+\draw[flow] (scout.south) -- (bench.north east);
+
+%---------------- connector ----------------
+\draw[big] (0,-4.75) -- (0,-5.55);
+
+%---------------- panel 2 : RL alignment loop ----------------
+\node[b=rsn] (pol)  at (-3.6,-7.0) {\icBot{rsn!70}\\ Policy $\pi_\theta$};
+\node[b=rsn] (cot)  at (0,-7.0)    {\icClip{rsn!70}\\ Structured CoT\\ \scriptsize\texttt{<think>}\,/\,\texttt{<answer>}};
+\node[b=rsn] (roll) at (3.6,-7.0)  {\icStack{rsn!70}\\ Rollouts};
+
+\node[b=sct] (rew) at (3.6,-9.3)  {\icStar{sct!80}\\ Coverage\\ reward};
+\node[b=sct] (adv) at (0,-9.3)    {\icBars{sct!80}\\ Relative\\ advantage};
+\node[b=sct] (opt) at (-3.6,-9.3) {\icSpark{sct!80}\\ Optimization};
+
+\draw[flow] (pol)  -- (cot);
+\draw[flow] (cot)  -- (roll);
+\draw[flow] (roll) -- (rew);
+\draw[flow] (rew)  -- (adv);
+\draw[flow] (adv)  -- (opt);
+\draw[flow] (opt)  -- (pol);
+
+%---------------- containers + titles ----------------
+\begin{scope}[on background layer]
+  \node[draw=enc!50, fill=enc!3, rounded corners=5pt, inner sep=8pt,
+        fit=(src)(tree)(scout)(corpus)(bench)] (BoxA) {};
+  \node[draw=rsn!50, fill=rsn!3, rounded corners=5pt, inner sep=8pt,
+        fit=(pol)(roll)(rew)(opt)] (BoxB) {};
+\end{scope}
+\node[anchor=south west, font=\bfseries, text=enc!45!black]
+  at (BoxA.north west) {Data Construction};
+\node[anchor=south west, font=\bfseries, text=rsn!55!black]
+  at (BoxB.north west) {RL Alignment};
+
+\end{tikzpicture}
+\end{document}
