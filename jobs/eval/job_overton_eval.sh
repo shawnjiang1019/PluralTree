@@ -34,7 +34,9 @@ cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 mkdir -p logs
 
 MODEL="${MODEL:-Qwen/Qwen2.5-72B-Instruct}"
-TAU="${TAU:-0.1}"                # scout relevance gate (GOQA cross-domain ~0.1)
+TAU="${TAU:-0.1}"                # scout relevance gate (GOQA cross-domain ~0.1; on-domain opinionqa: 0.25)
+SEED="${SEED:-42}"               # MUST match the embed job's train.py --seed (default 42):
+                                 # opinionqa node ids depend on the clustering seed
 MAXQ="${MAXQ:-0}"                # 0 = all 60 questions
 MAXU="${MAXU:-0}"                # 0 = all participants per question
 EMB="${EMB:-embeddings_goqa.pt}"
@@ -72,7 +74,7 @@ export CUDA_VISIBLE_DEVICES=""
 echo "=== stage 1: generate ==="
 python -m evaluation.overton.eval_overtonbench \
     --embeddings "${EMB}" --text_feat "${FEATS}" --dataset "${DATASET}" \
-    --curvature 0.5 --tau "${TAU}" \
+    --curvature 0.5 --tau "${TAU}" --seed "${SEED}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     --max_questions "${MAXQ}" --out "${OUT}" \
     || { echo "GENERATION FAILED (see .err)"; exit 1; }
