@@ -13,3 +13,10 @@ docs/**/*.out
 data/grailqa/
 *.pt
 CLAUDE.md
+
+# Generated eval outputs (produced on the cluster; pull via scp, don't commit —
+# committing a stale copy collides with the cluster's resume files on git pull)
+overton_responses*.jsonl
+overton_scores*.csv
+hivemind_gen*.jsonl
+hivemind_diversity*.csv

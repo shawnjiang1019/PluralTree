@@ -29,6 +29,8 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export PYTHONUNBUFFERED=1
+# raw-ATP OpinionQA (offline; no SubPOP gate) — see data/loaders/opinionqa.py
+export OPINIONQA_DIR="${OPINIONQA_DIR:-$HOME/projects/def-enaskt/shawnj/data/human_resp}"
 
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 mkdir -p logs
