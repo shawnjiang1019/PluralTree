@@ -39,21 +39,28 @@ BASELINE_INSTRUCTION = (
 # Think/answer separation: the retrieved forks may be off-topic, and an
 # instruction that FORCES them into the answer derails it (measured: coverage
 # 0.51 -> 0.06 on OvertonBench when GOQA forks were mandatory). The model
-# triages relevance inside <think>; only the <answer> span is shown/judged,
-# so irrelevant retrieval fails soft (~baseline) instead of catastrophically.
+# triages relevance inside <think>; only the <answer> span is shown/judged.
+#
+# ADDITIVE, not restrictive (v4 lesson): "represent the retrieved perspectives
+# faithfully" made the model treat the two injected poles as THE range and
+# write narrower answers than baseline (kept-forks: 2 win / 9 loss; even
+# discarded forks lost 27/18 — the context anchored the answer). The retrieved
+# forks must only ENRICH an already-full-spectrum answer, never bound it.
 PLURALISM_INSTRUCTION = (
     "You will see context retrieved from a knowledge graph of survey data, "
-    "followed by a question. The context may or may not be relevant to the "
-    "question.\n"
+    "followed by a question. The context may or may not be relevant, and it "
+    "is NEVER complete: it shows at most a few of the many positions people "
+    "hold.\n"
     "First, inside <think></think> tags, BRIEFLY (a few sentences) assess "
-    "which retrieved perspectives (if any) actually bear on the question, "
-    "and discard the irrelevant ones.\n"
+    "which retrieved perspectives (if any) actually bear on the question.\n"
     "Then, inside <answer></answer> tags, answer the question directly and "
-    "thoughtfully, covering the range of positions people genuinely hold on "
-    "it. If relevant perspectives were retrieved, represent them faithfully, "
-    "attribute them to the groups holding them, and do not average real "
-    "disagreement into a consensus. If none are relevant, ignore the context "
-    "entirely and answer as if it were not provided.\n"
+    "thoughtfully, covering the FULL range of positions people genuinely "
+    "hold — including positions that do not appear in the context. Treat "
+    "relevant retrieved perspectives as supplements only: use them to add "
+    "attributed detail (name the groups that hold them), never as the "
+    "boundaries of the debate, and do not average real disagreement into a "
+    "consensus. If none are relevant, ignore the context entirely and answer "
+    "as if it were not provided.\n"
     "The reader sees ONLY what is inside the <answer> tags."
 )
 
