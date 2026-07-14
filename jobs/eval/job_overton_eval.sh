@@ -46,6 +46,7 @@ FEATS="${FEATS:-feats_goqa.pt}"
 DATASET="${DATASET:-globalopinionqa}"
 OUT="${OUT:-overton_responses.jsonl}"
 SCORES="${SCORES:-overton_scores.csv}"
+CONDS="${CONDS:-baseline,scout,div_only}"   # any of: baseline,scout,div_only,route
 PORT="${PORT:-8000}"
 TP="${TP:-4}"
 VLLM="${VLLM:-vllm}"                     # pluraltree-env's vllm (already activated)
@@ -77,6 +78,7 @@ echo "=== stage 1: generate ==="
 python -m evaluation.overton.eval_overtonbench \
     --embeddings "${EMB}" --text_feat "${FEATS}" --dataset "${DATASET}" \
     --curvature 0.5 --tau "${TAU}" --seed "${SEED}" \
+    --conditions "${CONDS}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     --max_questions "${MAXQ}" --out "${OUT}" \
     || { echo "GENERATION FAILED (see .err)"; exit 1; }

@@ -30,6 +30,8 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     "baseline": None,
     "scout": ScoutConfig(tau=0.25, alpha=1.0),
     "div_only": ScoutConfig(tau=0.0, alpha=0.0),
+    "route": ScoutConfig(tau=0.25, alpha=1.0),   # same retrieval as scout;
+    #                                              model self-routes (PLURALISM_ROUTE)
 }
 
 BASELINE_INSTRUCTION = (
@@ -63,6 +65,36 @@ PLURALISM_INSTRUCTION = (
     "as if it were not provided.\n"
     "The reader sees ONLY what is inside the <answer> tags."
 )
+
+# ROUTE (v6): the graph cannot tell us WHICH questions are contested — measured,
+# corr(graph divergence, human contestedness) ~ +0.20, driver-match ~ 0. So the
+# model decides. The v4/v5 failure was consensus dilution: forced full-spectrum
+# enumeration turned committed baseline answers (coverage 1.0) into hedged lists
+# (0.0) on questions where people broadly AGREE. This instruction gives the model
+# explicit permission to COMMIT when there is consensus, and to pluralize only on
+# genuine disagreement — routing per question instead of always pluralizing.
+PLURALISM_ROUTE = (
+    "You will see context retrieved from a survey knowledge graph, followed by "
+    "a question. The context may or may not be relevant, and is never complete.\n"
+    "First, inside <think></think> tags, decide in a few sentences: does this "
+    "question genuinely divide people into substantially different positions, or "
+    "is there broad consensus on it? Treat the retrieved perspectives as evidence "
+    "ONLY if they reflect real disagreement on THIS question; ignore tangential "
+    "or off-topic context.\n"
+    "Then, inside <answer></answer> tags:\n"
+    "- If there is broad consensus, give the direct, committed answer that states "
+    "the shared view. Be concise; do NOT enumerate multiple positions or hedge — "
+    "stating the consensus plainly is what represents people here.\n"
+    "- If people genuinely disagree, cover the range of positions, attributing "
+    "retrieved perspectives to the groups that hold them, and do not average real "
+    "disagreement into a false consensus.\n"
+    "The reader sees ONLY what is inside the <answer> tags."
+)
+
+# Instruction per condition (injected conditions only; baseline uses its own).
+INSTRUCTION_BY_CONDITION: dict[str, str] = {
+    "route": PLURALISM_ROUTE,
+}
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 _ANSWER_OPEN_RE = re.compile(r"<answer>(.*)", re.DOTALL | re.IGNORECASE)
@@ -145,13 +177,18 @@ def forks_to_context(forks: list[ScoredFork], graph) -> str:
     return "\n\n".join(fork_context(f, graph, k) for k, f in enumerate(forks, 1))
 
 
-def build_prompt(question: str, forks: list[ScoredFork] | None, graph) -> list[dict]:
-    """Chat messages: pluralism instruction + fork blocks + question (last)."""
+def build_prompt(question: str, forks: list[ScoredFork] | None, graph,
+                 instruction: str = PLURALISM_INSTRUCTION) -> list[dict]:
+    """Chat messages: instruction + fork blocks + question (last).
+
+    ``instruction`` is the injected-condition system prompt (default = additive
+    pluralism; ``route`` passes PLURALISM_ROUTE for self-routing).
+    """
     if not forks:
         return [{"role": "system", "content": BASELINE_INSTRUCTION},
                 {"role": "user", "content": question}]
     ctx = forks_to_context(forks, graph)
-    return [{"role": "system", "content": PLURALISM_INSTRUCTION},
+    return [{"role": "system", "content": instruction},
             {"role": "user", "content": ctx + "\n\nQuestion: " + question}]
 
 
@@ -184,7 +221,8 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
         if not forks:
             print(f"warning: scout returned 0 forks (tau={cfg.tau}) — "
                   f"baseline prompt used for: {question[:60]}", file=sys.stderr)
-    messages = build_prompt(question, forks, graph)
+    instruction = INSTRUCTION_BY_CONDITION.get(condition, PLURALISM_INSTRUCTION)
+    messages = build_prompt(question, forks, graph, instruction)
     ctx = forks_to_context(forks, graph) if forks else ""
 
     def _pack(ans: str, raw: str):
