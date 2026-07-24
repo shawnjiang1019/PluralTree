@@ -1,0 +1,92 @@
+GRPO ALIGNMENT PHASE — DESIGN
+=============================
+
+Goal. After the frozen-LLM + scout retrieval phase, train a policy that produces
+pluralistic answers by RL, so the model LEARNS when to pluralize and how far,
+instead of relying on a fixed injected prompt. GRPO (group-relative policy
+optimization): sample a GROUP of answers per question, reward each, advantage =
+(reward - group mean) / group std, policy-gradient update. No value network.
+
+Why this phase exists (what the eval taught us)
+-----------------------------------------------
+v4/v5 OvertonBench + the pole-collapse study (docs/framing_hurts.png) showed the
+injected prompt is a blunt instrument: it collapses the answer onto the two
+injected poles (on-pole similarity 0.334 -> 0.389, corr(attraction, dcoverage)
+= -0.31), and it hurts most where the model was already broad (dcov -0.45 for
+baseline >= 0.8). The `route` condition tries to fix this with a smarter prompt;
+GRPO is the principled version — make "commit on consensus, pluralize on genuine
+disagreement, cover the real positions and no more" a learned behavior with a
+reward, not a paragraph of instructions the model may or may not follow.
+
+Reward — GROUNDED IN THE GRAPH, not the OvertonBench judge
+----------------------------------------------------------
+Leakage rule: the 60 OvertonBench questions + their human ratings are HELD-OUT
+EVAL. RL must never train on them or on a reward derived from them. So the RL
+reward is grounded in the graph's own subgroup answer distributions, which are
+independent of the eval set:
+
+  positions_from_subtree(graph, anchor): walk the anchor's subtree to its opinion
+  leaves; each leaf is a subgroup's distribution over the SAME survey options.
+  Aggregate to a population distribution over positions: prevalence(option) =
+  mean subgroup probability of that option. This is the pluralistic target — how
+  much of the population actually holds each view — and it is exactly the "full
+  distribution" the content-fix would inject, reused here as ground truth.
+
+  coverage_reward(response, positions) has three terms (alignment/reward.py):
+    recall_w    prevalence-weighted fraction of real positions the response
+                expresses (semantic match, held-out mpnet embedder — NOT the
+                scout's MiniLM, to avoid rewarding retrieval-shaped text).
+    precision   fraction of response units that map to SOME real position —
+                penalizes padding / hedging / invented positions.
+    verbosity   penalty for expressing MORE positions than the distribution
+                supports. target = effective #positions = exp(entropy(prevalence)).
+                Consensus (entropy ~ 0, target ~ 1): enumerating 4 views is
+                punished — this is the `route` "commit on consensus" lesson made
+                into a gradient. Contested (target ~ 3): covering 3 is rewarded.
+
+  reward = recall_w - L_prec*(1 - precision) - L_verb*max(0, n_expr - target)/target
+  clamped to [0, 1]. Anti-hacking is built in: pure enumeration loses on
+  verbosity + precision; pure brevity loses on recall; copying the injected poles
+  gains nothing the full-distribution recall doesn't already credit.
+
+Policy & rollouts
+-----------------
+The eval reasoner (Qwen 72B AWQ) is quantized and NOT trainable. The RL policy is
+a LoRA adapter over a TRAINABLE bf16 base (default Qwen2.5-7B-Instruct). Rollouts:
+G samples per prompt at temperature ~1.0 via the trainer's generation (TRL colocated
+vLLM). The scout retrieval is baked into the prompt at DATASET-BUILD time
+(rollout_dataset.build_prompts), so the policy optimizes over already-injected
+prompts and the graph encoder / scout stay frozen — this phase trains only the
+reasoner's behavior given retrieval, not the retrieval itself.
+
+Train / eval split
+------------------
+Training questions come from the graph's survey questions (q: nodes), NOT the 60.
+build_prompts takes eval_holdout_ids (the OvertonBench question_ids) and refuses to
+emit any prompt whose question maps to a held-out id. OvertonBench (job_overton_eval)
+is run before and after GRPO as the external, un-optimized metric.
+
+Files
+-----
+alignment/reward.py           positions_from_subtree, coverage_reward, RewardConfig,
+                              batch_rewards. Pure; embed_fn injectable (offline test).
+alignment/advantage.py        group_relative_advantage (GRPO normalization).
+alignment/rollout_dataset.py  build_prompts over graph questions, eval-holdout guard.
+alignment/grpo_config.py      GRPOAlignConfig dataclass.
+alignment/train_grpo.py       entrypoint; lazy trl/peft; --dry_run tests reward+dataset
+                              with a stub embedder, no GPU.
+jobs/train/job_grpo_align.sh  SLURM: base for rollouts + LoRA GRPO update.
+
+Status: SCAFFOLD. reward/advantage/dataset are implemented and unit-tested; the
+TRL GRPOTrainer wiring in train_grpo.py is a stub with the reward_funcs + dataset
++ LoRA config plugged in — verify reward behavior with --dry_run before a GPU run.
+
+Open decisions (not yet fixed)
+------------------------------
+- base model size (7B default; 14B if reward signal is too noisy at 7B).
+- reward thresholds (thr, L_prec, L_verb) — tune on a held-in slice before scaling.
+- whether to add a KL-to-baseline term beyond TRL's default kl_coef to stop the
+  policy drifting from fluent language while chasing coverage.
+- reward is single-turn; a per-position judge (like judge_overtonbench) is a
+  higher-fidelity but far more expensive alternative if the embedding match is
+  too loose.

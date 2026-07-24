@@ -32,6 +32,8 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     "div_only": ScoutConfig(tau=0.0, alpha=0.0),
     "route": ScoutConfig(tau=0.25, alpha=1.0),   # same retrieval as scout;
     #                                              model self-routes (PLURALISM_ROUTE)
+    "expand": ScoutConfig(tau=0.25, alpha=1.0),  # same retrieval as scout; model
+    #                             enumerates distinct positions first (PLURALISM_EXPAND)
 }
 
 BASELINE_INSTRUCTION = (
@@ -91,9 +93,38 @@ PLURALISM_ROUTE = (
     "The reader sees ONLY what is inside the <answer> tags."
 )
 
+# EXPAND (v6): directly attacks the binary-collapse mechanism (docs/framing_hurts.png
+# — injected answers pile onto the two poles; on-pole similarity 0.334->0.389,
+# corr(attraction, dcoverage) = -0.31). The two retrieved forks are the max-W
+# EXTREMES, so anchoring on them caps coverage at ~2 clusters. This instruction
+# makes the model enumerate the DISTINCT positions first — explicitly including
+# ones beyond the two shown and ones that are NOT between them (avoiding the 1-D
+# "moderate midpoint" that just averages disagreement into a false consensus).
+# Attribution stays grounded in the retrieved data, not invented group->opinion
+# links. Prompt-level proxy for the full-distribution content-fix.
+PLURALISM_EXPAND = (
+    "You will see context retrieved from a survey knowledge graph, followed by a "
+    "question. The retrieved perspectives are the two most DIVERGENT positions on "
+    "a related survey item — they are the extremes, not the whole range, and may "
+    "not be relevant at all.\n"
+    "First, inside <think></think> tags, briefly list the DISTINCT positions people "
+    "genuinely hold on this question. Include positions beyond the two retrieved "
+    "ones, and positions that do not fall between them — real disagreement is often "
+    "several different framings, not a single axis with a middle. Attribute a "
+    "position to a group only when the retrieved data supports it; do not invent "
+    "group-opinion links.\n"
+    "Then, inside <answer></answer> tags, answer the question directly, covering "
+    "those distinct positions. Treat the retrieved perspectives as supplements that "
+    "add attributed detail, never as the boundaries of the debate, and do not "
+    "average real disagreement into a consensus. If none are relevant, ignore the "
+    "context and answer as if it were not provided.\n"
+    "The reader sees ONLY what is inside the <answer> tags."
+)
+
 # Instruction per condition (injected conditions only; baseline uses its own).
 INSTRUCTION_BY_CONDITION: dict[str, str] = {
     "route": PLURALISM_ROUTE,
+    "expand": PLURALISM_EXPAND,
 }
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)

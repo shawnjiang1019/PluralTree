@@ -54,21 +54,18 @@
 \draw[flow] (Aenc)  -- (Adisk);
 
 %==================== STAGE 2 : DIVERGENCE SCOUT ====================
-\node[io] (Q) at (6,0.6) {\textbf{User question}};
+\node[io] (Q) at (6,-1.3) {\textbf{User question}};
 
-\node[box=sct] (Banchor) at (6,-1.6) {\textbf{Anchor + relevance field}\\\scriptsize MiniLM cosine $\to$ rel$(v)$};
-\node[box=sct] (Bcloud)  at (6,-3.7) {\textbf{Relevance-gated child clouds}\\\scriptsize $P_i,P_j$ per branch};
-\node[box=sct] (Bwass)   at (6,-5.8) {\textbf{Wasserstein divergence}\\\scriptsize $W=\min_{\gamma}\langle\gamma,C\rangle$\\\scriptsize geodesic ground cost $C$};
-\node[box=sct] (Bforks)  at (6,-7.9) {\textbf{Top-$k$ divergent forks}\\\scriptsize score $=\text{rel}^{\alpha}\!\cdot W$\\\scriptsize branch A vs B + drivers};
+\node[box=sct] (Bforks) at (6,-4.7)
+  {\textbf{Top-$k$ divergent forks}\\\scriptsize score $=\text{rel}^{\alpha}\!\cdot W$\\\scriptsize branch A vs B $+$ drivers};
 
-\draw[flow] (Q)       -- (Banchor);
-\draw[flow] (Banchor) -- (Bcloud);
-\draw[flow] (Bcloud)  -- (Bwass);
-\draw[flow] (Bwass)   -- (Bforks);
+\draw[flow] (Q) -- (Bforks);
+\node[lbl=sct] at (6,-3.0)              % arrow passes through this box
+  {relevance-gated\\ Wasserstein divergence};
 
-% embeddings feed the scout (h_all store -> clouds)
-\draw[dflow] (Adisk.east) -- (3,-7.4) |- (Bcloud.west);
-\node[lbl=enc] at (3,-5.5) {$h_{\text{all}}$};   % dashed arrow passes through this box
+% embeddings feed the scout (h_all store -> forks)
+\draw[dflow] (Adisk.east) -- (3,-7.4) |- (Bforks.west);
+\node[lbl=enc] at (3,-6.1) {$h_{\text{all}}$};   % dashed arrow passes through this box
 
 %==================== STAGE 3 : REASONER ====================
 \node[box=rsn] (Cctx) at (12,-1.3) {\textbf{Fork context}\\\scriptsize forks $\to$ distributions\\\scriptsize $+$ user question};
@@ -85,7 +82,7 @@
   \node[draw=enc!45, fill=enc!4, rounded corners=6pt, inner sep=10pt,
         fit=(Acap)(Atree)(Aenc)(Adisk)] (BoxA) {};
   \node[draw=sct!45, fill=sct!4, rounded corners=6pt, inner sep=10pt,
-        fit=(Q)(Banchor)(Bforks)] (BoxB) {};
+        fit=(Q)(Bforks)] (BoxB) {};
   \node[draw=rsn!45, fill=rsn!4, rounded corners=6pt, inner sep=10pt,
         fit=(Cctx)(Cllm)(Cans)] (BoxC) {};
 \end{scope}
