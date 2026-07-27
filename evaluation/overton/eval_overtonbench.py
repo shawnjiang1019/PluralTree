@@ -124,7 +124,8 @@ def main():
                                         "fork_context": trace["fork_context"],
                                         "n_forks": trace["n_forks"]}) + "\n")
                     f.flush()
-                print(f"  Q{qid} [{cond}] {len(resp)} chars")
+                    tag = f" r{rollout}" if args.n_rollouts > 1 else ""
+                    print(f"  Q{qid} [{cond}{tag}] {len(resp)} chars")
 
 
 if __name__ == "__main__":
