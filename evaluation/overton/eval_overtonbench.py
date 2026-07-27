@@ -52,6 +52,10 @@ def main():
                          "(GOQA cross-domain rel ceiling is ~0.14 — use ~0.1)")
     ap.add_argument("--split", default="full")
     ap.add_argument("--max_questions", type=int, default=0, help="0 = all")
+    ap.add_argument("--n_rollouts", type=int, default=1,
+                    help="samples per (question, condition); >1 enables the "
+                         "across-sample coverage@K metric (judge --k_rollouts). "
+                         "Generation is already stochastic (temp 0.7).")
     ap.add_argument("--out", default="overton_responses.jsonl")
     ap.add_argument("--dry_run", action="store_true",
                     help="write assembled prompts instead of calling the LLM")
@@ -84,39 +88,42 @@ def main():
         questions = questions[: args.max_questions]
     print(f"{len(questions)} questions x {len(conditions)} conditions -> {args.out}")
 
-    # Resume: skip (question_id, condition) pairs already in the output file.
-    done: set[tuple[int, str]] = set()
+    # Resume: skip (question_id, condition, rollout) triples already present.
+    # Rows written before --n_rollouts existed have no 'rollout' key -> rollout 0.
+    done: set[tuple[int, str, int]] = set()
     if os.path.exists(args.out):
         with open(args.out, encoding="utf-8") as f:
             for line in f:
                 r = json.loads(line)
-                done.add((r["question_id"], r["condition"]))
+                done.add((r["question_id"], r["condition"], r.get("rollout", 0)))
         print(f"  resuming: {len(done)} rows already present")
 
     with open(args.out, "a", encoding="utf-8") as f:
         for qid, question in questions:
             q_emb = embed_question(question)          # shared across conditions
             for cond in conditions:
-                if (qid, cond) in done:
-                    continue
                 cfg = None
                 if cond == "scout" and args.tau is not None:
                     cfg = ScoutConfig(tau=args.tau, alpha=CONDITIONS["scout"].alpha)
-                resp, trace = answer(question, cond, graph=graph, h_all=h_all,
-                                     text_feat=text_feat, manifold=manifold,
-                                     base_url=args.base_url, model=args.model,
-                                     dry_run=args.dry_run, q_emb=q_emb, cfg=cfg,
-                                     with_trace=True)
-                # Complete reasoning record per row — the judge reads only
-                # 'response'; the rest is for observing retrieval -> triage ->
-                # answer: 'fork_context' = what the scout injected, 'think' =
-                # how the model triaged it, 'raw' = the full generation.
-                f.write(json.dumps({"question_id": qid, "question": question,
-                                    "condition": cond, "response": resp,
-                                    "raw": trace["raw"], "think": trace["think"],
-                                    "fork_context": trace["fork_context"],
-                                    "n_forks": trace["n_forks"]}) + "\n")
-                f.flush()
+                for rollout in range(args.n_rollouts):
+                    if (qid, cond, rollout) in done:
+                        continue
+                    resp, trace = answer(question, cond, graph=graph, h_all=h_all,
+                                         text_feat=text_feat, manifold=manifold,
+                                         base_url=args.base_url, model=args.model,
+                                         dry_run=args.dry_run, q_emb=q_emb, cfg=cfg,
+                                         with_trace=True)
+                    # Complete reasoning record per row — the judge reads only
+                    # 'response'; the rest is for observing retrieval -> triage ->
+                    # answer: 'fork_context' = what the scout injected, 'think' =
+                    # how the model triaged it, 'raw' = the full generation.
+                    f.write(json.dumps({"question_id": qid, "question": question,
+                                        "condition": cond, "rollout": rollout,
+                                        "response": resp, "raw": trace["raw"],
+                                        "think": trace["think"],
+                                        "fork_context": trace["fork_context"],
+                                        "n_forks": trace["n_forks"]}) + "\n")
+                    f.flush()
                 print(f"  Q{qid} [{cond}] {len(resp)} chars")
 
 

@@ -22,3 +22,6 @@ hivemind_gen*.jsonl
 hivemind_diversity*.csv
 grpo_prompts*.jsonl
 grpo_lora/
+
+# Local extracted ATP data (OpinionQA); large, load via OPINIONQA_DIR — don't commit
+.localdata/

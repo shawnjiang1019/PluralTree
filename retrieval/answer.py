@@ -34,7 +34,15 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #                                              model self-routes (PLURALISM_ROUTE)
     "expand": ScoutConfig(tau=0.25, alpha=1.0),  # same retrieval as scout; model
     #                             enumerates distinct positions first (PLURALISM_EXPAND)
+    "distributional": ScoutConfig(tau=0.25, alpha=1.0),  # same retrieval + same
+    #        instruction as scout, but injects the FULL subgroup spectrum, not the
+    #        two poles (content-fix; subtree_middle.py confirmed the middle is real)
 }
+
+# Conditions that inject the full subgroup spectrum (fork_context_full) instead of
+# the two poles. Same instruction as scout, so scout-vs-distributional is a clean
+# content-only A/B: does showing the real middle beat showing the two extremes?
+FULL_DIST_CONDITIONS: set[str] = {"distributional"}
 
 BASELINE_INSTRUCTION = (
     "Answer the question thoughtfully and concisely."
@@ -203,22 +211,75 @@ def fork_context(fork: ScoredFork, graph, k: int = 1) -> str:
     return "\n".join(lines)
 
 
-def forks_to_context(forks: list[ScoredFork], graph) -> str:
-    """All fork blocks joined — exactly the context string the LLM sees."""
-    return "\n\n".join(fork_context(f, graph, k) for k, f in enumerate(forks, 1))
+def _leaf_vec(graph, nid):
+    d = getattr(graph, "opinion_dist", {}).get(nid)
+    return d if d else None
+
+
+def fork_context_full(fork: ScoredFork, graph, k: int = 1,
+                      max_subgroups: int = 8) -> str:
+    """The fork as the FULL subgroup spectrum, not just the two poles.
+
+    The 2-pole render (fork_context) collapses the answer onto the extremes
+    (docs/framing_hurts.png). subtree_middle.py showed 68% of an axis's non-pole
+    subgroups genuinely lie BETWEEN the poles (only ~11% of axes are bimodal), so
+    injecting every subgroup gives the model the real middle instead of a binary.
+    Renders the anchor's opinion-leaf children ordered as a spectrum (along the
+    pole-to-pole axis); falls back to the 2-pole block if the anchor has too few.
+    """
+    anchor = fork.anchor
+    leaves = list(dict.fromkeys(
+        c for c in graph.children_indices[anchor] if _leaf_vec(graph, c) is not None))
+    A = fork.branch_a if _leaf_vec(graph, fork.branch_a) is not None else None
+    B = fork.branch_b if _leaf_vec(graph, fork.branch_b) is not None else None
+    if len(leaves) < 3 or A is None or B is None:
+        return fork_context(fork, graph, k)          # not enough spread → poles
+
+    # order subgroups along the A->B axis so the block reads as a spectrum
+    pa, pb = _leaf_vec(graph, A), _leaf_vec(graph, B)
+    if len(pa) == len(pb) and all(len(_leaf_vec(graph, c)) == len(pa) for c in leaves):
+        av = [b - a for a, b in zip(pa, pb)]
+        den = sum(x * x for x in av) or 1.0
+        def _t(c):
+            p = _leaf_vec(graph, c)
+            return sum((pc - a) * v for pc, a, v in zip(p, pa, av)) / den
+        leaves.sort(key=_t)
+    if len(leaves) > max_subgroups:                  # keep the poles + evenly-spaced middle
+        keep = {0, len(leaves) - 1}
+        step = (len(leaves) - 1) / (max_subgroups - 1)
+        keep.update(round(i * step) for i in range(max_subgroups))
+        leaves = [leaves[i] for i in sorted(keep)][:max_subgroups]
+
+    lines = [f"[fork {k}] on '{describe_node(graph, anchor, 60)}' — full subgroup "
+             f"spectrum (divergence={fork.w:.2f}, relevance={fork.relevance:.2f}):"]
+    for c in leaves:
+        lines.append(f"    {describe_node(graph, c, 0, show_q=False)}")
+    return "\n".join(lines)
+
+
+def forks_to_context(forks: list[ScoredFork], graph, full_dist: bool = False) -> str:
+    """All fork blocks joined — exactly the context string the LLM sees.
+
+    ``full_dist=True`` renders every subgroup of each anchor (the content-fix)
+    instead of the two poles.
+    """
+    render = fork_context_full if full_dist else fork_context
+    return "\n\n".join(render(f, graph, k) for k, f in enumerate(forks, 1))
 
 
 def build_prompt(question: str, forks: list[ScoredFork] | None, graph,
-                 instruction: str = PLURALISM_INSTRUCTION) -> list[dict]:
+                 instruction: str = PLURALISM_INSTRUCTION,
+                 full_dist: bool = False) -> list[dict]:
     """Chat messages: instruction + fork blocks + question (last).
 
     ``instruction`` is the injected-condition system prompt (default = additive
-    pluralism; ``route`` passes PLURALISM_ROUTE for self-routing).
+    pluralism; ``route`` passes PLURALISM_ROUTE for self-routing). ``full_dist``
+    injects each anchor's full subgroup spectrum instead of the two poles.
     """
     if not forks:
         return [{"role": "system", "content": BASELINE_INSTRUCTION},
                 {"role": "user", "content": question}]
-    ctx = forks_to_context(forks, graph)
+    ctx = forks_to_context(forks, graph, full_dist)
     return [{"role": "system", "content": instruction},
             {"role": "user", "content": ctx + "\n\nQuestion: " + question}]
 
@@ -253,8 +314,9 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             print(f"warning: scout returned 0 forks (tau={cfg.tau}) — "
                   f"baseline prompt used for: {question[:60]}", file=sys.stderr)
     instruction = INSTRUCTION_BY_CONDITION.get(condition, PLURALISM_INSTRUCTION)
-    messages = build_prompt(question, forks, graph, instruction)
-    ctx = forks_to_context(forks, graph) if forks else ""
+    full_dist = condition in FULL_DIST_CONDITIONS
+    messages = build_prompt(question, forks, graph, instruction, full_dist)
+    ctx = forks_to_context(forks, graph, full_dist) if forks else ""
 
     def _pack(ans: str, raw: str):
         if with_trace:
