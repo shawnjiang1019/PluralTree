@@ -33,9 +33,15 @@ mkdir -p logs
 
 MODEL="${MODEL:-Qwen/Qwen2.5-72B-Instruct}"
 N="${N:-300}"
+WITHIN="${WITHIN:-40}"           # participants for within-participant discrimination
+                                 # (~8 judge calls each); 0 = skip
+AGG="${AGG:-1}"                  # 1 = run the aggregate judge-vs-human OvertonScore
+                                 # check (the paper's rho=0.88 level); 0 = skip
+AGGU="${AGGU:-5}"                # participants/question for the aggregate check
+                                 # (cost ~= 60 questions x AGGU x 8 models)
 PORT="${PORT:-8000}"
 TP="${TP:-4}"                    # tensor parallel = GPUs requested above
-echo "MODEL=${MODEL}  N=${N}  TP=${TP}"
+echo "MODEL=${MODEL}  N=${N}  WITHIN=${WITHIN}  AGG=${AGG}(u=${AGGU})  TP=${TP}"
 
 vllm serve "${MODEL}" --port "${PORT}" --tensor-parallel-size "${TP}" \
     --max-model-len 8192 > logs/vllm_${SLURM_JOB_ID}.log 2>&1 &
@@ -55,6 +61,10 @@ done
 curl -sf "http://localhost:${PORT}/health" > /dev/null \
     || { echo "vLLM never became healthy"; exit 1; }
 
+AGG_FLAG=""
+if [ "${AGG}" = "1" ]; then AGG_FLAG="--validate_aggregate --agg_max_users ${AGGU}"; fi
+
 python -m evaluation.overton.judge_overtonbench --validate --n "${N}" \
+    --within_n "${WITHIN}" ${AGG_FLAG} \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     || { echo "VALIDATION FAILED (see .err)"; exit 1; }
