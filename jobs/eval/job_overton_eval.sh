@@ -49,6 +49,9 @@ SCORES="${SCORES:-overton_scores.csv}"
 CONDS="${CONDS:-baseline,scout,div_only}"   # any of: baseline,scout,div_only,route,expand,distributional
 NROLL="${NROLL:-1}"              # samples per (question,condition); >1 -> coverage@K
 KROLL="${KROLL:-0}"             # judge: rollouts used for union coverage@K (0 = all)
+UNION="${UNION:-}"              # cross-condition union groups, e.g.
+                                # "baseline+scout,baseline+scout+expand"
+                                # (empty = auto: baseline+X for each X, plus all)
 PORT="${PORT:-8000}"
 TP="${TP:-4}"
 VLLM="${VLLM:-vllm}"                     # pluraltree-env's vllm (already activated)
@@ -90,8 +93,11 @@ echo "tag failures (injected answers missing <answer> tags):"
 grep -c "missing <answer> tags" logs/overton_eval_${SLURM_JOB_ID}.err || true
 
 echo "=== stage 2: judge ==="
+UNION_FLAG=""
+if [ -n "${UNION}" ]; then UNION_FLAG="--union ${UNION}"; fi
+
 python -m evaluation.overton.judge_overtonbench --score "${OUT}" \
-    --max_users "${MAXU}" --k_rollouts "${KROLL}" \
+    --max_users "${MAXU}" --k_rollouts "${KROLL}" ${UNION_FLAG} \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     --out "${SCORES}" \
     || { echo "JUDGING FAILED (see .err)"; exit 1; }

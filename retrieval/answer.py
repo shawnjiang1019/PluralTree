@@ -37,6 +37,9 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     "distributional": ScoutConfig(tau=0.25, alpha=1.0),  # same retrieval + same
     #        instruction as scout, but injects the FULL subgroup spectrum, not the
     #        two poles (content-fix; subtree_middle.py confirmed the middle is real)
+    "merge": ScoutConfig(tau=0.25, alpha=1.0),   # answer twice (plain + injected)
+    #        then extractively merge both drafts -- targets the union of their
+    #        covered clusters, which is >= the routing oracle (MERGE_INSTRUCTION)
 }
 
 # Conditions that inject the full subgroup spectrum (fork_context_full) instead of
@@ -129,11 +132,47 @@ PLURALISM_EXPAND = (
     "The reader sees ONLY what is inside the <answer> tags."
 )
 
+# MERGE (v7): answer TWICE -- once plain, once with the forks -- then combine.
+# Rationale: per-question coverage sets differ between conditions (v6: Q177
+# baseline 0.00 / scout 1.00; Q7212 baseline 1.00 / scout 0.33), so the UNION of
+# their covered clusters is >= the routing oracle by construction. Routing picks
+# the better draft; merging keeps both. That sidesteps the routing problem which
+# route_signal (no graph signal) and route (0.072) both failed to solve.
+#
+# The merge MUST be extractive, not abstractive. `route` shows that naming a
+# position is not covering it -- the >=4 bar ("my perspective is represented")
+# rewards ARTICULATION DEPTH, so a digest of two drafts can score below either
+# one. Hence: preserve each position at the depth its best draft gave it, and
+# delete only literal duplication. The output is expected to be LONG.
+MERGE_INSTRUCTION = (
+    "You will see a question and two draft answers to it, written independently. "
+    "Draft A was written without any retrieved context; draft B had access to "
+    "survey data about how different groups answer related questions.\n"
+    "Write ONE final answer that keeps EVERY distinct position appearing in "
+    "either draft.\n"
+    "Rules:\n"
+    "- Preserve each position at the SAME level of detail as the draft that "
+    "explained it best. Do not summarize, compress, or shorten explanations — a "
+    "position mentioned in passing does not represent the people who hold it.\n"
+    "- Remove only literal duplication: where both drafts make the same point, "
+    "keep the fuller version once.\n"
+    "- Do not average or reconcile disagreeing positions into a middle view, and "
+    "do not add editorial framing about the drafts themselves.\n"
+    "- Keep any group attributions (which groups hold which view) from draft B.\n"
+    "The final answer will be longer than either draft; that is expected.\n"
+    "Put the final answer inside <answer></answer> tags. The reader sees ONLY "
+    "what is inside those tags."
+)
+
 # Instruction per condition (injected conditions only; baseline uses its own).
 INSTRUCTION_BY_CONDITION: dict[str, str] = {
     "route": PLURALISM_ROUTE,
     "expand": PLURALISM_EXPAND,
 }
+
+# Conditions that make MULTIPLE generation calls (draft A, draft B, then merge)
+# instead of one. Handled by _merge_answer(), not the single-call path.
+MULTI_PASS_CONDITIONS: set[str] = {"merge"}
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 _ANSWER_OPEN_RE = re.compile(r"<answer>(.*)", re.DOTALL | re.IGNORECASE)
@@ -284,6 +323,45 @@ def build_prompt(question: str, forks: list[ScoredFork] | None, graph,
             {"role": "user", "content": ctx + "\n\nQuestion: " + question}]
 
 
+def _merge_answer(question: str, forks, graph, base_url: str, model: str,
+                  full_dist: bool = False) -> tuple[str, dict]:
+    """Draft plain -> draft injected -> extractive merge. Returns (answer, parts).
+
+    Three calls. The point is the UNION of what the two drafts cover: v6 showed
+    the covered-cluster sets differ per question, and union >= oracle >= best
+    single by construction. Whether the merge REALIZES that union is the open
+    question -- compression is how it would fail (see MERGE_INSTRUCTION).
+    """
+    draft_a = chat(base_url, model,
+                   [{"role": "system", "content": BASELINE_INSTRUCTION},
+                    {"role": "user", "content": question}],
+                   temperature=0.7, max_tokens=2048)
+
+    if forks:
+        raw_b = chat(base_url, model,
+                     build_prompt(question, forks, graph, PLURALISM_INSTRUCTION,
+                                  full_dist),
+                     temperature=0.7, max_tokens=4096)
+        draft_b, _ = extract_answer(raw_b)
+    else:                                   # no forks retrieved -> nothing to merge
+        raw_b, draft_b = "", ""
+        return draft_a, {"draft_a": draft_a, "draft_b": "", "raw_merge": draft_a}
+
+    raw_merge = chat(base_url, model,
+                     [{"role": "system", "content": MERGE_INSTRUCTION},
+                      {"role": "user", "content":
+                       f"Question: {question}\n\n"
+                       f"--- DRAFT A (no retrieved context) ---\n{draft_a}\n\n"
+                       f"--- DRAFT B (with survey context) ---\n{draft_b}"}],
+                     temperature=0.7, max_tokens=6144)   # holds both drafts' content
+    merged, tagged = extract_answer(raw_merge)
+    if not tagged:
+        import sys
+        print(f"warning: merge missing <answer> tags for: {question[:60]}",
+              file=sys.stderr)
+    return merged, {"draft_a": draft_a, "draft_b": draft_b, "raw_merge": raw_merge}
+
+
 def answer(question: str, condition: str, *, graph=None, h_all=None,
            text_feat=None, manifold=None, base_url: str = "",
            model: str = "", dry_run: bool = False, q_emb=None,
@@ -327,6 +405,16 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
     if dry_run:
         prompt = "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
         return _pack(prompt, prompt)
+    if condition in MULTI_PASS_CONDITIONS:
+        merged, parts = _merge_answer(question, forks, graph, base_url, model,
+                                      full_dist)
+        if with_trace:
+            return merged, {"raw": parts["raw_merge"],
+                            "think": extract_think(parts["raw_merge"]),
+                            "fork_context": ctx, "n_forks": len(forks or []),
+                            "draft_a": parts["draft_a"],
+                            "draft_b": parts["draft_b"]}
+        return (merged, parts["raw_merge"]) if with_raw else merged
     if not forks:
         text = chat(base_url, model, messages, temperature=0.7)
         return _pack(text, text)

@@ -117,12 +117,18 @@ def main():
                     # 'response'; the rest is for observing retrieval -> triage ->
                     # answer: 'fork_context' = what the scout injected, 'think' =
                     # how the model triaged it, 'raw' = the full generation.
-                    f.write(json.dumps({"question_id": qid, "question": question,
-                                        "condition": cond, "rollout": rollout,
-                                        "response": resp, "raw": trace["raw"],
-                                        "think": trace["think"],
-                                        "fork_context": trace["fork_context"],
-                                        "n_forks": trace["n_forks"]}) + "\n")
+                    row = {"question_id": qid, "question": question,
+                           "condition": cond, "rollout": rollout,
+                           "response": resp, "raw": trace["raw"],
+                           "think": trace["think"],
+                           "fork_context": trace["fork_context"],
+                           "n_forks": trace["n_forks"]}
+                    # multi-pass conditions (merge) also carry their drafts, so a
+                    # merge that LOSES coverage can be diagnosed against them
+                    for k in ("draft_a", "draft_b"):
+                        if k in trace:
+                            row[k] = trace[k]
+                    f.write(json.dumps(row) + "\n")
                     f.flush()
                     tag = f" r{rollout}" if args.n_rollouts > 1 else ""
                     print(f"  Q{qid} [{cond}{tag}] {len(resp)} chars")

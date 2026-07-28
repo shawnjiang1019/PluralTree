@@ -32,7 +32,10 @@ cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 mkdir -p logs
 
 MODEL="${MODEL:-Qwen/Qwen2.5-72B-Instruct}"
-N="${N:-300}"
+N="${N:-300}"                    # held-out ratings for per-rating validation;
+                                 # 0 = SKIP it (not "all" — 0 samples is NaN)
+REL="${REL:-1}"                  # 1 = human split-half reliability (free, no
+                                 # judge calls): the ceiling any judge could hit
 WITHIN="${WITHIN:-40}"           # participants for within-participant discrimination
                                  # (~8 judge calls each); 0 = skip
 AGG="${AGG:-1}"                  # 1 = run the aggregate judge-vs-human OvertonScore
@@ -61,10 +64,12 @@ done
 curl -sf "http://localhost:${PORT}/health" > /dev/null \
     || { echo "vLLM never became healthy"; exit 1; }
 
-AGG_FLAG=""
-if [ "${AGG}" = "1" ]; then AGG_FLAG="--validate_aggregate --agg_max_users ${AGGU}"; fi
+FLAGS=""
+if [ "${N}" != "0" ]; then FLAGS="--validate --n ${N}"; fi
+if [ "${REL}" = "1" ]; then FLAGS="${FLAGS} --human_reliability"; fi
+if [ "${AGG}" = "1" ]; then FLAGS="${FLAGS} --validate_aggregate --agg_max_users ${AGGU}"; fi
 
-python -m evaluation.overton.judge_overtonbench --validate --n "${N}" \
-    --within_n "${WITHIN}" ${AGG_FLAG} \
+python -m evaluation.overton.judge_overtonbench ${FLAGS} \
+    --within_n "${WITHIN}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     || { echo "VALIDATION FAILED (see .err)"; exit 1; }

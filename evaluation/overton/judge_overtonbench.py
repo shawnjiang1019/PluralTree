@@ -273,6 +273,83 @@ def validate_within(idx, base_url: str, model: str, n_participants: int,
 
 
 # ---------------------------------------------------------------------------
+# How reliable is the HUMAN ranking itself? (the ceiling; no judge calls)
+# ---------------------------------------------------------------------------
+def human_reliability(idx, n_splits: int = 200, seed: int = 0,
+                      max_users: int = 0) -> None:
+    """Split-half reliability of the human OvertonScore ranking over the models.
+
+    Before blaming the judge for a low aggregate rho, ask what rho is even
+    ACHIEVABLE. Split each question's participants in half, compute the human
+    OvertonScore for every reference model on each half, and rank-correlate the
+    two halves. That is humans vs humans -- a perfect judge cannot beat it.
+
+    If this comes back low, the 8 models are simply not distinguishable at this
+    sample size (their human scores span only a few points), and no judge --
+    ours or Gemini's -- could rank them reliably on our data slice.
+
+    Reports the raw split-half rho and the Spearman-Brown correction to
+    full-sample reliability, r_full = 2r / (1 + r).
+    """
+    from collections import defaultdict
+
+    rng = random.Random(seed)
+    by_question = defaultdict(list)
+    for (qid, _user), e in idx.items():
+        by_question[qid].append(e)
+    models = sorted({m for e in idx.values() for m, _, _ in e["ratings"]})
+
+    def _overton(users_per_q) -> dict:
+        """model -> mean coverage over questions, from HUMAN ratings only."""
+        acc = defaultdict(list)
+        for users in users_per_q:
+            cr = defaultdict(lambda: defaultdict(list))
+            for e in users:
+                for m, _resp, rating in e["ratings"]:
+                    cr[m][e["cluster"]].append(float(rating))
+            for m in models:
+                if cr[m]:
+                    covered = sum(1 for v in cr[m].values() if st.mean(v) >= 4.0)
+                    acc[m].append(covered / len(cr[m]))
+        return {m: st.mean(v) for m, v in acc.items() if v}
+
+    rhos = []
+    for _ in range(n_splits):
+        half_a, half_b = [], []
+        for _qid, users in by_question.items():
+            us = users[:]
+            if max_users and len(us) > max_users:
+                us = rng.sample(us, max_users)
+            rng.shuffle(us)
+            mid = len(us) // 2
+            if mid < 1:
+                continue
+            half_a.append(us[:mid])
+            half_b.append(us[mid:])
+        sa, sb = _overton(half_a), _overton(half_b)
+        common = [m for m in models if m in sa and m in sb]
+        if len(common) >= 3:
+            r = _rank_corr([sa[m] for m in common], [sb[m] for m in common])
+            if r == r:
+                rhos.append(r)
+
+    print(f"\nhuman split-half reliability of the model ranking "
+          f"({len(rhos)} splits, {len(models)} models):")
+    if not rhos:
+        print("  not enough data")
+        return
+    rhos.sort()
+    mean_r = st.mean(rhos)
+    sb = 2 * mean_r / (1 + mean_r) if mean_r > -1 else float("nan")
+    lo, hi = rhos[int(0.025 * len(rhos))], rhos[int(0.975 * len(rhos))]
+    print(f"  mean split-half spearman   = {mean_r:+.3f}   "
+          f"95% range [{lo:+.3f}, {hi:+.3f}]")
+    print(f"  Spearman-Brown (full-sample) = {sb:+.3f}")
+    print("  ^ CEILING: humans disagreeing with themselves. A judge cannot\n"
+          "    exceed this, so compare the aggregate rho against THIS, not 1.0.")
+
+
+# ---------------------------------------------------------------------------
 # Aggregate validation: judge vs human OvertonScore over the reference models
 # ---------------------------------------------------------------------------
 def validate_aggregate(idx, base_url: str, model: str, max_users: int,
@@ -329,6 +406,20 @@ def validate_aggregate(idx, base_url: str, model: str, max_users: int,
     print(f"  {'model':<34}{'human':>9}{'judge':>9}{'diff':>9}")
     for m, h, j in rows:
         print(f"  {m:<34}{h:>9.4f}{j:>9.4f}{j - h:>+9.4f}")
+
+    # -- per-QUESTION agreement (n up to models x questions, far more stable) --
+    # The model-level rho below has only 8 points. This pools every
+    # (model, question) coverage pair, which is also the level our paired
+    # condition comparisons actually operate at.
+    pairs = [(h, j) for m in models
+             for h, j in zip(human_cov[m], judge_cov[m])]
+    if len(pairs) >= 10:
+        hq = [h for h, _ in pairs]
+        jq = [j for _, j in pairs]
+        print(f"\n  per-question agreement over {len(pairs)} (model, question) pairs:")
+        print(f"    spearman = {_rank_corr(jq, hq):+.3f}   "
+              f"mean|diff| = {st.mean(abs(j - h) for h, j in pairs):.4f}")
+        print("    (this is the level paired baseline-vs-condition comparisons use)")
     if len(rows) >= 3:
         hs = [h for _, h, _ in rows]
         js = [j for _, _, j in rows]
@@ -342,6 +433,22 @@ def validate_aggregate(idx, base_url: str, model: str, max_users: int,
                   f"of quality. ***")
         print(f"\n  spearman(judge, human) over {len(rows)} models = {rho:+.3f}"
               f"   (paper: +0.88)")
+        # n=8 => Spearman is extremely noisy (SE ~ 0.4). Without an interval,
+        # "0.167 vs 0.88" can look conclusive when it is not.
+        boot = []
+        brng = random.Random(0)
+        for _ in range(2000):
+            idxs = [brng.randrange(len(rows)) for _ in range(len(rows))]
+            bh = [rows[i][1] for i in idxs]
+            bj = [rows[i][2] for i in idxs]
+            r = _rank_corr(bj, bh)
+            if r == r:
+                boot.append(r)
+        if boot:
+            boot.sort()
+            lo, hi = boot[int(0.025 * len(boot))], boot[int(0.975 * len(boot))]
+            print(f"    bootstrap 95% CI [{lo:+.3f}, {hi:+.3f}] over {len(rows)} "
+                  f"models — n is tiny, read the interval, not the point estimate")
         print(f"  mean |judge - human| OvertonScore      = {mae:.4f}")
         print("  ^ THIS is the validity level our condition comparison relies on:\n"
               "    it certifies the judge ranks systems like humans do, which\n"
@@ -364,8 +471,50 @@ def _covered_clusters(users: list[dict], resp: str, base_url: str,
     return {c for c, v in cluster_ratings.items() if st.mean(v) >= 4.0}
 
 
+def _report_unions(covered: dict, n_clusters_by: dict, combos: list[list[str]]) -> None:
+    """Cross-condition union coverage: what if we KEPT BOTH answers' viewpoints?
+
+    Routing picks the better condition per question (the oracle). Union takes the
+    covered clusters of both, so union >= oracle ALWAYS -- its ceiling is strictly
+    above perfect routing, without predicting anything. This reports, per combo:
+
+      best single  the strongest individual condition in the combo
+      oracle       per-question max (what a PERFECT router would score)
+      union        per-question union of covered clusters (this proposal)
+
+    union is an upper bound on a merged/augmented answer: the merge still has to
+    express every one of those viewpoints well enough to clear the >=4 bar in a
+    single response, which `route` (0.072) shows is not automatic.
+    """
+    print(f"\ncross-condition union (union >= oracle >= best single, by construction):")
+    print(f"  {'conditions':<34}{'n':>4}{'best single':>13}{'oracle':>9}"
+          f"{'union':>9}{'gain':>8}")
+    for combo in combos:
+        singles = {c: [] for c in combo}
+        oracle_v, union_v, n = [], [], 0
+        for qid, nc in n_clusters_by.items():
+            sets = [covered.get((qid, c)) for c in combo]
+            if not nc or any(s is None for s in sets):
+                continue
+            n += 1
+            fracs = [len(s) / nc for s in sets]
+            for c, f in zip(combo, fracs):
+                singles[c].append(f)
+            oracle_v.append(max(fracs))
+            union_v.append(len(set().union(*sets)) / nc)
+        if not n:
+            continue
+        best_c = max(singles, key=lambda c: st.mean(singles[c]))
+        best = st.mean(singles[best_c])
+        orc, uni = st.mean(oracle_v), st.mean(union_v)
+        print(f"  {'+'.join(combo):<34}{n:>4}{best:>13.4f}{orc:>9.4f}"
+              f"{uni:>9.4f}{uni - best:>+8.4f}")
+        print(f"  {'':<34}{'':>4}{'(' + best_c + ')':>13}")
+
+
 def score(idx, responses_path: str, base_url: str, model: str,
-          max_users: int, seed: int, out_path: str, k_rollouts: int = 0) -> None:
+          max_users: int, seed: int, out_path: str, k_rollouts: int = 0,
+          union_spec: str | None = None) -> None:
     """Score responses. With one response per (question, condition) this is the
     paper's OvertonScore. With K rollouts per pair (eval_overtonbench --n_rollouts
     K), it ALSO reports across-sample coverage@K -- the same human-grounded
@@ -403,6 +552,8 @@ def score(idx, responses_path: str, base_url: str, model: str,
         groups[(r["question_id"], r["condition"])].append(r)
 
     results = []
+    covered: dict[tuple[int, str], set] = {}      # (qid, cond) -> covered clusters
+    n_clusters_by: dict[int, int] = {}
     for (qid, cond), rs in sorted(groups.items()):
         users = users_for(qid)
         if not users:
@@ -416,6 +567,8 @@ def score(idx, responses_path: str, base_url: str, model: str,
                     for r in rs]
         if not per_resp or not n_clusters:
             continue
+        covered[(qid, cond)] = set().union(*per_resp)
+        n_clusters_by[qid] = n_clusters
         within = st.mean(len(c) for c in per_resp) / n_clusters
         union = len(set().union(*per_resp)) / n_clusters
         positions = st.mean(len(c) for c in per_resp)
@@ -455,6 +608,21 @@ def score(idx, responses_path: str, base_url: str, model: str,
             line += f"{union:>13.4f}{pos:>10.2f}{gain:>14.2f}"
         print(line + f"   (n={len(cs)})")
 
+    # -- cross-condition union: the "keep both answers' viewpoints" ceiling ----
+    conds = sorted({c for _q, c in covered})
+    if len(conds) >= 2:
+        if union_spec:
+            combos = [[c.strip() for c in g.split("+") if c.strip()]
+                      for g in union_spec.split(",")]
+            combos = [g for g in combos if len(g) >= 2 and all(c in conds for c in g)]
+        else:                       # default: baseline+X for each X, then all
+            base = "baseline" if "baseline" in conds else conds[0]
+            combos = [[base, c] for c in conds if c != base]
+            if len(conds) > 2:
+                combos.append(conds)
+        if combos:
+            _report_unions(covered, n_clusters_by, combos)
+
 
 def main():
     ap = argparse.ArgumentParser(description="OvertonBench open-weight judge")
@@ -467,6 +635,10 @@ def main():
     ap.add_argument("--validate_aggregate", action="store_true",
                     help="judge vs human OvertonScore over the reference models "
                          "(the paper's rho=0.88 check)")
+    ap.add_argument("--human_reliability", action="store_true",
+                    help="split-half reliability of the HUMAN model ranking — "
+                         "the ceiling any judge could reach. No judge calls.")
+    ap.add_argument("--rel_splits", type=int, default=200)
     ap.add_argument("--agg_max_users", type=int, default=5,
                     help="participants per question for --validate_aggregate")
     ap.add_argument("--score", default=None, metavar="RESPONSES_JSONL")
@@ -476,6 +648,9 @@ def main():
     ap.add_argument("--n", type=int, default=300, help="validation sample size")
     ap.add_argument("--max_users", type=int, default=0,
                     help="cap participants judged per question (0 = all)")
+    ap.add_argument("--union", default=None, metavar="A+B,A+B+C",
+                    help="condition groups to union-score (default: baseline+X "
+                         "for each other condition, plus all together)")
     ap.add_argument("--k_rollouts", type=int, default=0,
                     help="cap rollouts per (question, condition) used for "
                          "coverage@K (0 = all present). >1 requires responses "
@@ -483,12 +658,15 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="overton_scores.csv")
     args = ap.parse_args()
-    if not (args.validate or args.within_n or args.validate_aggregate or args.score):
+    if not (args.validate or args.within_n or args.validate_aggregate
+            or args.human_reliability or args.score):
         ap.error("pass --validate / --within_n N / --validate_aggregate / "
-                 "--score RESPONSES_JSONL")
+                 "--human_reliability / --score RESPONSES_JSONL")
 
     idx = load_index(args.split)
     print(f"index: {len(idx)} (question, participant) entries")
+    if args.human_reliability:
+        human_reliability(idx, args.rel_splits, args.seed)
     if args.validate:
         validate(idx, args.base_url, args.model, args.n, args.seed)
     if args.within_n:
@@ -498,7 +676,7 @@ def main():
                            args.seed)
     if args.score:
         score(idx, args.score, args.base_url, args.model,
-              args.max_users, args.seed, args.out, args.k_rollouts)
+              args.max_users, args.seed, args.out, args.k_rollouts, args.union)
 
 
 if __name__ == "__main__":
