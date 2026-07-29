@@ -44,10 +44,20 @@ AGGU="${AGGU:-5}"                # participants/question for the aggregate check
                                  # (cost ~= 60 questions x AGGU x 8 models)
 PORT="${PORT:-8000}"
 TP="${TP:-4}"                    # tensor parallel = GPUs requested above
+MAXLEN="${MAXLEN:-8192}"
+GPUUTIL="${GPUUTIL:-0.90}"
+VLLM_EXTRA="${VLLM_EXTRA:-}"     # e.g. --kv-cache-dtype fp8
+# MEMORY: bf16 72B is ~145GB of weights. 4x A100-40GB = 160GB total, ~144GB
+# usable at 0.90 util -> does NOT fit before any KV cache. To run bf16 72B:
+#     sbatch --gres=gpu:8 --nodes=1 ... TP=8      (if 8-GPU nodes exist)
+# Otherwise prefer Int8 (~73GB, fits on 4 GPUs) to test the quantization
+# hypothesis: MODEL=Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8
 echo "MODEL=${MODEL}  N=${N}  WITHIN=${WITHIN}  AGG=${AGG}(u=${AGGU})  TP=${TP}"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 vllm serve "${MODEL}" --port "${PORT}" --tensor-parallel-size "${TP}" \
-    --max-model-len 8192 > logs/vllm_${SLURM_JOB_ID}.log 2>&1 &
+    --max-model-len "${MAXLEN}" --gpu-memory-utilization "${GPUUTIL}" \
+    ${VLLM_EXTRA} > logs/vllm_${SLURM_JOB_ID}.log 2>&1 &
 VLLM_PID=$!
 trap "kill ${VLLM_PID} 2>/dev/null" EXIT
 

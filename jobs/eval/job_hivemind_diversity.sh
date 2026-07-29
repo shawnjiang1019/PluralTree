@@ -20,9 +20,13 @@
 # Generation is resumable: rerunning tops each (query,condition) pool back up to
 # NS samples, so a timeout just needs a resubmit.
 #
-# Prereq (login node, once): the held-out eval embedder must be in HF_HOME —
-#   huggingface-cli download BAAI/bge-large-en-v1.5
-# (distinct from the scout's MiniLM to keep the eval independent of retrieval).
+# Prereqs (login node, once; compute nodes are offline):
+#   module load python/3.11 gcc arrow/24.0.0 && source ~/pluraltree-env/bin/activate
+#   export HF_HOME=~/projects/def-enaskt/shawnj/hf_cache
+#   unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE HF_DATASETS_OFFLINE
+#   python -c "from huggingface_hub import snapshot_download as d; d('BAAI/bge-large-en-v1.5')"
+#   python -c "from datasets import load_dataset; load_dataset('liweijiang/infinite-chats-eval')"
+# bge-large is deliberately distinct from the scout's MiniLM (eval independence).
 
 module load python/3.11 gcc cuda/13.2 arrow/24.0.0 opencv/4.13.0
 source ~/pluraltree-env/bin/activate
@@ -49,6 +53,9 @@ DATASET="${DATASET:-opinionqa}"
 GEN="${GEN:-hivemind_gen.jsonl}"
 DIV="${DIV:-hivemind_diversity.csv}"
 EVAL_MODEL="${EVAL_MODEL:-BAAI/bge-large-en-v1.5}"   # held-out eval embedder (NOT MiniLM)
+HF_NAME="${HF_NAME:-liweijiang/infinite-chats-eval}" # INFINITY-CHAT100 queries.
+# NOTE: liweijiang/artificial-hivemind is a HF *collection* page, not a loadable
+# dataset — load_dataset() on it fails. Verified IDs in data/loaders/infinity_chat.py
 PORT="${PORT:-8000}"
 TP="${TP:-4}"
 VLLM="${VLLM:-vllm}"
@@ -83,6 +90,7 @@ export CUDA_VISIBLE_DEVICES=""
 echo "=== stage 1: generate ==="
 python -m evaluation.hivemind.generate_hivemind \
     --conditions "${CONDS}" --num_samples "${NS}" --num_queries "${NQ}" \
+    --hf_name "${HF_NAME}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     ${EMB_ARGS} --out "${GEN}" \
     || { echo "GENERATION FAILED (see .err)"; exit 1; }

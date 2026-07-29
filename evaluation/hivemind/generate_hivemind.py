@@ -44,7 +44,10 @@ def main():
     ap.add_argument("--base_url", default="http://localhost:8000/v1")
     ap.add_argument("--model", required=True)
     # query source
-    ap.add_argument("--hf_name", default="liweijiang/artificial-hivemind")
+    ap.add_argument("--hf_name", default="liweijiang/infinite-chats-eval",
+                    help="INFINITY-CHAT100 queries. NOTE: "
+                         "liweijiang/artificial-hivemind is a HF *collection*, "
+                         "not a loadable dataset — see data/loaders/infinity_chat.py")
     ap.add_argument("--split", default="train")
     ap.add_argument("--config", default=None)
     ap.add_argument("--num_queries", type=int, default=100)

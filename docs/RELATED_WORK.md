@@ -9,6 +9,13 @@ survey. Each entry notes *why it matters here*.
 > up to early 2026 — run a fresh literature search for newer hyperbolic-KG and
 > KG-augmented-LLM work before writing up.
 
+> **Companion file:** [`related_work_rag_diversity.md`](./related_work_rag_diversity.md)
+> covers the *retrieval + generation* axis (GraphRAG/KG-RAG, pluralism & diversity,
+> context over-anchoring, diversity-aware retrieval, union-of-generations) with a
+> July-2026 search — including **HyperbolicRAG** (2511.18808) and **HyRAG**
+> (2606.03307), the newer hyperbolic-RAG work this note asks for. It also lists the
+> proposed experiments (E1–E7).
+
 ---
 
 > ⚠️ **Closest prior work — read before positioning the project.**

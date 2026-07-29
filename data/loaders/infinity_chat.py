@@ -8,10 +8,22 @@ measure intra-pool self-similarity (see evaluation/hivemind/). The 100-query
 INFINITY-CHAT100 subset is the human-verified open-ended set used in the paper's
 repetition study (Fig 4/5).
 
-The HF dataset ``liweijiang/artificial-hivemind`` is gated; field names are not
-public, so extraction is tolerant (like the SubPOP loader). Point ``--hf_name``/
-``--split`` at whatever config exposes the queries; a ``subset100`` marker field
-is used if present, else a deterministic sample of ``n`` is taken.
+Dataset IDs (verified July 2026 — ``liweijiang/artificial-hivemind`` is a HF
+*collection* page, NOT a loadable dataset; the repos use "infinite-chats"):
+
+    liweijiang/infinite-chats-eval            100 rows, column: query   <- default
+    liweijiang/infinite-chats-human-absolute  750 rows: user_query, response,
+                                              human_labels (23-26 raters each)
+    liweijiang/infinite-chats-human-pairwise  pairwise preferences
+    liweijiang/infinite-chats-taxonomy        the 6-category / 17-subcategory taxonomy
+
+``infinite-chats-eval`` IS the 100-query INFINITY-CHAT100 set, so no subsetting
+is needed at the default. It exposes only ``query`` — there is no category column,
+so ``category`` slicing is a no-op here (every row becomes "uncategorized"); the
+per-category breakdown needs a join against ``infinite-chats-taxonomy``.
+
+Field extraction stays tolerant (like the SubPOP loader) so a different config or
+a schema change does not break the loader.
 """
 
 from __future__ import annotations
@@ -46,7 +58,7 @@ def _is_subset100(row: dict) -> bool:
 def load_hivemind_queries(
     n: int = 100,
     *,
-    hf_name: str = "liweijiang/artificial-hivemind",
+    hf_name: str = "liweijiang/infinite-chats-eval",
     split: str = "train",
     config: str | None = None,
     seed: int = 0,
