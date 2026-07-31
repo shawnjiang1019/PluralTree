@@ -99,8 +99,16 @@ def main():
     ap.add_argument("--min_depth_words", type=int, default=None,
                     help="override RewardConfig.min_depth_words (sweep this)")
     ap.add_argument("--embedder", default="sentence-transformers/all-mpnet-base-v2")
+    ap.add_argument("--exclude", default="",
+                    help="comma-separated conditions to drop. Run v6 BOTH ways: "
+                         "with `route` included the reward only has to notice a "
+                         "0.4 collapse (easy); excluding it leaves the near-ties, "
+                         "which is the regime GRPO actually operates in -- every "
+                         "rollout in a group comes from the SAME policy and they "
+                         "resemble each other far more than baseline resembles route")
     ap.add_argument("--out", default="docs/reward_eval_correlation.csv")
     args = ap.parse_args()
+    drop = {c.strip() for c in args.exclude.split(",") if c.strip()}
 
     from alignment.reward import (RewardConfig, coverage_reward,
                                   coverage_reward_v1, default_embed_fn,
@@ -136,7 +144,7 @@ def main():
     per_q_pick = {"v1": 0, "v2": 0, "n": 0}
 
     for qid in sorted(resp):
-        conds = [c for c in resp[qid] if c in cov.get(qid, {})]
+        conds = [c for c in resp[qid] if c in cov.get(qid, {}) and c not in drop]
         if len(conds) < 2:
             continue
         anchor_txt = parse_anchor_text(ctx.get(qid, ""))

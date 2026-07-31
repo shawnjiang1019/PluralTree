@@ -98,6 +98,11 @@ N_SUB = 20         # subsamples averaged per matched-k estimate
 def vendi(sim: np.ndarray) -> float:
     """Effective number of distinct modes: exp(Shannon entropy of eigvals of S/n).
 
+    Pass the RAW Gram matrix of unit vectors -- PSD with unit diagonal, the
+    Vendi kernel requirement (arXiv:2210.02410). Do not clip S to [0,1] first:
+    that breaks PSD, and it fires exactly when cosines are negative, i.e. on
+    the most diverse pools.
+
     Grows with n -- only compare Vendi across responses of MATCHED unit count.
     """
     n = sim.shape[0]
@@ -110,7 +115,7 @@ def vendi(sim: np.ndarray) -> float:
 
 def matched_vendi(U: np.ndarray, k: int, rng) -> float:
     """Vendi at exactly k units, averaged over subsamples -- length-controlled."""
-    return float(np.mean([vendi(np.clip(U[i] @ U[i].T, 0, 1))
+    return float(np.mean([vendi(U[i] @ U[i].T)
                           for i in (rng.choice(len(U), k, replace=False)
                                     for _ in range(N_SUB))]))
 
@@ -176,7 +181,7 @@ def main():
             U = embed(units)
             emb[c] = U
             rec[f"pole_{c}"] = float((U @ P.T).max(axis=1).mean())  # on-pole mass
-            rec[f"modes_{c}"] = vendi(np.clip(U @ U.T, 0, 1))       # raw: LENGTH-BIASED
+            rec[f"modes_{c}"] = vendi(U @ U.T)       # raw: LENGTH-BIASED
             rec[f"mpc_{c}"] = mean_pairwise_cos(U)                  # length-robust
             rec[f"nunits_{c}"] = len(units)
         # length-controlled breadth: Vendi at matched unit count (see module docstring)

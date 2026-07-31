@@ -1,0 +1,219 @@
+% PluralTree — GRPO alignment phase, method section.
+% Standalone-compilable; the body (Sections 1–6) lifts directly into a paper.
+%   pdflatex grpo_method.tex
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue]{hyperref}
+
+\newcommand{\pol}{\pi_\theta}
+\newcommand{\polold}{\pi_{\theta_{\mathrm{old}}}}
+\newcommand{\polref}{\pi_{\mathrm{ref}}}
+\newcommand{\Pos}{\mathcal{P}}
+\newcommand{\Ind}[1]{\mathbf{1}\!\left[#1\right]}
+
+\title{Pluralistic Alignment via Group-Relative Policy Optimization\\
+{\large with a Graph-Grounded Coverage Reward}}
+\author{PluralTree}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setup and notation}
+
+Let $q$ be an open-ended question on which people genuinely disagree. The
+knowledge graph $\mathcal{G}$ is a rooted tree over survey data
+(\textsc{root} $\to$ topic $\to$ subtopic $\to$ question $\to$ axis $\to$
+opinion), where an \emph{axis} is a (question $\times$ demographic attribute)
+pair and each opinion leaf carries one subgroup's probability distribution over
+that question's answer options.
+
+A retrieval module (the \emph{divergence scout}) selects an anchor
+$a(q)\in\mathcal{G}$ and renders its subtree into a context block, giving the
+policy input $x_q$. Retrieval is executed once, at dataset-construction time:
+the graph encoder and the scout are \textbf{frozen} throughout this phase, so
+what is trained is the reasoner's use of retrieved evidence, not the retrieval
+itself.
+
+\section{Graph-grounded positions}
+
+For anchor $a(q)$ we aggregate the opinion leaves of its subtree into a set of
+population-level \emph{positions}
+\[
+  \Pos(q)=\{(p_1,\pi_1),\dots,(p_n,\pi_n)\},
+  \qquad
+  \pi_k=\frac{1}{|S_k|}\sum_{g\in S_k} \Pr\nolimits_g(\text{option }k),
+\]
+where $S_k$ is the set of subgroups answering the underlying survey item and
+$\pi_k$ is the mean subgroup probability of option $k$ (its \emph{prevalence}).
+Positions below a prevalence floor are discarded as noise.
+
+This is the crux of the design: the reward is defined against \emph{measured
+human survey distributions}, not against a judge model. It therefore (i)
+introduces no dependence on the held-out evaluation benchmark, and (ii) can be
+computed on any question with a graph anchor, giving effectively unlimited
+training signal.
+
+\section{Reward}
+
+Let $y$ be a generated answer, segmented into position-units
+$u_1,\dots,u_m$ (enumerated items or sentences). Let $e(\cdot)$ be a
+\emph{held-out} sentence embedder --- deliberately distinct from the encoder
+the scout retrieves with, so the reward cannot credit merely
+retrieval-shaped text --- and write
+$s_{jk}=\langle e(u_j),\,e(p_k)\rangle$ for unit-normalised embeddings.
+
+\paragraph{Mention.} Position $k$ is \emph{mentioned} if some unit matches it:
+\[
+  \textsc{men}_k(y)=\Ind{\max_j s_{jk}\ \ge\ \tau }.
+\]
+
+\paragraph{Depth.} Each unit is attributed to its single best-matching position,
+$\alpha(j)=\arg\max_k s_{jk}$, and contributes its length only if that match
+clears $\tau$:
+\[
+  \mathrm{dep}_k(y)=\sum_{j\,:\,\alpha(j)=k,\ s_{j\alpha(j)}\ge\tau} |u_j| ,
+\]
+with $|u_j|$ the word count of unit $j$. Note $\textsc{men}$ and $\mathrm{dep}$
+use different assignment rules: a position may be \emph{mentioned} by a unit
+whose best match lies elsewhere.
+
+\paragraph{Coverage.} A position counts only when it is both named and
+articulated,
+\begin{equation}\label{eq:covered}
+  \textsc{cov}_k(y)\;=\;\textsc{men}_k(y)\;\wedge\;\Ind{\mathrm{dep}_k(y)\ \ge\ d},
+\end{equation}
+for a depth threshold $d$. Equation~\eqref{eq:covered} is the central
+correction relative to a mention-only reward. Empirically, an answer that names
+every position in a single clause each scores near zero on the target metric
+while a mention-only reward scores it as full recall; without the depth term the
+reward is blind to the dominant failure mode.
+
+\paragraph{Terms.} With $\tau$ the match threshold and $T$ an effective position
+count,
+\begin{align}
+  R(y) &= \frac{1}{n}\sum_{k=1}^{n}\textsc{cov}_k(y)
+        &&\text{(recall, \emph{uniform} over positions)}\\
+  P(y) &= \frac{1}{m}\sum_{j=1}^{m}\Ind{\max_k s_{jk}\ge\tau}
+        &&\text{(precision; penalises padding)}\\
+  V(y) &= \frac{\max\!\big(0,\ \textstyle\sum_k \textsc{cov}_k(y)-T\big)}{T},
+        \quad T=\exp\!\big(H(\pi)\big)
+        &&\text{(over-enumeration)}
+\end{align}
+
+Recall is \emph{unweighted} even though prevalences $\pi_k$ are available. The
+evaluation metric counts every viewpoint cluster equally; weighting recall by
+prevalence would train the policy to serve the majority and neglect exactly the
+minority positions pluralism exists to represent.
+
+\paragraph{Composition.} The terms combine multiplicatively,
+\begin{equation}\label{eq:reward}
+  r(y)\;=\;R(y)\;\cdot\;P(y)^{\lambda_p}\;\cdot\;\frac{1}{1+\lambda_v V(y)}
+  \;\in[0,1],
+\end{equation}
+rather than as subtracted penalties. Additive penalties admit a compensatory
+effect --- the policy inflates one term to pay for another --- whereas factors in
+$[0,1]$ cannot be traded off, and \eqref{eq:reward} needs no clamping.
+We set $\lambda_v=0$ by default: the evaluation metric is monotone in the number
+of clusters covered, so it cannot reward commitment, and $T$ is derived from
+\emph{graph} prevalence skew, which does not imply few \emph{human} viewpoint
+clusters. The anti-enumeration role is instead served by the depth term in
+\eqref{eq:covered}: listing many positions shallowly leaves none above $d$.
+
+\section{Objective}
+
+For each prompt $x_q$ we sample a group of $G$ completions
+$\{y_i\}_{i=1}^{G}\sim\polold(\cdot\mid x_q)$ and score each with
+\eqref{eq:reward}. The group supplies its own baseline, so no value network is
+required:
+\begin{equation}\label{eq:adv}
+  A_i \;=\; \frac{r(y_i)-\mu}{\sigma+\varepsilon},
+  \qquad
+  \mu=\tfrac{1}{G}\textstyle\sum_i r(y_i),\quad
+  \sigma=\mathrm{std}\big(r(y_1),\dots,r(y_G)\big).
+\end{equation}
+Writing $\rho_{i,t}(\theta)=\dfrac{\pol(y_{i,t}\mid x_q,y_{i,<t})}
+{\polold(y_{i,t}\mid x_q,y_{i,<t})}$, the objective is the clipped
+policy-gradient surrogate with a KL anchor to the reference policy:
+\begin{equation}\label{eq:grpo}
+  \mathcal{J}(\theta)=
+  \mathbb{E}\Bigg[\frac{1}{G}\sum_{i=1}^{G}\frac{1}{|y_i|}\sum_{t=1}^{|y_i|}
+  \min\Big(\rho_{i,t}A_i,\ \mathrm{clip}(\rho_{i,t},1-\epsilon,1+\epsilon)A_i\Big)
+  \Bigg]
+  \;-\;\beta\,\mathbb{D}_{\mathrm{KL}}\!\big[\pol \,\|\, \polref\big].
+\end{equation}
+
+A consequence of \eqref{eq:adv} worth stating: if every rollout in a group
+receives the same reward, $\sigma\to 0$ and the group contributes no gradient.
+This is benign for the per-response reward \eqref{eq:reward}, whose value
+depends on response content, but it becomes a real hazard for any
+\emph{group-dependent} reward (e.g.\ crediting each rollout by its marginal
+contribution to the group's union coverage), where perfect complementarity and
+total collapse both yield symmetric rewards and hence a vanishing advantage.
+
+\section{Policy}
+
+$\pol$ is a LoRA adapter over a trainable bf16 instruction-tuned base
+($\sim$7B); the evaluation-time reasoner is a larger quantised model and is not
+trainable. Consequently any comparison must include a \emph{same-base}
+no-training control: a policy may improve over its own base and still sit below
+the larger model's untrained baseline.
+
+\section{Leakage protocol}
+
+The evaluation benchmark's questions and its human ratings are held out
+absolutely. Training prompts are drawn from the graph's own survey questions,
+and any question whose normalised text matches a benchmark item is dropped at
+dataset-construction time. The reward \eqref{eq:reward} never consults human
+ratings or a judge model, so no evaluation signal can enter training through the
+reward path.
+
+\section{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+Symbol & Meaning & Value \\
+\midrule
+$G$ & rollouts per prompt (group size) & 8 \\
+$\beta$ & KL coefficient to $\polref$ & 0.04 \\
+$\epsilon$ & PPO clip range & 0.2 \\
+$\tau$ & match threshold (cosine) & 0.50 \\
+$d$ & depth threshold (words/position) & 60$^{\dagger}$ \\
+$\lambda_p$ & precision exponent & 0.5 \\
+$\lambda_v$ & over-enumeration scale & 0 \\
+-- & sampling temperature & 1.0 \\
+-- & LoRA rank / $\alpha$ & 16 / 32 \\
+-- & learning rate & $10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\caption{$^{\dagger}$ Provisional. $d$ should be calibrated by regressing the
+probability that a viewpoint cluster is satisfied on the number of words the
+response devotes to it, using the benchmark's own human-rated reference
+responses --- a fit that requires no judge model.}
+\end{table}
+
+\section*{Open issues}
+
+\begin{enumerate}
+\item \textbf{Reward--metric agreement is unverified.} The advantage
+\eqref{eq:adv} depends only on the \emph{within-group ordering} of rewards. If
+$r(\cdot)$ does not order two answers to the same question as the evaluation
+metric does, training optimises noise. This should be measured before training,
+and measured within question rather than pooled across questions.
+\item \textbf{Reachability.} \eqref{eq:grpo} reweights the reference policy's
+existing distribution; it cannot create behaviour the base model never samples.
+A best-of-$K$ sweep on the frozen base establishes whether the target behaviour
+is reachable at all.
+\item \textbf{Construct gap.} Positions are demographic subgroup splits;
+the evaluation's clusters are groupings of individuals' open-ended perspectives.
+These are related but not identical, which upper-bounds how far improvements on
+$r(\cdot)$ can transfer.
+\item \textbf{Calibration of $d$.} See table footnote; the reward's absolute
+scale is not meaningful until $d$ is fit.
+\end{enumerate}
+
+\end{document}

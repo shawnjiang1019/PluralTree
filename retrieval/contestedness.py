@@ -89,7 +89,13 @@ def stance_spread(stances: Sequence[str], embed_fn: EmbedFn) -> dict:
     S = np.clip(U @ U.T, -1.0, 1.0)
     iu = np.triu_indices(k, 1)
     mean_dist = float(1.0 - S[iu].mean())
-    v = _vendi(np.clip(S, 0.0, 1.0))
+    # Pass the raw Gram matrix: it is PSD with unit diagonal by construction
+    # (rows of U are unit vectors), which is exactly the Vendi kernel requirement
+    # (arXiv:2210.02410). Clipping S to [0,1] first would DESTROY positive
+    # semidefiniteness -- and would do so precisely when cosines go negative,
+    # i.e. when the stances are genuinely far apart, the case we most want to
+    # measure. Negative eigenvalues from float error are handled inside _vendi.
+    v = _vendi(S)
     return {"mean_dist": mean_dist, "vendi": v, "n_effective": v, "k": k}
 
 
