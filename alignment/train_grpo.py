@@ -127,24 +127,41 @@ def dry_run(args, cfg: GRPOAlignConfig):
     embed_fn = _hashing_embed_fn() if args.stub_embed else \
         __import__("alignment.reward", fromlist=["default_embed_fn"]).default_embed_fn(cfg.reward_embedder)
     rcfg = RewardConfig(match_thr=cfg.match_thr, l_precision=cfg.l_precision,
-                        l_verbose=cfg.l_verbose)
+                        l_verbose=cfg.l_verbose,
+                        min_depth_words=cfg.min_depth_words, weight=cfg.weight)
 
     print(f"\nscoring {min(3, len(recs))} prompts x group_size={cfg.group_size} "
           f"fake rollouts ({'stub' if args.stub_embed else cfg.reward_embedder} embedder):\n")
     for rec in recs[:3]:
         positions = _positions_of(rec)
         top = ", ".join(f"{p.option}={p.prevalence:.2f}" for p in positions[:4])
-        # fake rollouts spanning the behavior space: commit / partial / enumerate-all
-        commit = f"The answer is {positions[0].option}, stated plainly."
-        partial = " ".join(f"Some hold {p.option}." for p in positions[:2])
-        full = " ".join(f"One group says {p.option} strongly here." for p in positions)
-        rollouts = ([commit, partial, full] * cfg.group_size)[:cfg.group_size]
-        rewards = [coverage_reward(r, positions, embed_fn, rcfg)[0] for r in rollouts]
+        # Fake rollouts spanning the axis the reward now scores: DEPTH per
+        # position, not just how many are named. `shallow` is the `route` pattern
+        # (every position named, none articulated) that scored 0.072 on
+        # OvertonBench -- it must score ~0 here, or the reward is still blind.
+        def _para(p, n_words):
+            """n_words of text about p, built from p's OWN phrasing so the stub
+            bag-of-words embedder can match it (a real embedder matches on
+            meaning; the stub needs lexical overlap). Not realistic prose -- this
+            is a plumbing smoke test, not a generation sample."""
+            w = p.embed_text.split() or [p.option]
+            return " ".join((w * (n_words // len(w) + 1))[:n_words])
+
+        d = rcfg.min_depth_words
+        shallow = " ".join(f"Some say {p.option}." for p in positions)
+        deep_narrow = _para(positions[0], 2 * d)
+        deep_broad = "\n".join(_para(p, 2 * d) for p in positions[:3])
+        labels = ["shallow(route-like)", "deep-narrow", "deep-broad"]
+        rollouts = ([shallow, deep_narrow, deep_broad] * cfg.group_size)[:cfg.group_size]
+        scored = [coverage_reward(r, positions, embed_fn, rcfg) for r in rollouts]
+        rewards = [s[0] for s in scored]
         adv = group_relative_advantage(rewards)
         print(f"  q{rec['question_id']}: {rec['question'][:70]}")
         print(f"    positions[{len(positions)}]: {top}")
-        for lab, rw, a in zip(["commit", "partial", "full"], rewards[:3], adv[:3]):
-            print(f"    {lab:<8} reward={rw:.3f}  adv={a:+.3f}")
+        for lab, (rw, bd), a in zip(labels, scored[:3], adv[:3]):
+            print(f"    {lab:<20} reward={rw:.3f} adv={a:+.3f}  "
+                  f"mentioned={bd['n_mentioned']} covered={bd['n_expressed']} "
+                  f"depth={bd['mean_depth']:.0f}w")
         print()
     print("dry run OK — reward + advantage pipeline runs on real prompts.")
 
@@ -168,7 +185,8 @@ def train(args, cfg: GRPOAlignConfig):
 
     embed_fn = default_embed_fn(cfg.reward_embedder)
     rcfg = RewardConfig(match_thr=cfg.match_thr, l_precision=cfg.l_precision,
-                        l_verbose=cfg.l_verbose)
+                        l_verbose=cfg.l_verbose,
+                        min_depth_words=cfg.min_depth_words, weight=cfg.weight)
     reward_func = make_reward_func(embed_fn, rcfg)
 
     lora = LoraConfig(r=cfg.lora_r, lora_alpha=cfg.lora_alpha,

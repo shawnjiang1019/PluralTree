@@ -50,9 +50,48 @@ class Position:
 
 @dataclass
 class RewardConfig:
-    match_thr: float = 0.50       # cosine >= thr counts a position as expressed
-    l_precision: float = 0.20     # weight on the (1 - precision) penalty
-    l_verbose: float = 0.30       # weight on the over-enumeration penalty
+    """Defaults for coverage_reward (v2). See coverage_reward_v1 for the original.
+
+    Three corrections over v1, each traced to a measured failure:
+
+    weight="uniform"     v1 weighted recall by prevalence, but OvertonScore is an
+                         UNWEIGHTED mean over clusters (judge_overtonbench.py:
+                         `covered / len(cluster_ratings)`). Prevalence weighting
+                         systematically favors majority subgroups -- backwards for
+                         pluralism, and it compounds with the fact that minority
+                         positions may also be the expensive ones to articulate.
+    min_depth_words      v1 marked a position "expressed" on a single unit clearing
+                         cosine 0.50, so a one-clause namedrop scored like a full
+                         articulation. The `route` condition did exactly that and
+                         scored 0.072 vs baseline 0.507 -- i.e. v1 CANNOT SEE the
+                         failure mode that dominates this benchmark. Coverage
+                         requires depth per position, so expressing a position now
+                         also requires min_depth_words of text about it.
+    multiplicative       v1 subtracted penalties additively. GR3 (arXiv:2603.10535)
+                         shows additive length/quality penalties create a
+                         compensatory effect -- the policy inflates one term to pay
+                         for another. Factors in [0,1] cannot be compensated away.
+    """
+    match_thr: float = 0.50       # cosine >= thr counts a position as mentioned
+    min_depth_words: int = 60     # ...AND this many words about it to count as covered.
+    #                               PROVISIONAL: route spent ~30 words/position and
+    #                               covered nothing; baseline ~110-165 and covered ~half.
+    #                               Fit properly against OvertonBench's own human-rated
+    #                               reference responses (judge-free) before trusting the
+    #                               absolute scale -- see fit_depth_threshold() docstring.
+    weight: str = "uniform"       # "uniform" (matches the eval) or "prevalence"
+    l_precision: float = 0.50     # exponent on the precision factor
+    l_verbose: float = 0.0        # OFF by default -- see below. >0 re-enables it.
+    #   v1 used this to encode "commit on consensus". Two reasons it is off now:
+    #   (1) OvertonScore is MONOTONE in cluster coverage -- covering 3/3 clusters
+    #       scores 1.0 however lopsided the population is -- so the eval cannot
+    #       reward commitment, and a reward that does will train away from it.
+    #   (2) It is driven by GRAPH prevalence entropy, but a skewed survey option
+    #       distribution does not imply few human viewpoint clusters (the same
+    #       graph-vs-human gap that measured corr +0.20). Suppressing breadth on
+    #       that basis penalizes coverage the eval would have credited.
+    #   Its anti-spam role is now covered by min_depth_words: enumerate ten
+    #   positions shallowly and none of them clears the depth bar.
     min_prevalence: float = 0.05  # drop positions below this mean prob (noise floor)
     max_units: int = 40           # cap response units scored (bound cost)
 
@@ -146,12 +185,14 @@ def _effective_positions(prev: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 # The reward
 # ---------------------------------------------------------------------------
-def coverage_reward(response: str, positions: list[Position], embed_fn: EmbedFn,
-                    cfg: RewardConfig = RewardConfig()) -> tuple[float, dict]:
-    """Graph-grounded pluralism reward in [0, 1] + a breakdown dict.
+def coverage_reward_v1(response: str, positions: list[Position], embed_fn: EmbedFn,
+                       cfg: RewardConfig = RewardConfig()) -> tuple[float, dict]:
+    """ORIGINAL reward. Kept only for comparability with already-computed scores.
 
-    Returns (reward, {recall, precision, verbosity_penalty, n_units, n_expressed,
-    target}). A response with no scorable units gets 0.0.
+    Do NOT train on this: it is depth-blind (a one-clause mention scores like a
+    full articulation), prevalence-weighted where the eval is uniform, and uses
+    additive penalties. See RewardConfig for the evidence on each. Use
+    coverage_reward() instead.
     """
     units = split_units(response, cfg.max_units)
     if not units or not positions:
@@ -163,26 +204,93 @@ def coverage_reward(response: str, positions: list[Position], embed_fn: EmbedFn,
     sim = U @ P.T                                    # (units, positions), both unit-norm
     prev = np.array([p.prevalence for p in positions])
 
-    # recall: prevalence-weighted, a position is expressed if any unit matches it
     pos_best = sim.max(axis=0)                        # best unit per position
     expressed = pos_best >= cfg.match_thr
     recall_w = float((prev * expressed).sum() / prev.sum())
 
-    # precision: fraction of units that land on SOME real position (anti-padding)
     unit_best = sim.max(axis=1)
     precision = float((unit_best >= cfg.match_thr).mean())
+
+    n_expr = int(expressed.sum())
+    target = _effective_positions(prev)
+    verbosity_penalty = max(0.0, n_expr - target) / target if target > 0 else 0.0
+
+    reward = recall_w - 0.20 * (1.0 - precision) - 0.30 * verbosity_penalty
+    reward = float(min(1.0, max(0.0, reward)))
+    return reward, {"recall": recall_w, "precision": precision,
+                    "verbosity_penalty": verbosity_penalty, "n_units": len(units),
+                    "n_expressed": n_expr, "target": target}
+
+
+def position_depths(units: list[str], sim: np.ndarray, cfg: RewardConfig) -> np.ndarray:
+    """Words of text primarily ABOUT each position.
+
+    Each unit is assigned to its single best-matching position (argmax), and only
+    if that match clears match_thr; its word count accrues to that position. Note
+    this is a different rule from `pos_best`: a position can be *mentioned* by a
+    unit whose argmax lies elsewhere. Mentioned != covered -- that distinction is
+    the whole point of the depth term.
+    """
+    depths = np.zeros(sim.shape[1])
+    if not len(units):
+        return depths
+    assign = sim.argmax(axis=1)
+    best = sim.max(axis=1)
+    for u_i, (p_i, s) in enumerate(zip(assign, best)):
+        if s >= cfg.match_thr:
+            depths[p_i] += len(units[u_i].split())
+    return depths
+
+
+def coverage_reward(response: str, positions: list[Position], embed_fn: EmbedFn,
+                    cfg: RewardConfig = RewardConfig()) -> tuple[float, dict]:
+    """Graph-grounded pluralism reward in [0, 1] + a breakdown dict.
+
+        covered_p = (best-unit cosine >= match_thr) AND (depth_p >= min_depth_words)
+        recall    = weighted fraction of positions covered (uniform by default)
+        reward    = recall * precision^l_prec * 1/(1 + l_verb * verbosity_penalty)
+
+    Multiplicative by construction, so a weak factor cannot be compensated by
+    inflating another (GR3, arXiv:2603.10535), and the result stays in [0,1]
+    without clamping. A response with no scorable units gets 0.0.
+    """
+    units = split_units(response, cfg.max_units)
+    if not units or not positions:
+        return 0.0, {"recall": 0.0, "precision": 0.0, "verbosity_penalty": 0.0,
+                     "n_units": len(units), "n_expressed": 0, "target": 0.0,
+                     "n_mentioned": 0, "mean_depth": 0.0}
+
+    U = np.asarray(embed_fn(units), dtype=float)
+    P = np.asarray(embed_fn([p.embed_text for p in positions]), dtype=float)
+    sim = U @ P.T                                    # (units, positions), both unit-norm
+    prev = np.array([p.prevalence for p in positions])
+
+    # covered = mentioned AND articulated. `route` (0.072) satisfied only the first.
+    mentioned = sim.max(axis=0) >= cfg.match_thr
+    depths = position_depths(units, sim, cfg)
+    expressed = mentioned & (depths >= cfg.min_depth_words)
+
+    # uniform by default: OvertonScore counts every cluster equally, so weighting
+    # by prevalence here would train the policy to serve the majority.
+    w = np.ones_like(prev) if cfg.weight == "uniform" else prev
+    recall = float((w * expressed).sum() / w.sum())
+
+    # precision: fraction of units landing on SOME real position (anti-padding)
+    precision = float((sim.max(axis=1) >= cfg.match_thr).mean())
 
     # verbosity: expressing more positions than the distribution supports
     n_expr = int(expressed.sum())
     target = _effective_positions(prev)
     verbosity_penalty = max(0.0, n_expr - target) / target if target > 0 else 0.0
 
-    reward = recall_w - cfg.l_precision * (1.0 - precision) \
-        - cfg.l_verbose * verbosity_penalty
-    reward = float(min(1.0, max(0.0, reward)))
-    return reward, {"recall": recall_w, "precision": precision,
+    reward = float(recall
+                   * (precision ** cfg.l_precision)
+                   / (1.0 + cfg.l_verbose * verbosity_penalty))
+    return reward, {"recall": recall, "precision": precision,
                     "verbosity_penalty": verbosity_penalty, "n_units": len(units),
-                    "n_expressed": n_expr, "target": target}
+                    "n_expressed": n_expr, "target": target,
+                    "n_mentioned": int(mentioned.sum()),
+                    "mean_depth": float(depths[mentioned].mean()) if mentioned.any() else 0.0}
 
 
 def batch_rewards(responses: Sequence[str], positions: list[Position],
@@ -224,7 +332,9 @@ def _selftest() -> None:
         V = np.zeros((len(texts), 64))
         for i, t in enumerate(texts):
             for w in re.findall(r"[a-z]+", t.lower()):
-                V[i, vocab.setdefault(w, rng.integers(0, 64))] += 1.0
+                # deterministic, collision-free: each distinct word gets its own
+                # dimension, so option tokens can never alias onto each other
+                V[i, vocab.setdefault(w, len(vocab) % 64)] += 1.0
             n = np.linalg.norm(V[i])
             if n:
                 V[i] /= n
@@ -238,27 +348,62 @@ def _selftest() -> None:
                         prevalence=prev)
 
     contested = [pos("alpha", 0.34), pos("beta", 0.33), pos("gamma", 0.33)]
-    broad = ("Some people say alpha alpha is right here for sure. "
-             "Others firmly hold that beta beta is the answer instead. "
-             "A third group argues gamma gamma is clearly correct now.")
-    narrow = "The chosen answer here is alpha alpha alpha without any doubt today."
-    cfg = RewardConfig()
-    r_broad = coverage_reward(broad, contested, fake_embed, cfg)[0]
-    r_narrow = coverage_reward(narrow, contested, fake_embed, cfg)[0]
-    assert r_broad > r_narrow, (r_broad, r_narrow)
 
+    def para(opt, n):
+        """One position articulated at ~n words (the option token repeated)."""
+        return " ".join([opt] * n) + "."
+
+    # deep = each position genuinely articulated; route_like = all three NAMED but
+    # none articulated -- exactly the pattern that scored 0.072 on OvertonBench.
+    cfg = RewardConfig(min_depth_words=20)
+    deep = "\n".join(para(o, 30) for o in ("alpha", "beta", "gamma"))
+    route_like = "\n".join(para(o, 8) for o in ("alpha", "beta", "gamma"))
+    narrow_deep = para("alpha", 40)
+
+    r_deep = coverage_reward(deep, contested, fake_embed, cfg)[0]
+    r_route, bd_route = coverage_reward(route_like, contested, fake_embed, cfg)
+    r_narrow = coverage_reward(narrow_deep, contested, fake_embed, cfg)[0]
+
+    # THE fix: v1 cannot tell route_like from deep (both "express" all 3);
+    # v2 must, because route_like never clears the depth bar.
+    v1_deep = coverage_reward_v1(deep, contested, fake_embed, cfg)[0]
+    v1_route = coverage_reward_v1(route_like, contested, fake_embed, cfg)[0]
+    assert abs(v1_deep - v1_route) < 1e-9, (v1_deep, v1_route)   # v1: identical
+    assert r_deep > r_route, (r_deep, r_route)                   # v2: separated
+    assert bd_route["n_mentioned"] == 3 and bd_route["n_expressed"] == 0, bd_route
+    assert r_deep > r_narrow, (r_deep, r_narrow)                 # breadth still pays
+
+    # Consensus/skewed question: the eval is MONOTONE in cluster coverage, so
+    # covering all three must still beat covering one. (v1 inverted this via its
+    # verbosity penalty -- see RewardConfig.l_verbose for why that was wrong.)
     consensus = [pos("alpha", 0.90), pos("beta", 0.06), pos("gamma", 0.04)]
-    r_broad_c = coverage_reward(broad, consensus, fake_embed, cfg)[0]
-    r_narrow_c = coverage_reward(narrow, consensus, fake_embed, cfg)[0]
-    assert r_narrow_c > r_broad_c, (r_narrow_c, r_broad_c)
+    r_deep_c = coverage_reward(deep, consensus, fake_embed, cfg)[0]
+    r_narrow_c = coverage_reward(narrow_deep, consensus, fake_embed, cfg)[0]
+    assert r_deep_c > r_narrow_c, (r_deep_c, r_narrow_c)
+
+    # Bug 1: prevalence weighting over-credits covering ONLY the majority option;
+    # uniform weighting (what the eval does) does not.
+    skew_cfg = RewardConfig(min_depth_words=20, weight="prevalence")
+    p = coverage_reward(narrow_deep, consensus, fake_embed, skew_cfg)[0]
+    u = coverage_reward(narrow_deep, consensus, fake_embed, cfg)[0]
+    assert p > u, (p, u)
+    assert abs(u - 1 / 3) < 0.05, u        # uniform: 1 of 3 positions covered
+    assert p > 0.85, p                     # prevalence: ~0.90 for the same answer
+
 
     # advantage sanity
     from alignment.advantage import group_relative_advantage
     adv = group_relative_advantage([0.2, 0.8, 0.5, 0.5])
     assert abs(sum(adv)) < 1e-6 and adv[1] == max(adv)
     print("reward self-test OK")
-    print(f"  contested:  broad {r_broad:.3f} > narrow {r_narrow:.3f}")
-    print(f"  consensus:  narrow {r_narrow_c:.3f} > broad {r_broad_c:.3f}")
+    print(f"  contested : deep {r_deep:.3f} > narrow {r_narrow:.3f} "
+          f"> route-like {r_route:.3f}")
+    print(f"  skewed    : deep {r_deep_c:.3f} > narrow {r_narrow_c:.3f} "
+          f"(eval is monotone in coverage; v1 inverted this)")
+    print(f"  weighting : uniform {u:.3f} vs prevalence {p:.3f} on a "
+          f"majority-only answer")
+    print(f"  depth fix : v1 scores deep and route-like IDENTICALLY "
+          f"({v1_deep:.3f}); v2 separates {r_deep:.3f} vs {r_route:.3f}")
 
 
 if __name__ == "__main__":

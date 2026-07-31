@@ -174,7 +174,7 @@ def degeneracy_filter(responses: list[str], *, min_chars: int = 3,
     return kept, (dropped / len(responses) if responses else float("nan"))
 
 
-def pool_panel(responses: list[str], embedder) -> dict:
+def pool_panel(responses: list[str], embedder, bleu_cap: int = 30) -> dict:
     """All three axes for one pool of responses (after degeneracy filtering)."""
     kept, frac_dropped = degeneracy_filter(responses)
     out = {k: float("nan") for k in _PANEL_KEYS}
@@ -191,7 +191,7 @@ def pool_panel(responses: list[str], embedder) -> dict:
         out["vendi"] = vendi_score(sim)
     out["distinct_2"] = distinct_n(kept, 2)
     out["distinct_3"] = distinct_n(kept, 3)
-    sb = self_bleu(kept)
+    sb = self_bleu(kept, cap=bleu_cap)
     out["inv_self_bleu"] = (1.0 - sb) if sb == sb else float("nan")
     return out
 
@@ -258,6 +258,12 @@ def main():
                     help="held-out embedder for the semantic axis (NOT the scout's MiniLM)")
     ap.add_argument("--min_samples", type=int, default=2,
                     help="skip (query, condition) pools with fewer kept samples")
+    ap.add_argument("--device", default="auto",
+                    help="auto|cpu|cuda. bge-large over ~13k responses is hours "
+                         "on CPU and minutes on a GPU -- 'auto' uses cuda if present")
+    ap.add_argument("--bleu_cap", type=int, default=30,
+                    help="samples per pool used for self-BLEU (O(n^2) in pure "
+                         "python; the dominant CPU cost after embedding)")
     args = ap.parse_args()
 
     import numpy as np
@@ -275,14 +281,24 @@ def main():
             pool[key].append(r["response"])
             cat_of[key] = r.get("category", "uncategorized")
 
-    print(f"loading eval embedder: {args.eval_model}")
-    enc = SentenceTransformer(args.eval_model, device="cpu")
+    device = args.device
+    if device == "auto":
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"loading eval embedder: {args.eval_model} on {device}")
+    enc = SentenceTransformer(args.eval_model, device=device)
+    if device == "cpu":
+        print("  WARNING: CPU embedding of a full run (~13k responses) takes "
+              "hours; request a GPU (--gres=gpu:1) for anything beyond a smoke test")
 
     rows = []
     # by_cond[condition][query_id] = panel dict  (for paired stats)
     by_cond: dict[str, dict[int, dict]] = defaultdict(dict)
-    for (cond, qid), responses in pool.items():
-        panel = pool_panel(responses, enc)
+    n_pools = len(pool)
+    for i, ((cond, qid), responses) in enumerate(sorted(pool.items()), 1):
+        panel = pool_panel(responses, enc, bleu_cap=args.bleu_cap)
+        if i % 20 == 0 or i == n_pools:      # progress: the job was silent for 90min
+            print(f"  {i}/{n_pools} pools scored", flush=True)
         if panel["n"] < args.min_samples:
             continue
         row = {"condition": cond, "query_id": qid,

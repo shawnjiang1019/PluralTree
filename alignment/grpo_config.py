@@ -37,8 +37,14 @@ class GRPOAlignConfig:
     # --- reward (alignment/reward.py:RewardConfig knobs, surfaced here) ---
     reward_embedder: str = "sentence-transformers/all-mpnet-base-v2"
     match_thr: float = 0.50
-    l_precision: float = 0.20
-    l_verbose: float = 0.30
+    min_depth_words: int = 60     # a position must be ARTICULATED, not just named
+    #                               (v1 was depth-blind; `route` namedropped all
+    #                               positions and scored 0.072). PROVISIONAL --
+    #                               fit against OvertonBench's human-rated
+    #                               reference responses before trusting the scale.
+    weight: str = "uniform"       # matches the eval's unweighted cluster count
+    l_precision: float = 0.50     # exponent (reward is multiplicative now)
+    l_verbose: float = 0.0        # off: the eval is monotone in coverage
 
     # --- scout retrieval baked into prompts (frozen during RL) ---
     tau: float = 0.25
