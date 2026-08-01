@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
 import numpy as np
@@ -196,30 +196,10 @@ def coverage_reward_v1(response: str, positions: list[Position], embed_fn: Embed
     """
     units = split_units(response, cfg.max_units)
     if not units or not positions:
-        return 0.0, {"recall": 0.0, "precision": 0.0, "verbosity_penalty": 0.0,
-                     "n_units": len(units), "n_expressed": 0, "target": 0.0}
-
-    U = np.asarray(embed_fn(units), dtype=float)
-    P = np.asarray(embed_fn([p.embed_text for p in positions]), dtype=float)
-    sim = U @ P.T                                    # (units, positions), both unit-norm
-    prev = np.array([p.prevalence for p in positions])
-
-    pos_best = sim.max(axis=0)                        # best unit per position
-    expressed = pos_best >= cfg.match_thr
-    recall_w = float((prev * expressed).sum() / prev.sum())
-
-    unit_best = sim.max(axis=1)
-    precision = float((unit_best >= cfg.match_thr).mean())
-
-    n_expr = int(expressed.sum())
-    target = _effective_positions(prev)
-    verbosity_penalty = max(0.0, n_expr - target) / target if target > 0 else 0.0
-
-    reward = recall_w - 0.20 * (1.0 - precision) - 0.30 * verbosity_penalty
-    reward = float(min(1.0, max(0.0, reward)))
-    return reward, {"recall": recall_w, "precision": precision,
-                    "verbosity_penalty": verbosity_penalty, "n_units": len(units),
-                    "n_expressed": n_expr, "target": target}
+        return 0.0, _empty_breakdown(units)
+    U, P = _embed(units, positions, embed_fn, None)
+    return _score_v1(units, U @ P.T,
+                     np.array([p.prevalence for p in positions]), cfg)
 
 
 def position_depths(units: list[str], sim: np.ndarray, cfg: RewardConfig) -> np.ndarray:
@@ -256,15 +236,33 @@ def coverage_reward(response: str, positions: list[Position], embed_fn: EmbedFn,
     """
     units = split_units(response, cfg.max_units)
     if not units or not positions:
-        return 0.0, {"recall": 0.0, "precision": 0.0, "verbosity_penalty": 0.0,
-                     "n_units": len(units), "n_expressed": 0, "target": 0.0,
-                     "n_mentioned": 0, "mean_depth": 0.0}
+        return 0.0, _empty_breakdown(units)
+    U, P = _embed(units, positions, embed_fn, None)
+    return _score_v2(units, U @ P.T,
+                     np.array([p.prevalence for p in positions]), cfg)
 
+
+# ---------------------------------------------------------------------------
+# Shared internals: embed once, score many times
+# ---------------------------------------------------------------------------
+def _empty_breakdown(units) -> dict:
+    return {"recall": 0.0, "precision": 0.0, "verbosity_penalty": 0.0,
+            "n_units": len(units), "n_expressed": 0, "target": 0.0,
+            "n_mentioned": 0, "mean_depth": 0.0}
+
+
+def embed_positions(positions: list[Position], embed_fn: EmbedFn) -> np.ndarray:
+    """Position embeddings. Cache these per question: they are identical across
+    every response to that question, so re-embedding per response is pure waste."""
+    return np.asarray(embed_fn([p.embed_text for p in positions]), dtype=float)
+
+
+def _embed(units, positions, embed_fn, P):
     U = np.asarray(embed_fn(units), dtype=float)
-    P = np.asarray(embed_fn([p.embed_text for p in positions]), dtype=float)
-    sim = U @ P.T                                    # (units, positions), both unit-norm
-    prev = np.array([p.prevalence for p in positions])
+    return U, (embed_positions(positions, embed_fn) if P is None else P)
 
+
+def _score_v2(units, sim, prev, cfg: RewardConfig) -> tuple[float, dict]:
     # covered = mentioned AND articulated. `route` (0.072) satisfied only the first.
     mentioned = sim.max(axis=0) >= cfg.match_thr
     depths = position_depths(units, sim, cfg)
@@ -291,6 +289,62 @@ def coverage_reward(response: str, positions: list[Position], embed_fn: EmbedFn,
                     "n_expressed": n_expr, "target": target,
                     "n_mentioned": int(mentioned.sum()),
                     "mean_depth": float(depths[mentioned].mean()) if mentioned.any() else 0.0}
+
+
+def _score_v1(units, sim, prev, cfg: RewardConfig) -> tuple[float, dict]:
+    expressed = sim.max(axis=0) >= cfg.match_thr          # depth-blind, by design
+    recall_w = float((prev * expressed).sum() / prev.sum())
+    precision = float((sim.max(axis=1) >= cfg.match_thr).mean())
+    n_expr = int(expressed.sum())
+    target = _effective_positions(prev)
+    verbosity_penalty = max(0.0, n_expr - target) / target if target > 0 else 0.0
+    reward = recall_w - 0.20 * (1.0 - precision) - 0.30 * verbosity_penalty
+    return float(min(1.0, max(0.0, reward))), {
+        "recall": recall_w, "precision": precision,
+        "verbosity_penalty": verbosity_penalty, "n_units": len(units),
+        "n_expressed": n_expr, "target": target}
+
+
+def coverage_rewards_both(response: str, positions: list[Position],
+                          embed_fn: EmbedFn, cfg: RewardConfig = RewardConfig(),
+                          P: np.ndarray | None = None):
+    """Both rewards from ONE embedding pass -> ((r2, bd2), (r1, bd1)).
+
+    Scoring v1 and v2 separately embeds the same units twice; with a cached ``P``
+    (see embed_positions) this is the whole cost of the comparison.
+    """
+    units = split_units(response, cfg.max_units)
+    if not units or not positions:
+        empty = _empty_breakdown(units)
+        return (0.0, empty), (0.0, dict(empty))
+    U, P = _embed(units, positions, embed_fn, P)
+    sim = U @ P.T
+    prev = np.array([p.prevalence for p in positions])
+    return _score_v2(units, sim, prev, cfg), _score_v1(units, sim, prev, cfg)
+
+
+def coverage_rewards_sweep(response: str, positions: list[Position],
+                           embed_fn: EmbedFn, cfg: RewardConfig = RewardConfig(),
+                           P: np.ndarray | None = None,
+                           depths: Sequence[int] = (60,)):
+    """v1 plus v2 at EVERY min_depth_words, from one embedding pass -> (r1, {d: r2}).
+
+    min_depth_words only thresholds position_depths; the similarity matrix and the
+    word counts behind it are identical for every d. Sweeping d with separate runs
+    re-embeds the same text once per value, which is the whole cost of the sweep.
+    """
+    units = split_units(response, cfg.max_units)
+    if not units or not positions:
+        return 0.0, {int(d): 0.0 for d in depths}
+    U, P = _embed(units, positions, embed_fn, P)
+    sim = U @ P.T
+    prev = np.array([p.prevalence for p in positions])
+    r1 = _score_v1(units, sim, prev, cfg)[0]
+    out = {}
+    for d in depths:
+        out[int(d)] = _score_v2(units, sim, prev,
+                                replace(cfg, min_depth_words=int(d)))[0]
+    return r1, out
 
 
 def batch_rewards(responses: Sequence[str], positions: list[Position],

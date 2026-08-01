@@ -96,8 +96,12 @@ def main():
     ap.add_argument("--responses", default="overton_responses_v5.jsonl")
     ap.add_argument("--scores", default="overton_scores_v5.csv")
     ap.add_argument("--seed", type=int, default=42, help="graph split seed")
-    ap.add_argument("--min_depth_words", type=int, default=None,
-                    help="override RewardConfig.min_depth_words (sweep this)")
+    ap.add_argument("--min_depth_words", default=None,
+                    help="comma list of min_depth_words to sweep, e.g. 0,30,60,90,120. "
+                         "All values are scored from ONE embedding pass (d only "
+                         "thresholds position_depths; the sim matrix is identical), "
+                         "so the sweep costs the same as a single run. Default: "
+                         "RewardConfig's value alone.")
     ap.add_argument("--embedder", default="sentence-transformers/all-mpnet-base-v2")
     ap.add_argument("--exclude", default="",
                     help="comma-separated conditions to drop. Run v6 BOTH ways: "
@@ -110,8 +114,8 @@ def main():
     args = ap.parse_args()
     drop = {c.strip() for c in args.exclude.split(",") if c.strip()}
 
-    from alignment.reward import (RewardConfig, coverage_reward,
-                                  coverage_reward_v1, default_embed_fn,
+    from alignment.reward import (RewardConfig, coverage_rewards_sweep,
+                                  default_embed_fn, embed_positions,
                                   positions_from_subtree)
     from data.loaders.opinionqa import load_opinionqa
 
@@ -132,16 +136,20 @@ def main():
     index = build_anchor_index(graph)
     embed_fn = default_embed_fn(args.embedder)
     cfg = RewardConfig()
-    if args.min_depth_words is not None:
-        cfg.min_depth_words = args.min_depth_words
-    print(f"reward cfg: min_depth_words={cfg.min_depth_words} weight={cfg.weight} "
-          f"l_precision={cfg.l_precision} l_verbose={cfg.l_verbose}")
+    depths = ([int(d) for d in args.min_depth_words.split(",") if d.strip()]
+              if args.min_depth_words else [cfg.min_depth_words])
+    d_main = cfg.min_depth_words if cfg.min_depth_words in depths else depths[0]
+    print(f"reward cfg: min_depth_words={depths} (headline d={d_main}) "
+          f"weight={cfg.weight} l_precision={cfg.l_precision} "
+          f"l_verbose={cfg.l_verbose}")
 
     # --- score every response with both rewards -----------------------------
     out_rows, n_noanchor = [], 0
-    pairs_v1, pairs_v2 = [], []       # (judge_delta, reward_delta) within question
-    pooled_j, pooled_r1, pooled_r2 = [], [], []
-    per_q_pick = {"v1": 0, "v2": 0, "n": 0}
+    pairs_v1 = []                       # (judge_delta, reward_delta) within question
+    pairs_v2 = {d: [] for d in depths}  # ...one list per swept depth
+    pooled_j, pooled_r1 = [], []
+    pooled_r2 = {d: [] for d in depths}
+    per_q_pick = {"v1": 0, "n": 0, **{d: 0 for d in depths}}
 
     for qid in sorted(resp):
         conds = [c for c in resp[qid] if c in cov.get(qid, {}) and c not in drop]
@@ -157,15 +165,21 @@ def main():
             n_noanchor += 1
             continue
 
+        # embed the positions ONCE per question (identical for every condition),
+        # and get both rewards from a single pass over each response's units
+        P = embed_positions(positions, embed_fn)
         scored = {}
         for c in conds:
-            r2 = coverage_reward(resp[qid][c], positions, embed_fn, cfg)[0]
-            r1 = coverage_reward_v1(resp[qid][c], positions, embed_fn, cfg)[0]
-            scored[c] = (r1, r2)
+            r1, r2_by_d = coverage_rewards_sweep(resp[qid][c], positions,
+                                                 embed_fn, cfg, P=P, depths=depths)
+            scored[c] = (r1, r2_by_d)
             j = cov[qid][c]
-            pooled_j.append(j); pooled_r1.append(r1); pooled_r2.append(r2)
+            pooled_j.append(j); pooled_r1.append(r1)
+            for d in depths:
+                pooled_r2[d].append(r2_by_d[d])
             out_rows.append({"question_id": qid, "condition": c, "judge_coverage": j,
-                             "reward_v1": r1, "reward_v2": r2,
+                             "reward_v1": r1, "reward_v2": r2_by_d[d_main],
+                             **{f"reward_v2_d{d}": r2_by_d[d] for d in depths},
                              "n_positions": len(positions), "anchor": anchor})
 
         for i in range(len(conds)):
@@ -173,15 +187,17 @@ def main():
                 a, b = conds[i], conds[k]
                 jd = cov[qid][a] - cov[qid][b]
                 pairs_v1.append((jd, scored[a][0] - scored[b][0]))
-                pairs_v2.append((jd, scored[a][1] - scored[b][1]))
+                for d in depths:
+                    pairs_v2[d].append((jd, scored[a][1][d] - scored[b][1][d]))
 
         best_j = max(conds, key=lambda c: cov[qid][c])
         if len({cov[qid][c] for c in conds}) > 1:
             per_q_pick["n"] += 1
             if max(conds, key=lambda c: scored[c][0]) == best_j:
                 per_q_pick["v1"] += 1
-            if max(conds, key=lambda c: scored[c][1]) == best_j:
-                per_q_pick["v2"] += 1
+            for d in depths:
+                if max(conds, key=lambda c: scored[c][1][d]) == best_j:
+                    per_q_pick[d] += 1
 
     n_q = len({r["question_id"] for r in out_rows})
     print(f"\nscored {len(out_rows)} responses over {n_q} questions "
@@ -189,29 +205,38 @@ def main():
 
     # --- the numbers --------------------------------------------------------
     c1, n1 = _concordance(pairs_v1)
-    c2, n2 = _concordance(pairs_v2)
     print(f"\n=== WITHIN-QUESTION pairwise concordance (chance = 0.500) ===")
-    print(f"  reward_v1 (depth-blind) {c1:.3f}   over {n1} condition pairs")
-    print(f"  reward_v2 (fixed)       {c2:.3f}   over {n2} condition pairs")
+    print(f"  reward_v1 (depth-blind)      {c1:.3f}   over {n1} condition pairs")
+    for d in depths:
+        c2, n2 = _concordance(pairs_v2[d])
+        star = " <- headline" if d == d_main else ""
+        print(f"  reward_v2  d={d:<4}            {c2:.3f}   over {n2} condition "
+              f"pairs{star}")
     print("  ^ THIS is what GRPO's advantage consumes. At ~0.5 the reward cannot")
     print("    order rollouts of the same prompt and training optimizes noise.")
+    if len(depths) > 1:
+        print("    Flat across d => the depth gate is inert (or d is measuring")
+        print("    length, not articulation) -- check reward_length_control.py.")
 
     print(f"\n=== picks the judge's best condition (chance = 1/n_conds) ===")
     if per_q_pick["n"]:
-        print(f"  reward_v1 {per_q_pick['v1']}/{per_q_pick['n']} "
-              f"({per_q_pick['v1']/per_q_pick['n']:.2f})   "
-              f"reward_v2 {per_q_pick['v2']}/{per_q_pick['n']} "
-              f"({per_q_pick['v2']/per_q_pick['n']:.2f})")
+        n = per_q_pick["n"]
+        print(f"  reward_v1        {per_q_pick['v1']}/{n} ({per_q_pick['v1']/n:.2f})")
+        for d in depths:
+            print(f"  reward_v2 d={d:<4} {per_q_pick[d]}/{n} ({per_q_pick[d]/n:.2f})")
 
     print(f"\n=== POOLED correlation (for contrast -- NOT the relevant number) ===")
-    print(f"  corr(reward_v1, judge) = {_corr(pooled_r1, pooled_j):+.3f}")
-    print(f"  corr(reward_v2, judge) = {_corr(pooled_r2, pooled_j):+.3f}")
+    print(f"  corr(reward_v1, judge)      = {_corr(pooled_r1, pooled_j):+.3f}")
+    for d in depths:
+        print(f"  corr(reward_v2 d={d}, judge) = {_corr(pooled_r2[d], pooled_j):+.3f}")
     print("  ^ can look fine purely from between-question difficulty variance")
 
     print(f"\n=== reward distributions (is the reward even discriminative?) ===")
-    for name, vals in (("v1", pooled_r1), ("v2", pooled_r2), ("judge", pooled_j)):
+    dists = [("v1", pooled_r1)] + [(f"v2 d={d}", pooled_r2[d]) for d in depths] \
+            + [("judge", pooled_j)]
+    for name, vals in dists:
         zeros = sum(1 for v in vals if v <= 1e-9) / max(1, len(vals))
-        print(f"  {name:<6} mean={st.mean(vals):.3f} sd={st.pstdev(vals):.3f} "
+        print(f"  {name:<10} mean={st.mean(vals):.3f} sd={st.pstdev(vals):.3f} "
               f"frac_zero={zeros:.2f}")
 
     if out_rows:
