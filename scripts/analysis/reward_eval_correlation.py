@@ -111,6 +111,11 @@ def main():
                          "rollout in a group comes from the SAME policy and they "
                          "resemble each other far more than baseline resembles route")
     ap.add_argument("--out", default="docs/reward_eval_correlation.csv")
+    ap.add_argument("--gate", type=float, default=0.0,
+                    help="if >0, exit 2 when headline-d within-question concordance "
+                         "falls below this. Makes the Stage-0 gate a real exit code "
+                         "so `sbatch --dependency=afterok` cannot chain a training "
+                         "run onto a reward that ranks at chance. 0 = report only.")
     args = ap.parse_args()
     drop = {c.strip() for c in args.exclude.split(",") if c.strip()}
 
@@ -207,8 +212,10 @@ def main():
     c1, n1 = _concordance(pairs_v1)
     print(f"\n=== WITHIN-QUESTION pairwise concordance (chance = 0.500) ===")
     print(f"  reward_v1 (depth-blind)      {c1:.3f}   over {n1} condition pairs")
+    conc = {}
     for d in depths:
         c2, n2 = _concordance(pairs_v2[d])
+        conc[d] = c2
         star = " <- headline" if d == d_main else ""
         print(f"  reward_v2  d={d:<4}            {c2:.3f}   over {n2} condition "
               f"pairs{star}")
@@ -246,6 +253,20 @@ def main():
             w.writeheader()
             w.writerows(out_rows)
         print(f"\nwrote {args.out}")
+
+    # --- the gate ------------------------------------------------------------
+    # Exit code, not just a printed number: a training job chained with
+    # `--dependency=afterok` must not launch on a reward that ranks at chance.
+    if args.gate > 0:
+        c = conc.get(d_main, float("nan"))
+        best_d = max(conc, key=lambda d: (conc[d] if conc[d] == conc[d] else -1))
+        if not (c >= args.gate):
+            print(f"\nGATE: FAIL  concordance {c:.3f} < {args.gate:.3f} at d={d_main}")
+            if conc.get(best_d, 0) >= args.gate:
+                print(f"  (d={best_d} would pass at {conc[best_d]:.3f} -- refit "
+                      f"min_depth_words before treating that as a pass)")
+            sys.exit(2)
+        print(f"\nGATE: PASS  concordance {c:.3f} >= {args.gate:.3f} at d={d_main}")
 
 
 if __name__ == "__main__":

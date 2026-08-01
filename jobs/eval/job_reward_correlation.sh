@@ -51,19 +51,32 @@ VERSIONS="${VERSIONS:-v6 v5}"
 DEPTHS="${DEPTHS:-0,30,60,90,120,150}"
 EMBEDDER="${EMBEDDER:-sentence-transformers/all-mpnet-base-v2}"
 SEED="${SEED:-42}"
-echo "VERSIONS='${VERSIONS}' DEPTHS=${DEPTHS} SEED=${SEED}"
+GATE="${GATE:-0.60}"           # exit 2 if the no-route arm falls below this
+echo "VERSIONS='${VERSIONS}' DEPTHS=${DEPTHS} SEED=${SEED} GATE=${GATE}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
+# Exit 2 from the script means the GATE failed (a real result); anything else
+# means it crashed. Gate failures are recorded and reported at the end so every
+# version still gets scored -- crashes abort immediately.
+n_gate_fail=0
 run () {   # run <resp> <scores> <tag> <extra-args...>
     local resp="$1" scores="$2" tag="$3"; shift 3
     echo ""
     echo "================================================================"
     echo "=== ${tag}"
     echo "================================================================"
+    set +e
     python scripts/analysis/reward_eval_correlation.py \
         --responses "${resp}" --scores "${scores}" \
         --min_depth_words "${DEPTHS}" --embedder "${EMBEDDER}" --seed "${SEED}" \
-        "$@" || { echo "CORRELATION CHECK FAILED (${tag}) -- see .err"; exit 1; }
+        "$@"
+    local rc=$?
+    set -e
+    if [ "${rc}" -eq 2 ]; then
+        n_gate_fail=$((n_gate_fail + 1))
+    elif [ "${rc}" -ne 0 ]; then
+        echo "CORRELATION CHECK CRASHED (${tag}, rc=${rc}) -- see .err"; exit 1
+    fi
 }
 
 n_ok=0
@@ -83,17 +96,24 @@ for V in ${VERSIONS}; do
 
     # NEAR-TIES: every rollout in a GRPO group comes from the SAME policy and
     # they resemble each other far more than baseline resembles route. THE GATE.
-    run "${resp}" "${scores}" "[${V}] excluding route (near-ties -- THE GATE, needs >=0.60)" \
-        --exclude route --out "docs/reward_eval_correlation_${V}_noroute.csv"
+    run "${resp}" "${scores}" "[${V}] excluding route (near-ties -- THE GATE, needs >=${GATE})" \
+        --exclude route --gate "${GATE}" \
+        --out "docs/reward_eval_correlation_${V}_noroute.csv"
     n_ok=$((n_ok + 1))
 done
 
 if [ "${n_ok}" -eq 0 ]; then
-    echo "NO VERSIONS SCORED -- check VERSIONS / file names in \$(pwd)"; exit 1
+    echo "NO VERSIONS SCORED -- check VERSIONS / file names in $(pwd)"; exit 1
 fi
 
 echo ""
-echo "Done (${n_ok} version(s)). Gate: within-question concordance in each"
-echo "'excluding route' block must clear 0.60, and the versions should AGREE."
-echo "Below ~0.55 the reward cannot order same-prompt rollouts -- fix the reward"
-echo "before launching jobs/train/job_grpo_align.sh."
+if [ "${n_gate_fail}" -gt 0 ]; then
+    echo "STAGE 0 GATE: FAIL on ${n_gate_fail}/${n_ok} version(s)."
+    echo "The reward cannot order same-prompt rollouts. Fix it before training:"
+    echo "  - concordance flat across d  => depth gate inert; build"
+    echo "    scripts/analysis/reward_length_control.py and check for a length proxy"
+    echo "  - a non-default d passes     => refit min_depth_words, do not cherry-pick"
+    exit 2
+fi
+echo "STAGE 0 GATE: PASS on all ${n_ok} version(s) at >=${GATE}."
+echo "Versions should also AGREE; a large v5/v6 gap means the gate is unstable."
