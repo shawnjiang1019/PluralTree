@@ -43,6 +43,16 @@ export PYTHONUNBUFFERED=1
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 mkdir -p logs
 
+# Prefer local clones over hub ids. huggingface_hub 1.19.0+computecanada has a
+# circular-import bug that breaks snapshot_download, so the weights were pulled
+# with `git clone https://huggingface.co/<repo>`; passing a DIRECTORY skips the
+# hub resolver entirely and the offline flags stop mattering. Falling back to the
+# repo id here would fail under HF_HUB_OFFLINE, so resolve it at submit time
+# rather than relying on the caller exporting MODEL.
+LOCAL_ROOT="${LOCAL_ROOT:-$HOME/projects/def-enaskt/shawnj}"
+if [ -z "${MODEL:-}" ] && [ -d "${LOCAL_ROOT}/Qwen2.5-7B-Instruct" ]; then
+    MODEL="${LOCAL_ROOT}/Qwen2.5-7B-Instruct"
+fi
 MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 NQ="${NQ:-20}"
 NS="${NS:-8}"
@@ -53,9 +63,23 @@ MAXNEW="${MAXNEW:-384}"
 CONDS="${CONDS:-baseline,g2}"    # baseline = identical path with theta=0
 GEN="${GEN:-hivemind_g2.jsonl}"
 DIV="${DIV:-hivemind_g2_diversity.csv}"
+if [ -z "${EVAL_MODEL:-}" ] && [ -d "${LOCAL_ROOT}/bge-large-en-v1.5" ]; then
+    EVAL_MODEL="${LOCAL_ROOT}/bge-large-en-v1.5"
+fi
 EVAL_MODEL="${EVAL_MODEL:-BAAI/bge-large-en-v1.5}"   # held-out scorer
-echo "MODEL=${MODEL} NQ=${NQ} NS=${NS} THETA=${THETA} BETA=${BETA} KREPR=${KREPR}"
+echo "MODEL=${MODEL}"
+echo "EVAL_MODEL=${EVAL_MODEL}"
+echo "NQ=${NQ} NS=${NS} THETA=${THETA} BETA=${BETA} KREPR=${KREPR}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+
+# Fail in 1 second instead of 100 lines of traceback 3 minutes in.
+for M in "${MODEL}" "${EVAL_MODEL}"; do
+    case "${M}" in
+        /*|./*|~*) [ -d "${M}" ] || { echo "MISSING local model dir: ${M}"; exit 1; } ;;
+        *) echo "NOTE: '${M}' is a hub id; with HF_HUB_OFFLINE=1 this needs a "\
+                "populated HF_HOME cache. Clone it and pass a directory if it fails." ;;
+    esac
+done
 
 echo "=== stage 1: generate (G2) ==="
 python -m evaluation.hivemind.generate_g2 \
