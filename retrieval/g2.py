@@ -192,10 +192,19 @@ def g2_generate_ids(model, ids_base: torch.Tensor, ids_plus: torch.Tensor,
     """One answer under G2 decoding. Streams are advanced with the SAME token, so
     the per-step contrast is exactly "what do the guides disagree about here?".
 
-    If ids_plus/ids_minus are the base ids (answer 1), no contrast is applied.
+    No contrast, hence a single forward per token, when EITHER
+      - ids_plus/ids_minus are the base ids (answer 1 has no priors), or
+      - theta == 0 (the `baseline` condition).
+
+    The theta==0 case matters for cost, not correctness: alpha is 0 at every
+    step, so z is untouched and the guide passes cannot affect the sampled token
+    -- but they still cost two forwards each. Skipping them leaves the output
+    distribution bit-identical (the guides consume no RNG) while making baseline
+    3x cheaper, which is most of this job's compute.
     """
     dev = next(model.parameters()).device
-    contrast = not (ids_plus is ids_base and ids_minus is ids_base)
+    contrast = (cfg.theta != 0.0
+                and not (ids_plus is ids_base and ids_minus is ids_base))
     cur_b, cur_p, cur_m = ids_base.to(dev), ids_plus.to(dev), ids_minus.to(dev)
     past_b = past_p = past_m = None
     out: list[int] = []
@@ -249,8 +258,11 @@ def g2_generate(model, tokenizer, question: str, priors: Sequence[str],
                      if target_position else g2_messages(question, sel))
 
     def _ids(msgs):
-        return tokenizer.apply_chat_template(msgs, add_generation_prompt=True,
-                                             return_tensors="pt")
+        # apply_chat_template returns a bare Tensor on older transformers and a
+        # BatchEncoding on newer ones; model(input_ids=...) needs the Tensor.
+        enc = tokenizer.apply_chat_template(msgs, add_generation_prompt=True,
+                                            return_tensors="pt")
+        return enc["input_ids"] if hasattr(enc, "input_ids") else enc
     ids_b = _ids(m_b)
     ids_p, ids_m = (ids_b, ids_b) if not sel else (_ids(m_p), _ids(m_m))
     out = g2_generate_ids(model, ids_b, ids_p, ids_m, cfg,

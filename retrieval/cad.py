@@ -126,8 +126,11 @@ def cad_generate(model, tokenizer, messages_ctx: list[dict],
     retrieval.answer.build_prompt with forks), ``messages_plain`` the baseline
     prompt for the same question."""
     def _ids(msgs):
-        return tokenizer.apply_chat_template(msgs, add_generation_prompt=True,
-                                             return_tensors="pt")
+        # apply_chat_template returns a bare Tensor on older transformers and a
+        # BatchEncoding on newer ones; model(input_ids=...) needs the Tensor.
+        enc = tokenizer.apply_chat_template(msgs, add_generation_prompt=True,
+                                            return_tensors="pt")
+        return enc["input_ids"] if hasattr(enc, "input_ids") else enc
     ids = cad_generate_ids(model, _ids(messages_ctx), _ids(messages_plain), cfg,
                            eos_token_id=tokenizer.eos_token_id)
     return tokenizer.decode(ids, skip_special_tokens=True)
