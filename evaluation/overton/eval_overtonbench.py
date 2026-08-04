@@ -124,8 +124,11 @@ def main():
                            "fork_context": trace["fork_context"],
                            "n_forks": trace["n_forks"]}
                     # multi-pass conditions (merge) also carry their drafts, so a
-                    # merge that LOSES coverage can be diagnosed against them
-                    for k in ("draft_a", "draft_b"):
+                    # merge that LOSES coverage can be diagnosed against them.
+                    # merge_v2 adds merge_fallback/merge_fail/merge_stats: the
+                    # rate at which its lossless-merge guard fired is a finding.
+                    for k in ("draft_a", "draft_b", "merge_fallback",
+                              "merge_fail", "merge_stats", "labels"):
                         if k in trace:
                             row[k] = trace[k]
                     f.write(json.dumps(row) + "\n")
