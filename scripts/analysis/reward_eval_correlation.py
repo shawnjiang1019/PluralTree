@@ -82,6 +82,26 @@ def _concordance(pairs: list[tuple[float, float]]) -> tuple[float, int]:
     return agree / len(used), len(used)
 
 
+def _concordance_split(pairs: list[tuple[float, float]]) -> tuple[float, float, int]:
+    """(tie_rate, concordance_among_separated, n_separated).
+
+    The headline concordance charges reward ties as disagreements, which is right
+    for GRPO but conflates two very different failures: a reward that ORDERS
+    WRONGLY vs one that is simply ZERO almost everywhere and cannot order at all.
+    Splitting them says which one you have -- and therefore whether to redesign
+    the reward or just recalibrate its threshold.
+    """
+    used = [(j, r) for j, r in pairs if abs(j) > 1e-9]
+    if not used:
+        return float("nan"), float("nan"), 0
+    sep = [(j, r) for j, r in used if abs(r) > 1e-9]
+    tie_rate = 1.0 - len(sep) / len(used)
+    if not sep:
+        return tie_rate, float("nan"), 0
+    agree = sum(1 for j, r in sep if (j > 0) == (r > 0))
+    return tie_rate, agree / len(sep), len(sep)
+
+
 def _corr(xs, ys) -> float:
     if len(xs) < 3:
         return float("nan")
@@ -154,6 +174,8 @@ def main():
     pairs_v2 = {d: [] for d in depths}  # ...one list per swept depth
     pooled_j, pooled_r1 = [], []
     pooled_r2 = {d: [] for d in depths}
+    pos_best, unit_best = [], []        # cosine distributions match_thr slices
+    n_units = []                        # units per response (0 => auto-zero reward)
     per_q_pick = {"v1": 0, "n": 0, **{d: 0 for d in depths}}
 
     for qid in sorted(resp):
@@ -175,8 +197,16 @@ def main():
         P = embed_positions(positions, embed_fn)
         scored = {}
         for c in conds:
-            r1, r2_by_d = coverage_rewards_sweep(resp[qid][c], positions,
-                                                 embed_fn, cfg, P=P, depths=depths)
+            r1, r2_by_d, sim = coverage_rewards_sweep(resp[qid][c], positions,
+                                                      embed_fn, cfg, P=P,
+                                                      depths=depths)
+            if sim.size:
+                pos_best.extend(sim.max(axis=0).tolist())   # per position
+                unit_best.extend(sim.max(axis=1).tolist())  # per unit
+                n_units.append(sim.shape[0])
+            else:
+                n_units.append(0)      # split_units dropped everything (<8 words
+                #                        per unit) -> reward is 0 whatever it said
             scored[c] = (r1, r2_by_d)
             j = cov[qid][c]
             pooled_j.append(j); pooled_r1.append(r1)
@@ -221,9 +251,21 @@ def main():
               f"pairs{star}")
     print("  ^ THIS is what GRPO's advantage consumes. At ~0.5 the reward cannot")
     print("    order rollouts of the same prompt and training optimizes noise.")
-    if len(depths) > 1:
-        print("    Flat across d => the depth gate is inert (or d is measuring")
-        print("    length, not articulation) -- check reward_length_control.py.")
+
+    # Decompose: a LOW headline number means either "orders wrongly" or "is zero
+    # everywhere and cannot order". Those need opposite fixes -- redesign vs
+    # recalibrate -- so never act on the headline alone.
+    print(f"\n=== decomposed: ties vs wrong ordering ===")
+    print(f"  {'':<18}{'tie_rate':>10}{'conc|separated':>16}{'n_sep':>8}")
+    t1, cs1, ns1 = _concordance_split(pairs_v1)
+    print(f"  {'reward_v1':<18}{t1:>10.3f}{cs1:>16.3f}{ns1:>8}")
+    for d in depths:
+        t, cs, ns = _concordance_split(pairs_v2[d])
+        print(f"  {'reward_v2 d=' + str(d):<18}{t:>10.3f}{cs:>16.3f}{ns:>8}")
+    print("  tie_rate high + conc|separated ~0.5+ => reward is too SPARSE;")
+    print("    lower match_thr (or fix the position embed_text), do not redesign.")
+    print("  tie_rate low + conc|separated <0.5  => reward orders WRONGLY;")
+    print("    the objective itself disagrees with the judge.")
 
     print(f"\n=== picks the judge's best condition (chance = 1/n_conds) ===")
     if per_q_pick["n"]:
@@ -245,6 +287,30 @@ def main():
         zeros = sum(1 for v in vals if v <= 1e-9) / max(1, len(vals))
         print(f"  {name:<10} mean={st.mean(vals):.3f} sd={st.pstdev(vals):.3f} "
               f"frac_zero={zeros:.2f}")
+
+    # --- where should match_thr actually sit? --------------------------------
+    # `mentioned` is pos_best >= match_thr. If the pos_best distribution lies
+    # mostly BELOW the threshold, the reward is zero for structural reasons and
+    # no amount of depth tuning matters.
+    if pos_best:
+        qs = [0.10, 0.25, 0.50, 0.75, 0.90]
+        def _q(v, p):
+            s = sorted(v); i = min(len(s) - 1, int(p * len(s)))
+            return s[i]
+        print(f"\n=== cosine distributions that match_thr={cfg.match_thr} slices ===")
+        for name, vals in (("pos_best (mentioned?)", pos_best),
+                           ("unit_best (precision?)", unit_best)):
+            qtxt = "  ".join(f"p{int(p*100)}={_q(vals, p):.3f}" for p in qs)
+            over = sum(1 for v in vals if v >= cfg.match_thr) / len(vals)
+            print(f"  {name:<24} {qtxt}   >=thr: {over:.3f}")
+        print("  If pos_best p75 < match_thr the threshold is the binding")
+        print("  constraint -- recalibrate it before touching min_depth_words.")
+    if n_units:
+        empty = sum(1 for n in n_units if n == 0) / len(n_units)
+        print(f"  units/response: mean={st.mean(n_units):.1f} "
+              f"min={min(n_units)}  frac_with_ZERO_units={empty:.3f}")
+        print("  ^ split_units drops any unit under 8 words; a response left with")
+        print("    no units scores 0 no matter what it says.")
 
     if out_rows:
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
