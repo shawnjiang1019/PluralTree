@@ -27,3 +27,6 @@ contestedness_probe*.pt
 
 # Local extracted ATP data (OpinionQA); large, load via OPINIONQA_DIR — don't commit
 .localdata/
+# Slide decks — regenerate from the script rather than tracking a binary
+*.pptx
+~$*

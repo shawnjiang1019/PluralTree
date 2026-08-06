@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
@@ -245,6 +246,13 @@ class MergeConfig:
     min_pos_ratio: float = 1.0
     min_depth_words: int = 20
     fallback: bool = True
+    merge_max_tokens: int = 4096
+    #   UPPER bound; the effective value is computed per call (see _merge_budget).
+    #   vLLM rejects prompt_tokens + max_tokens > max_model_len with a bare HTTP
+    #   400 -- job 69559 died exactly here at 8192, since three drafts plus the
+    #   instruction are ~2k prompt tokens before the merge even starts.
+    max_model_len: int = 8192     # must match `vllm serve --max-model-len`
+    token_slack: int = 256        # margin for the chat template + estimator error
 
 
 # Draft recipes, in priority order; merge_v2 takes the first ``n_drafts``. Chosen
@@ -319,8 +327,21 @@ def chat(base_url: str, model: str, messages: list[dict], *,
         base_url.rstrip("/") + "/chat/completions", data=body,
         headers={"Content-Type": "application/json",
                  "Authorization": "Bearer " + os.environ.get("OPENAI_API_KEY", "EMPTY")})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        out = json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            out = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        # vLLM puts the REASON in the body ("maximum context length is 8192,
+        # however you requested ..."), and a bare HTTPError discards it -- job
+        # 69559 cost a 4-minute run and a guess. Surface it.
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "replace")[:600]
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"chat {e.code} {e.reason} (model={model}, max_tokens={max_tokens}, "
+            f"n_messages={len(messages)}): {detail}") from e
     return out["choices"][0]["message"]["content"]
 
 
@@ -528,6 +549,24 @@ def concat_drafts(drafts: list[str], labels: list[str] | None = None) -> str:
     return "\n\n".join(f"## Perspective {i}\n\n{d}" for i, d in enumerate(kept, 1))
 
 
+def _merge_budget(prompt_text: str, cfg: MergeConfig) -> int:
+    """Completion tokens left in the context window after the merge prompt.
+
+    A fixed max_tokens is wrong in both directions: too high and vLLM rejects the
+    request outright (HTTP 400, prompt + max_tokens > max_model_len -- how job
+    69559 died), too low and the merge is forced to compress, manufacturing the
+    very loss merge_guard exists to detect. So size it from the actual prompt.
+
+    ~4 chars/token is the usual English estimate; it over-counts on prose, which
+    errs toward a SMALLER request -- the safe direction, since the guard catches a
+    short merge but nothing catches a rejected one. Never returns less than 512:
+    below that the merge is doomed anyway and should fail visibly, not silently.
+    """
+    est_prompt = len(prompt_text) // 4
+    room = cfg.max_model_len - est_prompt - cfg.token_slack
+    return max(512, min(cfg.merge_max_tokens, room))
+
+
 def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
                  cfg: MergeConfig = MergeConfig(), chat_fn=None,
                  labels: list[str] | None = None) -> tuple[str, dict]:
@@ -547,13 +586,27 @@ def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
 
     blocks = "\n\n".join(
         f"--- DRAFT {chr(65 + i)} ---\n{d}" for i, d in enumerate(kept))
-    # 8192: the merge must hold every draft in full; a token cap that truncates
-    # IS compression, i.e. it manufactures the failure the guard exists to catch.
+    # The merge must hold every draft in full -- a token cap that truncates IS
+    # compression, i.e. it manufactures the failure the guard exists to catch.
+    # So take everything the context window has left rather than a fixed number.
+    user_msg = f"Question: {question}\n\n{blocks}"
+    budget = _merge_budget(MERGE_INSTRUCTION_V2 + user_msg, cfg)
+
+    # If the drafts alone overflow the window, no max_tokens makes the request
+    # legal -- it would 400 whatever we ask for. Concatenating is exactly what
+    # the guard would have done anyway, so do it now instead of losing the call.
+    est = len(MERGE_INSTRUCTION_V2 + user_msg) // 4
+    if est + budget > cfg.max_model_len:
+        info["merge_fallback"] = True
+        info["merge_fail"] = f"prompt_overflow ({est} tok > {cfg.max_model_len})"
+        print(f"warning: merge_v2 drafts exceed the context window "
+              f"({est} tok) -- concatenating for: {question[:60]}", file=sys.stderr)
+        return concat_drafts(kept), info
+
     raw_merge = chat_fn(base_url, model,
                         [{"role": "system", "content": MERGE_INSTRUCTION_V2},
-                         {"role": "user", "content":
-                          f"Question: {question}\n\n{blocks}"}],
-                        temperature=0.7, max_tokens=8192)
+                         {"role": "user", "content": user_msg}],
+                        temperature=0.7, max_tokens=budget)
     merged, tagged = extract_answer(raw_merge)
     info["raw_merge"] = raw_merge
     if not tagged:
