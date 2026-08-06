@@ -98,11 +98,16 @@ skipped 3 || submit reward_corr --export="${EXPORTS}" \
 # would silently reduce CONDS to "baseline" and the run would prove nothing.
 # Export in this shell and let --export=ALL carry it.
 if ! skipped 5; then
+    # job_overton_eval.sh reads OUT/SCORES from the environment, and SCORES is
+    # ALSO this script's name for the v8 scores file that jobs [1]/[2] need.
+    # Unsetting it after the export killed them under `set -u`. Save and restore.
+    _scores_v8="${SCORES}"
     export MODEL=Qwen/Qwen2.5-72B-Instruct-AWQ TAU=0.25 MAXU=20 \
            DATASET=opinionqa EMB=embeddings_opinionqa.pt FEATS=feats_opinionqa.pt \
            CONDS=baseline,merge,merge_v2 OUT="${OUT9}" SCORES="${SCORES9}"
     submit overton_merge_v2 --time=06:00:00 --export=ALL jobs/eval/job_overton_eval.sh
-    unset MODEL TAU MAXU DATASET EMB FEATS CONDS OUT SCORES
+    unset MODEL TAU MAXU DATASET EMB FEATS CONDS OUT
+    SCORES="${_scores_v8}"
 fi
 
 # --- [1] can a rule reach oracle? ---------------------------------------------
