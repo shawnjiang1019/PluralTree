@@ -109,11 +109,12 @@ class QCtx:
         """
         if cond not in self._cache:
             from alignment.reward import coverage_rewards_sweep
-            d = self.cfg.min_depth_words
+            d, t = self.cfg.min_depth_words, self.cfg.match_thr
+            # sweep is keyed (match_thr, min_depth_words) -- one cell here
             _r1, r2, sim = coverage_rewards_sweep(text, self.positions,
                                                   self.embed_fn, self.cfg,
-                                                  P=self.P, depths=[d])
-            self._cache[cond] = (r2[d], sim)
+                                                  P=self.P, depths=[d], thrs=[t])
+            self._cache[cond] = (r2[(t, d)], sim)
         return self._cache[cond]
 
 

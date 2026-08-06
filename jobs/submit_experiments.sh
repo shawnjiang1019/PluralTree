@@ -48,11 +48,13 @@ queued () {
     squeue -h -u "$USER" -n "$1" -t PD,R -o '%i' 2>/dev/null | sort -n | head -1 | grep .
 }
 
+ALL_IDS=()
 submit () {   # submit <job-name> <sbatch args...>
     local name="$1"; shift
     local id
     if id=$(queued "${name}"); then
-        echo "  ${id}  ${name}  (already queued -- reusing)"; return 0
+        echo "  ${id}  ${name}  (already queued -- reusing)"
+        ALL_IDS+=("${id}"); return 0
     fi
     if [ "${DRY}" = "1" ]; then
         echo "  DRY   ${name}"; printf '        sbatch %s\n' "$*"; return 0
@@ -61,6 +63,7 @@ submit () {   # submit <job-name> <sbatch args...>
                 --output="logs/${name}_%j.out" --error="logs/${name}_%j.err" \
                 "$@") || { echo "  FAIL  ${name}"; return 1; }
     echo "  ${id}  ${name}"
+    ALL_IDS+=("${id}")
 }
 
 # --- [0] position statements: inline, everything downstream reads it ----------
@@ -112,10 +115,34 @@ skipped 2 || submit bestofk --gres=gpu:1 --time=00:30:00 --mem=32G \
     --cpus-per-task=8 --export="${EXPORTS}" \
     --wrap="python scripts/analysis/bestofk_selection.py --responses ${RESP} --scores ${SCORES} --sim_thr 0.5,0.6,0.7 --min_support 1,2"
 
+# --- [6] summary: one file to read in the morning -----------------------------
+# afterANY, not afterok: a failed experiment is a result too, and the whole point
+# is that nothing needs babysitting. Runs once every other job has stopped.
+SUMMARY="${SUMMARY:-docs/experiment_summary.txt}"
+if [ "${DRY}" != "1" ] && [ ${#ALL_IDS[@]} -gt 0 ]; then
+    dep=$(printf ':%s' "${ALL_IDS[@]}")            # --dependency wants colons
+    csv=$(IFS=,; echo "${ALL_IDS[*]}")             # sacct -j wants commas
+    sbatch --parsable --job-name=exp_summary --account="${ACCT}" \
+        --time=00:10:00 --mem=4G --cpus-per-task=1 \
+        --output="logs/exp_summary_%j.out" --error="logs/exp_summary_%j.err" \
+        --dependency="afterany${dep}" --kill-on-invalid-dep=no \
+        --wrap="cd ${PWD} && {
+          echo '=== experiment summary' \$(date) '==='
+          echo; echo '--- [3] reward gate ---'
+          grep -hE 'GATE:|pos_best|unit_best|tie_rate|conc\|separated|frac_with_ZERO' logs/reward_corr_*.out 2>/dev/null | tail -40
+          echo; echo '--- [1] selector search ---'
+          grep -hA25 'frac_gap' logs/selector_search_*.out 2>/dev/null | tail -40
+          echo; echo '--- [2] best-of-K ---'
+          tail -40 logs/bestofk_*.out 2>/dev/null
+          echo; echo '--- [5] merge_v2 ---'
+          grep -hE 'OvertonScore|condition|merge' logs/overton_merge_v2_*.out 2>/dev/null | tail -30
+          echo \"  merge_fallback rows: \$(grep -c merge_fallback ${OUT9} 2>/dev/null || echo n/a)\"
+          echo; echo '--- job states ---'
+          sacct -X -j ${csv} --format=JobID,JobName%22,State,Elapsed 2>/dev/null
+        } > ${SUMMARY} 2>&1" \
+        && echo "  summary -> ${SUMMARY} (after all jobs stop)"
+fi
+
 echo ""
 echo "Track:  squeue --me"
-echo "Read:"
-echo "  [3] grep -E 'GATE:|pos_best|tie_rate' logs/reward_corr_*.out"
-echo "  [5] tail -30 logs/overton_merge_v2_*.out   # + merge_fallback rate in ${OUT9}"
-echo "  [1] grep -A20 'frac_gap' logs/selector_search_*.out"
-echo "  [2] tail -40 logs/bestofk_*.out"
+echo "Morning: cat ${SUMMARY}"

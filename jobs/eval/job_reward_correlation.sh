@@ -49,6 +49,10 @@ mkdir -p logs docs
 
 VERSIONS="${VERSIONS:-v6 v5}"
 DEPTHS="${DEPTHS:-0,30,60,90,120,150}"
+# Measured (docs/reward_gate_failure.md): pos_best p50~0.345, p75~0.472, so the
+# 0.50 default sits ABOVE the 75th percentile of the signal and only 18-19% of
+# positions clear it. Swept from the same embedding pass as DEPTHS.
+THRS="${THRS:-0.25,0.30,0.35,0.40,0.50}"
 EMBEDDER="${EMBEDDER:-sentence-transformers/all-mpnet-base-v2}"
 SEED="${SEED:-42}"
 GATE="${GATE:-0.60}"           # exit 2 if the no-route arm falls below this
@@ -68,7 +72,7 @@ run () {   # run <resp> <scores> <tag> <extra-args...>
     set +e
     python scripts/analysis/reward_eval_correlation.py \
         --responses "${resp}" --scores "${scores}" \
-        --min_depth_words "${DEPTHS}" --embedder "${EMBEDDER}" --seed "${SEED}" \
+        --min_depth_words "${DEPTHS}" --match_thr "${THRS}" --embedder "${EMBEDDER}" --seed "${SEED}" \
         "$@"
     local rc=$?
     set -e

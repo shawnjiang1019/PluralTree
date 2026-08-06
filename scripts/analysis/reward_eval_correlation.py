@@ -122,6 +122,11 @@ def main():
                          "thresholds position_depths; the sim matrix is identical), "
                          "so the sweep costs the same as a single run. Default: "
                          "RewardConfig's value alone.")
+    ap.add_argument("--match_thr", default=None,
+                    help="comma list of match_thr to sweep, e.g. 0.30,0.35,0.40,0.50. "
+                         "Measured: pos_best p50~0.345, p75~0.472, so the 0.50 default "
+                         "sits above the 75th percentile of the signal. Swept from the "
+                         "same embedding pass as --min_depth_words.")
     ap.add_argument("--embedder", default="sentence-transformers/all-mpnet-base-v2")
     ap.add_argument("--exclude", default="",
                     help="comma-separated conditions to drop. Run v6 BOTH ways: "
@@ -163,20 +168,25 @@ def main():
     cfg = RewardConfig()
     depths = ([int(d) for d in args.min_depth_words.split(",") if d.strip()]
               if args.min_depth_words else [cfg.min_depth_words])
+    thrs = ([float(t) for t in args.match_thr.split(",") if t.strip()]
+            if args.match_thr else [cfg.match_thr])
+    t_main = cfg.match_thr if cfg.match_thr in thrs else thrs[0]
     d_main = cfg.min_depth_words if cfg.min_depth_words in depths else depths[0]
     print(f"reward cfg: min_depth_words={depths} (headline d={d_main}) "
-          f"weight={cfg.weight} l_precision={cfg.l_precision} "
-          f"l_verbose={cfg.l_verbose}")
+          f"match_thr={thrs} (headline t={t_main}) weight={cfg.weight} "
+          f"l_precision={cfg.l_precision} l_verbose={cfg.l_verbose}")
 
     # --- score every response with both rewards -----------------------------
     out_rows, n_noanchor = [], 0
     pairs_v1 = []                       # (judge_delta, reward_delta) within question
-    pairs_v2 = {d: [] for d in depths}  # ...one list per swept depth
+    grid = [(t, d) for t in thrs for d in depths]
+    pairs_v2 = {k: [] for k in grid}    # ...one list per (match_thr, depth) cell
     pooled_j, pooled_r1 = [], []
-    pooled_r2 = {d: [] for d in depths}
+    pooled_r2 = {k: [] for k in grid}
     pos_best, unit_best = [], []        # cosine distributions match_thr slices
+    pos_best_rw, pos_best_fb = [], []   # ...split by rewritten vs fallback target
     n_units = []                        # units per response (0 => auto-zero reward)
-    per_q_pick = {"v1": 0, "n": 0, **{d: 0 for d in depths}}
+    per_q_pick = {"v1": 0, "n": 0, **{k: 0 for k in grid}}
 
     for qid in sorted(resp):
         conds = [c for c in resp[qid] if c in cov.get(qid, {}) and c not in drop]
@@ -192,29 +202,42 @@ def main():
             n_noanchor += 1
             continue
 
+        # Which positions actually got a declarative statement? The artifact only
+        # covers ~47% of ATP pairs, so a flat cosine distribution could mean either
+        # "rewriting does not help" or "too few were rewritten to show". Comparing
+        # against the forced-fallback build separates those, and they need opposite
+        # responses (drop the idea vs run --backend llm on the tail).
+        fb = positions_from_subtree(graph, anchor, statements={})
+        fb_text = {p.option: p.embed_text for p in fb}
+        rewritten = [p.embed_text != fb_text.get(p.option) for p in positions]
+
         # embed the positions ONCE per question (identical for every condition),
         # and get both rewards from a single pass over each response's units
         P = embed_positions(positions, embed_fn)
         scored = {}
         for c in conds:
-            r1, r2_by_d, sim = coverage_rewards_sweep(resp[qid][c], positions,
+            r1, r2_grid, sim = coverage_rewards_sweep(resp[qid][c], positions,
                                                       embed_fn, cfg, P=P,
-                                                      depths=depths)
+                                                      depths=depths, thrs=thrs)
             if sim.size:
-                pos_best.extend(sim.max(axis=0).tolist())   # per position
+                pb = sim.max(axis=0)
+                pos_best.extend(pb.tolist())                # per position
                 unit_best.extend(sim.max(axis=1).tolist())  # per unit
+                for v, rw in zip(pb.tolist(), rewritten):
+                    (pos_best_rw if rw else pos_best_fb).append(v)
                 n_units.append(sim.shape[0])
             else:
                 n_units.append(0)      # split_units dropped everything (<8 words
                 #                        per unit) -> reward is 0 whatever it said
-            scored[c] = (r1, r2_by_d)
+            scored[c] = (r1, r2_grid)
             j = cov[qid][c]
             pooled_j.append(j); pooled_r1.append(r1)
-            for d in depths:
-                pooled_r2[d].append(r2_by_d[d])
+            for k in grid:
+                pooled_r2[k].append(r2_grid[k])
             out_rows.append({"question_id": qid, "condition": c, "judge_coverage": j,
-                             "reward_v1": r1, "reward_v2": r2_by_d[d_main],
-                             **{f"reward_v2_d{d}": r2_by_d[d] for d in depths},
+                             "reward_v1": r1, "reward_v2": r2_grid[(t_main, d_main)],
+                             **{f"reward_v2_t{t}_d{d}": r2_grid[(t, d)]
+                                for t, d in grid},
                              "n_positions": len(positions), "anchor": anchor})
 
         for i in range(len(conds)):
@@ -222,17 +245,17 @@ def main():
                 a, b = conds[i], conds[k]
                 jd = cov[qid][a] - cov[qid][b]
                 pairs_v1.append((jd, scored[a][0] - scored[b][0]))
-                for d in depths:
-                    pairs_v2[d].append((jd, scored[a][1][d] - scored[b][1][d]))
+                for k in grid:
+                    pairs_v2[k].append((jd, scored[a][1][k] - scored[b][1][k]))
 
         best_j = max(conds, key=lambda c: cov[qid][c])
         if len({cov[qid][c] for c in conds}) > 1:
             per_q_pick["n"] += 1
             if max(conds, key=lambda c: scored[c][0]) == best_j:
                 per_q_pick["v1"] += 1
-            for d in depths:
-                if max(conds, key=lambda c: scored[c][1][d]) == best_j:
-                    per_q_pick[d] += 1
+            for k in grid:
+                if max(conds, key=lambda c: scored[c][1][k]) == best_j:
+                    per_q_pick[k] += 1
 
     n_q = len({r["question_id"] for r in out_rows})
     print(f"\nscored {len(out_rows)} responses over {n_q} questions "
@@ -243,12 +266,12 @@ def main():
     print(f"\n=== WITHIN-QUESTION pairwise concordance (chance = 0.500) ===")
     print(f"  reward_v1 (depth-blind)      {c1:.3f}   over {n1} condition pairs")
     conc = {}
-    for d in depths:
-        c2, n2 = _concordance(pairs_v2[d])
-        conc[d] = c2
-        star = " <- headline" if d == d_main else ""
-        print(f"  reward_v2  d={d:<4}            {c2:.3f}   over {n2} condition "
-              f"pairs{star}")
+    for k in grid:
+        c2, n2 = _concordance(pairs_v2[k])
+        conc[k] = c2
+        star = " <- headline" if k == (t_main, d_main) else ""
+        print(f"  reward_v2  t={k[0]:.2f} d={k[1]:<4}   {c2:.3f}   over {n2} "
+              f"condition pairs{star}")
     print("  ^ THIS is what GRPO's advantage consumes. At ~0.5 the reward cannot")
     print("    order rollouts of the same prompt and training optimizes noise.")
 
@@ -256,36 +279,53 @@ def main():
     # everywhere and cannot order". Those need opposite fixes -- redesign vs
     # recalibrate -- so never act on the headline alone.
     print(f"\n=== decomposed: ties vs wrong ordering ===")
-    print(f"  {'':<18}{'tie_rate':>10}{'conc|separated':>16}{'n_sep':>8}")
+    print(f"  {'':<22}{'tie_rate':>10}{'conc|separated':>16}{'n_sep':>8}")
     t1, cs1, ns1 = _concordance_split(pairs_v1)
-    print(f"  {'reward_v1':<18}{t1:>10.3f}{cs1:>16.3f}{ns1:>8}")
-    for d in depths:
-        t, cs, ns = _concordance_split(pairs_v2[d])
-        print(f"  {'reward_v2 d=' + str(d):<18}{t:>10.3f}{cs:>16.3f}{ns:>8}")
+    print(f"  {'reward_v1':<22}{t1:>10.3f}{cs1:>16.3f}{ns1:>8}")
+    for k in grid:
+        t, cs, ns = _concordance_split(pairs_v2[k])
+        lbl = f"reward_v2 t={k[0]:.2f} d={k[1]}"
+        print(f"  {lbl:<22}{t:>10.3f}{cs:>16.3f}{ns:>8}")
     print("  tie_rate high + conc|separated ~0.5+ => reward is too SPARSE;")
     print("    lower match_thr (or fix the position embed_text), do not redesign.")
     print("  tie_rate low + conc|separated <0.5  => reward orders WRONGLY;")
     print("    the objective itself disagrees with the judge.")
 
+    # The threshold sweep at the headline depth: the one table that says where
+    # match_thr belongs. Rising conc with falling tie_rate = recalibrate and go.
+    if len(thrs) > 1:
+        print(f"\n=== match_thr sweep at d={d_main} (where should the threshold sit?) ===")
+        print(f"  {'thr':>6}{'concordance':>13}{'tie_rate':>10}"
+              f"{'conc|sep':>10}{'n_sep':>7}{'pos>=thr':>10}")
+        for t in thrs:
+            c2, _ = _concordance(pairs_v2[(t, d_main)])
+            tr, cs, ns = _concordance_split(pairs_v2[(t, d_main)])
+            frac = (sum(1 for v in pos_best if v >= t) / len(pos_best)
+                    if pos_best else float("nan"))
+            print(f"  {t:>6.2f}{c2:>13.3f}{tr:>10.3f}{cs:>10.3f}{ns:>7}{frac:>10.3f}")
+
     print(f"\n=== picks the judge's best condition (chance = 1/n_conds) ===")
     if per_q_pick["n"]:
         n = per_q_pick["n"]
-        print(f"  reward_v1        {per_q_pick['v1']}/{n} ({per_q_pick['v1']/n:.2f})")
-        for d in depths:
-            print(f"  reward_v2 d={d:<4} {per_q_pick[d]}/{n} ({per_q_pick[d]/n:.2f})")
+        print(f"  reward_v1            {per_q_pick['v1']}/{n} ({per_q_pick['v1']/n:.2f})")
+        for k in grid:
+            lbl = f"reward_v2 t={k[0]:.2f} d={k[1]}"
+            print(f"  {lbl:<22}{per_q_pick[k]}/{n} ({per_q_pick[k]/n:.2f})")
 
     print(f"\n=== POOLED correlation (for contrast -- NOT the relevant number) ===")
-    print(f"  corr(reward_v1, judge)      = {_corr(pooled_r1, pooled_j):+.3f}")
-    for d in depths:
-        print(f"  corr(reward_v2 d={d}, judge) = {_corr(pooled_r2[d], pooled_j):+.3f}")
+    print(f"  corr(reward_v1, judge)  = {_corr(pooled_r1, pooled_j):+.3f}")
+    for k in grid:
+        print(f"  corr(v2 t={k[0]:.2f} d={k[1]}, judge) = "
+              f"{_corr(pooled_r2[k], pooled_j):+.3f}")
     print("  ^ can look fine purely from between-question difficulty variance")
 
     print(f"\n=== reward distributions (is the reward even discriminative?) ===")
-    dists = [("v1", pooled_r1)] + [(f"v2 d={d}", pooled_r2[d]) for d in depths] \
+    dists = [("v1", pooled_r1)] \
+            + [(f"v2 t{k[0]:.2f} d{k[1]}", pooled_r2[k]) for k in grid] \
             + [("judge", pooled_j)]
     for name, vals in dists:
         zeros = sum(1 for v in vals if v <= 1e-9) / max(1, len(vals))
-        print(f"  {name:<10} mean={st.mean(vals):.3f} sd={st.pstdev(vals):.3f} "
+        print(f"  {name:<16} mean={st.mean(vals):.3f} sd={st.pstdev(vals):.3f} "
               f"frac_zero={zeros:.2f}")
 
     # --- where should match_thr actually sit? --------------------------------
@@ -297,12 +337,25 @@ def main():
         def _q(v, p):
             s = sorted(v); i = min(len(s) - 1, int(p * len(s)))
             return s[i]
-        print(f"\n=== cosine distributions that match_thr={cfg.match_thr} slices ===")
-        for name, vals in (("pos_best (mentioned?)", pos_best),
-                           ("unit_best (precision?)", unit_best)):
+        print(f"\n=== cosine distributions that match_thr={t_main} slices ===")
+        rows = [("pos_best (mentioned?)", pos_best),
+                ("unit_best (precision?)", unit_best)]
+        # Did the declarative rewrite raise cosine at all? The artifact covers
+        # only ~47% of ATP pairs, so a flat overall distribution is ambiguous
+        # between "rewriting does not work" and "too few were rewritten".
+        if pos_best_rw and pos_best_fb:
+            rows += [("  ...rewritten", pos_best_rw),
+                     ("  ...fallback", pos_best_fb)]
+        for name, vals in rows:
             qtxt = "  ".join(f"p{int(p*100)}={_q(vals, p):.3f}" for p in qs)
-            over = sum(1 for v in vals if v >= cfg.match_thr) / len(vals)
-            print(f"  {name:<24} {qtxt}   >=thr: {over:.3f}")
+            over = sum(1 for v in vals if v >= t_main) / len(vals)
+            print(f"  {name:<24} {qtxt}   >=thr: {over:.3f}   n={len(vals)}")
+        if pos_best_rw and pos_best_fb:
+            d50 = _q(pos_best_rw, 0.50) - _q(pos_best_fb, 0.50)
+            print(f"  rewritten - fallback median = {d50:+.3f}")
+            print("  ^ near 0 => declarative rewriting does not raise cosine; the")
+            print("    register theory is wrong and --backend llm will not help.")
+            print("    Clearly positive => coverage is the limit; run the llm tail.")
         print("  If pos_best p75 < match_thr the threshold is the binding")
         print("  constraint -- recalibrate it before touching min_depth_words.")
     if n_units:
@@ -324,15 +377,17 @@ def main():
     # Exit code, not just a printed number: a training job chained with
     # `--dependency=afterok` must not launch on a reward that ranks at chance.
     if args.gate > 0:
-        c = conc.get(d_main, float("nan"))
-        best_d = max(conc, key=lambda d: (conc[d] if conc[d] == conc[d] else -1))
+        c = conc.get((t_main, d_main), float("nan"))
+        best = max(conc, key=lambda k: (conc[k] if conc[k] == conc[k] else -1))
         if not (c >= args.gate):
-            print(f"\nGATE: FAIL  concordance {c:.3f} < {args.gate:.3f} at d={d_main}")
-            if conc.get(best_d, 0) >= args.gate:
-                print(f"  (d={best_d} would pass at {conc[best_d]:.3f} -- refit "
-                      f"min_depth_words before treating that as a pass)")
+            print(f"\nGATE: FAIL  concordance {c:.3f} < {args.gate:.3f} at "
+                  f"t={t_main} d={d_main}")
+            if conc.get(best, 0) >= args.gate:
+                print(f"  (t={best[0]:.2f} d={best[1]} would pass at {conc[best]:.3f} "
+                      f"-- refit the config before treating that as a pass)")
             sys.exit(2)
-        print(f"\nGATE: PASS  concordance {c:.3f} >= {args.gate:.3f} at d={d_main}")
+        print(f"\nGATE: PASS  concordance {c:.3f} >= {args.gate:.3f} at "
+              f"t={t_main} d={d_main}")
 
 
 if __name__ == "__main__":

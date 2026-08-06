@@ -419,8 +419,15 @@ def coverage_rewards_both(response: str, positions: list[Position],
 def coverage_rewards_sweep(response: str, positions: list[Position],
                            embed_fn: EmbedFn, cfg: RewardConfig = RewardConfig(),
                            P: np.ndarray | None = None,
-                           depths: Sequence[int] = (60,)):
-    """v1 + v2 at EVERY min_depth_words + the sim matrix -> (r1, {d: r2}, sim).
+                           depths: Sequence[int] = (60,),
+                           thrs: Sequence[float] | None = None):
+    """v1 + v2 over the (match_thr x min_depth_words) grid + sim -> (r1, {(t,d): r2}, sim).
+
+    Both knobs only threshold quantities derived from ``sim``, which is identical
+    across the whole grid -- so the entire sweep costs one embedding pass. That
+    matters because match_thr=0.50 was measured to sit ABOVE the 75th percentile
+    of the pos_best cosine distribution (p75 ~ 0.47), i.e. the threshold, not the
+    reward's definition, is what makes it fire on 8-24% of positions.
 
     ``sim`` is returned so callers can inspect the cosine distribution that
     match_thr slices. A reward that is zero almost everywhere is a THRESHOLD
@@ -430,17 +437,21 @@ def coverage_rewards_sweep(response: str, positions: list[Position],
     word counts behind it are identical for every d. Sweeping d with separate runs
     re-embeds the same text once per value, which is the whole cost of the sweep.
     """
+    thr_list = [cfg.match_thr] if thrs is None else list(thrs)
     units = split_units(response, cfg.max_units)
     if not units or not positions:
-        return 0.0, {int(d): 0.0 for d in depths}, np.zeros((0, 0))
+        empty = {(float(t), int(d)): 0.0 for t in thr_list for d in depths}
+        return 0.0, empty, np.zeros((0, 0))
     U, P = _embed(units, positions, embed_fn, P)
     sim = U @ P.T
     prev = np.array([p.prevalence for p in positions])
     r1 = _score_v1(units, sim, prev, cfg)[0]
     out = {}
-    for d in depths:
-        out[int(d)] = _score_v2(units, sim, prev,
-                                replace(cfg, min_depth_words=int(d)))[0]
+    for t in thr_list:
+        for d in depths:
+            out[(float(t), int(d))] = _score_v2(
+                units, sim, prev,
+                replace(cfg, min_depth_words=int(d), match_thr=float(t)))[0]
     return r1, out, sim
 
 
