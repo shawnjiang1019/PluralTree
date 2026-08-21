@@ -440,8 +440,9 @@ def build(doc: PDFBuilder):
 
 
 def main():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    out = os.path.join(root, "PluralTree_Overview.pdf")
+    # three dirnames: scripts/analysis/<file> -> repo root (two only reached scripts/)
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    out = os.path.join(root, "docs", "PluralTree_Overview.pdf")
     doc = PDFBuilder(out)
     build(doc)
     doc.close()

@@ -14,7 +14,7 @@ The PluralTree project explores recursive gating in hyperbolic geometry for hier
 ```
 PluralTree/
 ├── pyproject.toml
-├── ideas.txt
+├── docs/ideas.txt
 ├── configs/
 │   ├── base.yaml
 │   ├── track_a_euclidean.yaml

@@ -30,3 +30,11 @@ contestedness_probe*.pt
 # Slide decks — regenerate from the script rather than tracking a binary
 *.pptx
 ~$*
+
+# Run artifacts written to the repo root by the eval jobs. Left in place rather
+# than moved: ~17 scripts/jobs default to these bare filenames (RESP/SCORES/OUT).
+overton_responses_*.jsonl
+overton_scores_*.csv
+hivemind_*.jsonl
+hivemind_*.csv
+grpo_prompts.jsonl
