@@ -65,9 +65,10 @@ def _fmt(v, nd=3):
     return "  n/a" if v != v else f"{v:+.{nd}f}"
 
 
-def triage(rows, indep, top: int, tol: float) -> None:
+def triage(rows, indep, top: int, tol: float, usable=None) -> None:
     """Win/loss table + what separates them. ``indep`` maps qid -> baseline
-    coverage from a DIFFERENT run; None disables the uncontaminated test."""
+    coverage from a DIFFERENT run; None disables the uncontaminated test.
+    ``usable`` limits the feature table to columns that survived pruning."""
     rows = sorted(rows, key=lambda r: r.inj - r.base)
     deltas = [r.inj - r.base for r in rows]
     wins = [r for r in rows if r.inj - r.base > tol]
@@ -104,12 +105,40 @@ def triage(rows, indep, top: int, tol: float) -> None:
             print(f"  INDEPENDENT baseline vs delta : {_fmt(ind)}   over "
                   f"{len(pairs)} questions   <- THE REAL NUMBER")
             print(f"  artifact size = {_fmt(same - ind)}   (same-run minus independent)")
-            print("  Clearly negative on the independent test => consensus dilution is")
-            print("  real, and 'baseline already covers it' is a usable routing feature.")
-            print("  Near zero => the losses are NOT explained by baseline quality;")
-            print("  look to the feature table below instead.")
+            n = len(pairs)
+            if abs(ind) < 1 and n > 2:
+                t = abs(ind) * ((n - 2) / (1 - ind * ind)) ** 0.5
+                # normal approx to the two-sided t tail; n is ~60, close enough
+                pv = math.erfc(t / 2 ** 0.5)
+                print(f"  |t|={t:.2f}  p~{pv:.3f} (two-sided, n={n})"
+                      f"{'  SIGNIFICANT' if pv < 0.05 else '  NOT significant'}")
+            print("  Judge it on that p, not on the sign: at n=60 a correlation near")
+            print("  -0.2 is indistinguishable from zero, and the bucket table below")
+            print("  is the more robust read on coverage this coarse.")
     else:
         print("  (pass --baseline-from <other run> for the uncontaminated test)")
+
+    # --- bucketed by INDEPENDENT baseline ------------------------------------
+    # Coverage takes a handful of distinct values over few clusters, so a Pearson
+    # r understates a monotone step. Bucketing is robust to that, and using the
+    # independent baseline keeps it free of the regression artifact above.
+    if indep:
+        buckets = [("baseline 0 (total miss)", lambda b: b <= 0.0),
+                   ("baseline 0-0.5", lambda b: 0.0 < b < 0.5),
+                   ("baseline 0.5-1", lambda b: 0.5 <= b < 1.0),
+                   ("baseline 1.0 (already full)", lambda b: b >= 1.0)]
+        print("\n=== mean delta by INDEPENDENT baseline bucket ===")
+        print(f"  {'bucket':<28}{'n':>4}{'mean delta':>12}{'win':>5}{'loss':>6}")
+        for label, pred in buckets:
+            sel = [r for r in rows if r.qid in indep and pred(indep[r.qid])]
+            if not sel:
+                continue
+            d = [r.inj - r.base for r in sel]
+            w = sum(1 for x in d if x > tol)
+            l = sum(1 for x in d if x < -tol)
+            print(f"  {label:<28}{len(sel):>4}{st.mean(d):>+12.3f}{w:>5}{l:>6}")
+        print("  A monotone decline across buckets is the consensus-dilution claim,")
+        print("  stated without leaning on a correlation the data cannot support.")
 
     # --- what separates wins from losses -------------------------------------
     if not (wins and losses):
@@ -118,7 +147,9 @@ def triage(rows, indep, top: int, tol: float) -> None:
     print(f"  {'feature':<20}{'win mean':>11}{'loss mean':>11}{'diff':>9}"
           f"{'corr w/delta':>14}")
     scored = []
-    for name in sorted({k for r in rows for k in r.feats if not k.startswith("_")}):
+    cols = sorted(usable) if usable else sorted(
+        {k for r in rows for k in r.feats if not k.startswith("_")})
+    for name in cols:
         w = [r.feats[name] for r in wins if _ok(r.feats.get(name))]
         l = [r.feats[name] for r in losses if _ok(r.feats.get(name))]
         if len(w) < 2 or len(l) < 2:
@@ -232,7 +263,7 @@ def main():
     names = features_in(args.groups.split(","))
     usable = attach_features(rows, names, args)
     print(f"features: {len(usable)}/{len(names)} usable -> {', '.join(sorted(usable))}")
-    triage(rows, indep, args.top, args.tol)
+    triage(rows, indep, args.top, args.tol, usable)
 
 
 if __name__ == "__main__":
