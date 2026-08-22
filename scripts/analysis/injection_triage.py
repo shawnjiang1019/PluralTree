@@ -33,8 +33,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from scripts.analysis.delta_regressor import (Row, build_rows, derive_responses_path,
-                                              features_in, load_coverage)
+from scripts.analysis.delta_regressor import (Row, attach_features, build_rows,
+                                              derive_responses_path, features_in,
+                                              load_coverage)
+
+
+def _ok(v) -> bool:
+    """Feature values are NaN wherever a source was unavailable (no graph, no
+    --embeddings). NaN must be DROPPED, not treated as a measured 0."""
+    return isinstance(v, (int, float)) and v == v
 
 
 def _corr(xs, ys) -> float:
@@ -111,15 +118,16 @@ def triage(rows, indep, top: int, tol: float) -> None:
     print(f"  {'feature':<20}{'win mean':>11}{'loss mean':>11}{'diff':>9}"
           f"{'corr w/delta':>14}")
     scored = []
-    for name in sorted({k for r in rows for k in r.feats}):
-        w = [r.feats[name] for r in wins if name in r.feats]
-        l = [r.feats[name] for r in losses if name in r.feats]
+    for name in sorted({k for r in rows for k in r.feats if not k.startswith("_")}):
+        w = [r.feats[name] for r in wins if _ok(r.feats.get(name))]
+        l = [r.feats[name] for r in losses if _ok(r.feats.get(name))]
         if len(w) < 2 or len(l) < 2:
             continue
-        xs = [r.feats[name] for r in rows if name in r.feats]
-        ys = [r.inj - r.base for r in rows if name in r.feats]
+        pairs = [(r.feats[name], r.inj - r.base) for r in rows
+                 if _ok(r.feats.get(name))]
         scored.append((abs(st.mean(w) - st.mean(l)), name, st.mean(w),
-                       st.mean(l), _corr(xs, ys)))
+                       st.mean(l), _corr([a for a, _ in pairs],
+                                         [b for _, b in pairs])))
     for _, name, wm, lm, c in sorted(scored, reverse=True):
         print(f"  {name:<20}{wm:>11.3f}{lm:>11.3f}{wm - lm:>+9.3f}{_fmt(c):>14}")
     print("  Ranked by separation. A feature that separates AND correlates is a")
@@ -188,6 +196,17 @@ def main():
     ap.add_argument("--top", type=int, default=10)
     ap.add_argument("--tol", type=float, default=0.027,
                     help="OvertonBench noise floor from two baseline draws")
+    ap.add_argument("--contestedness", default=None,
+                    help="external contestedness labels csv")
+    ap.add_argument("--embeddings", default=None,
+                    help="enables the live graph features (z_level, driver_sim)")
+    ap.add_argument("--text_feat", default=None)
+    ap.add_argument("--dataset", choices=["globalopinionqa", "opinionqa"],
+                    default="opinionqa")
+    ap.add_argument("--curvature", type=float, default=0.5)
+    ap.add_argument("--tau", type=float, default=0.25)
+    ap.add_argument("--n_null", type=int, default=300)
+    ap.add_argument("--seed", type=int, default=42, help="graph split seed")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
@@ -196,11 +215,13 @@ def main():
         ap.error("--scores required (or --selftest)")
 
     resp = args.responses or derive_responses_path(args.scores)
-    rows = [r for r in build_rows([args.scores], [resp], args.baseline,
-                                  [args.condition])
-            if r.condition == args.condition]
+    rows, meta = build_rows([args.scores], [resp], args.baseline, [args.condition])
+    rows = [r for r in rows if r.condition == args.condition]
     if not rows:
         ap.error(f"no rows for condition {args.condition!r} in {args.scores}")
+    for tag, m in meta.items():
+        print(f"{tag}: {m['n_q']} questions, conditions={m['conditions']}, "
+              f"responses={m['responses'] or 'MISSING (text features -> NaN)'}")
 
     indep = None
     if args.baseline_from:
@@ -208,7 +229,9 @@ def main():
         indep = {q: c[args.baseline] for q, c in cov.items() if args.baseline in c}
         print(f"independent baseline: {len(indep)} questions from {args.baseline_from}")
 
-    print(f"features: {', '.join(f.name for f in features_in(args.groups.split(',')))}")
+    names = features_in(args.groups.split(","))
+    usable = attach_features(rows, names, args)
+    print(f"features: {len(usable)}/{len(names)} usable -> {', '.join(sorted(usable))}")
     triage(rows, indep, args.top, args.tol)
 
 
