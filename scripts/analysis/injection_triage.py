@@ -145,7 +145,7 @@ def triage(rows, indep, top: int, tol: float, usable=None) -> None:
         return
     print(f"\n=== features: wins (n={len(wins)}) vs losses (n={len(losses)}) ===")
     print(f"  {'feature':<20}{'win mean':>11}{'loss mean':>11}{'diff':>9}"
-          f"{'corr w/delta':>14}")
+          f"{'corr w/delta':>14}{'n':>6}")
     scored = []
     cols = sorted(usable) if usable else sorted(
         {k for r in rows for k in r.feats if not k.startswith("_")})
@@ -156,11 +156,16 @@ def triage(rows, indep, top: int, tol: float, usable=None) -> None:
             continue
         pairs = [(r.feats[name], r.inj - r.base) for r in rows
                  if _ok(r.feats.get(name))]
+        if max(a for a, _ in pairs) - min(a for a, _ in pairs) < 1e-12:
+            continue                       # constant: nothing to separate on
         scored.append((abs(st.mean(w) - st.mean(l)), name, st.mean(w),
                        st.mean(l), _corr([a for a, _ in pairs],
-                                         [b for _, b in pairs])))
-    for _, name, wm, lm, c in sorted(scored, reverse=True):
-        print(f"  {name:<20}{wm:>11.3f}{lm:>11.3f}{wm - lm:>+9.3f}{_fmt(c):>14}")
+                                         [b for _, b in pairs]), len(pairs)))
+    for _, name, wm, lm, c, n in sorted(scored, reverse=True):
+        print(f"  {name:<20}{wm:>11.3f}{lm:>11.3f}{wm - lm:>+9.3f}"
+              f"{_fmt(c):>14}{n:>6}")
+    print(f"  n < {len(rows)} means partial coverage, NOT a complete-matrix drop:")
+    print("  each column is scored on its own rows, so 56/60 still ranks fine.")
     print("  Ranked by separation. A feature that separates AND correlates is a")
     print("  routing candidate. One that separates WITHOUT correlating is probably")
     print("  tracking the win/loss split itself, not the quantity underneath it.")
@@ -261,9 +266,15 @@ def main():
         print(f"independent baseline: {len(indep)} questions from {args.baseline_from}")
 
     names = features_in(args.groups.split(","))
-    usable = attach_features(rows, names, args)
-    print(f"features: {len(usable)}/{len(names)} usable -> {', '.join(sorted(usable))}")
-    triage(rows, indep, args.top, args.tol, usable)
+    complete = attach_features(rows, names, args)      # prints its own drops
+    partial = [n for n in names if n not in complete
+               and any(_ok(r.feats.get(n)) for r in rows)]
+    print(f"features: {len(complete)} complete + {len(partial)} partial "
+          f"= {len(complete) + len(partial)}/{len(names)} scored")
+    if partial:
+        print(f"  RECOVERED (dropped by the ridge rule, fine here): "
+              f"{', '.join(sorted(partial))}")
+    triage(rows, indep, args.top, args.tol, complete + partial)
 
 
 if __name__ == "__main__":
