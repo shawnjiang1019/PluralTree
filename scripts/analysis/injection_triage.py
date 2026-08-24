@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import random
 import statistics as st
 import sys
 
@@ -82,6 +83,22 @@ def triage(rows, indep, top: int, tol: float, usable=None,
           f"mean delta={st.mean(deltas):+.4f}")
     print(f"  ties are {len(ties) / len(rows):.0%} of questions: coverage is a "
           f"fraction over few clusters, so it is coarse.")
+
+    # The sign test discards MAGNITUDE -- a +0.500 win and a +0.030 win count the
+    # same, and ties are dropped entirely. When wins are systematically larger
+    # than losses that is most of the evidence thrown away. Bootstrap the mean
+    # delta instead: it uses every question and every magnitude.
+    rng = random.Random(0)
+    idx = range(len(deltas))
+    boots = sorted(st.mean(deltas[rng.choice(idx)] for _ in idx)
+                   for _ in range(10000))
+    lo, hi = boots[249], boots[9750]
+    n_le0 = sum(1 for b in boots if b <= 0.0)
+    pb = 2.0 * min(n_le0, len(boots) - n_le0) / len(boots)
+    print(f"  mean delta 95% CI [{lo:+.4f}, {hi:+.4f}]  bootstrap p={pb:.4f}"
+          f"  {'SIGNIFICANT' if pb < 0.05 else 'not significant'}  (10k resamples)")
+    print("  ^ this, not the sign test, is the headline: it keeps magnitudes and")
+    print("    counts the ties, which the sign test drops.")
     print("  That is a POWER limit, not a null result -- more rollouts, not more questions.")
 
     print(f"\n=== worst {top}: injection hurt most ===")
