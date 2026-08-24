@@ -33,9 +33,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from scripts.analysis.delta_regressor import (Row, attach_features, build_rows,
-                                              derive_responses_path, features_in,
-                                              load_coverage)
+from scripts.analysis.delta_regressor import (FEATURES, Row, attach_features,
+                                              build_rows, derive_responses_path,
+                                              features_in, load_coverage)
 
 
 def _ok(v) -> bool:
@@ -65,7 +65,8 @@ def _fmt(v, nd=3):
     return "  n/a" if v != v else f"{v:+.{nd}f}"
 
 
-def triage(rows, indep, top: int, tol: float, usable=None) -> None:
+def triage(rows, indep, top: int, tol: float, usable=None,
+           show_features: bool = True) -> None:
     """Win/loss table + what separates them. ``indep`` maps qid -> baseline
     coverage from a DIFFERENT run; None disables the uncontaminated test.
     ``usable`` limits the feature table to columns that survived pruning."""
@@ -141,7 +142,7 @@ def triage(rows, indep, top: int, tol: float, usable=None) -> None:
         print("  stated without leaning on a correlation the data cannot support.")
 
     # --- what separates wins from losses -------------------------------------
-    if not (wins and losses):
+    if not show_features or not (wins and losses):
         return
     print(f"\n=== features: wins (n={len(wins)}) vs losses (n={len(losses)}) ===")
     print(f"  {'feature':<20}{'win mean':>11}{'loss mean':>11}{'diff':>9}"
@@ -243,6 +244,10 @@ def main():
     ap.add_argument("--tau", type=float, default=0.25)
     ap.add_argument("--n_null", type=int, default=300)
     ap.add_argument("--seed", type=int, default=42, help="graph split seed")
+    ap.add_argument("--no_features", action="store_true",
+                    help="skip the feature table -- the win/loss counts, buckets "
+                         "and correlations need no graph, so this drops an "
+                         "~8 min load to about a second")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
@@ -265,7 +270,18 @@ def main():
         indep = {q: c[args.baseline] for q, c in cov.items() if args.baseline in c}
         print(f"independent baseline: {len(indep)} questions from {args.baseline_from}")
 
+    if args.no_features:
+        triage(rows, indep, args.top, args.tol, show_features=False)
+        return
+
     names = features_in(args.groups.split(","))
+    # A run that scores 0 features still prints a full, plausible-looking report
+    # with an empty feature table -- which is how a wrong-branch checkout looked
+    # like a null result. Fail instead.
+    if not names:
+        ap.error(f"no features registered for groups {args.groups!r}; known "
+                 f"groups are "
+                 f"{sorted({m['group'] for m in FEATURES.values()})}")
     complete = attach_features(rows, names, args)      # prints its own drops
     partial = [n for n in names if n not in complete
                and any(_ok(r.feats.get(n)) for r in rows)]
