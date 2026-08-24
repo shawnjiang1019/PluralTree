@@ -48,6 +48,11 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #        lossless: N drafts, one paragraph per position, plus a length/position
     #        guard that falls back to concatenation when the merge compresses
     #        (MERGE_INSTRUCTION_V2 / merge_drafts)
+    "persona_merge": ScoutConfig(tau=0.25, alpha=1.0),  # merge_v2's machinery,
+    #        but the drafts are diversified by SUBGROUP rather than by
+    #        instruction: one draft per point on the anchor's opinion spectrum.
+    #        Compute-matched to merge_v2 (same n_drafts, one merge call), so the
+    #        pair is a clean A/B on the diversification SOURCE.
 }
 
 # Conditions that inject the full subgroup spectrum (fork_context_full) instead of
@@ -215,7 +220,7 @@ INSTRUCTION_BY_CONDITION: dict[str, str] = {
 
 # Conditions that make MULTIPLE generation calls (draft A, draft B, then merge)
 # instead of one. Handled by _merge_answer*(), not the single-call path.
-MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2"}
+MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge"}
 
 
 @dataclass(frozen=True)
@@ -377,14 +382,35 @@ def fork_context_full(fork: ScoredFork, graph, k: int = 1,
     pole-to-pole axis); falls back to the 2-pole block if the anchor has too few.
     """
     anchor = fork.anchor
+    leaves = spectrum_leaves(fork, graph, max_subgroups)
+    if not leaves:
+        return fork_context(fork, graph, k)          # not enough spread → poles
+
+    lines = [f"[fork {k}] on '{describe_node(graph, anchor, 60)}' — full subgroup "
+             f"spectrum (divergence={fork.w:.2f}, relevance={fork.relevance:.2f}):"]
+    for c in leaves:
+        lines.append(f"    {describe_node(graph, c, 0, show_q=False)}")
+    return "\n".join(lines)
+
+
+def spectrum_leaves(fork, graph, max_subgroups: int = 8) -> list[int]:
+    """The anchor's opinion leaves ordered along the pole-to-pole axis.
+
+    Returns [] when the anchor has too little spread to be a spectrum (<3 leaves,
+    or a pole with no distribution) -- callers fall back to the 2-pole render.
+
+    Extracted from fork_context_full so persona selection picks its subgroups
+    from the SAME ordering the distributional render shows, rather than
+    re-deriving a second, silently-different axis.
+    """
     leaves = list(dict.fromkeys(
-        c for c in graph.children_indices[anchor] if _leaf_vec(graph, c) is not None))
+        c for c in graph.children_indices[fork.anchor]
+        if _leaf_vec(graph, c) is not None))
     A = fork.branch_a if _leaf_vec(graph, fork.branch_a) is not None else None
     B = fork.branch_b if _leaf_vec(graph, fork.branch_b) is not None else None
     if len(leaves) < 3 or A is None or B is None:
-        return fork_context(fork, graph, k)          # not enough spread → poles
+        return []
 
-    # order subgroups along the A->B axis so the block reads as a spectrum
     pa, pb = _leaf_vec(graph, A), _leaf_vec(graph, B)
     if len(pa) == len(pb) and all(len(_leaf_vec(graph, c)) == len(pa) for c in leaves):
         av = [b - a for a, b in zip(pa, pb)]
@@ -393,17 +419,44 @@ def fork_context_full(fork: ScoredFork, graph, k: int = 1,
             p = _leaf_vec(graph, c)
             return sum((pc - a) * v for pc, a, v in zip(p, pa, av)) / den
         leaves.sort(key=_t)
-    if len(leaves) > max_subgroups:                  # keep the poles + evenly-spaced middle
+    if len(leaves) > max_subgroups:                  # poles + evenly-spaced middle
         keep = {0, len(leaves) - 1}
         step = (len(leaves) - 1) / (max_subgroups - 1)
         keep.update(round(i * step) for i in range(max_subgroups))
         leaves = [leaves[i] for i in sorted(keep)][:max_subgroups]
+    return leaves
 
-    lines = [f"[fork {k}] on '{describe_node(graph, anchor, 60)}' — full subgroup "
-             f"spectrum (divergence={fork.w:.2f}, relevance={fork.relevance:.2f}):"]
-    for c in leaves:
-        lines.append(f"    {describe_node(graph, c, 0, show_q=False)}")
-    return "\n".join(lines)
+
+def pick_personas(fork, graph, n: int) -> list[int]:
+    """``n`` subgroups spread along the spectrum: both poles first, then middle.
+
+    Poles first because they sit furthest apart and so are most likely to make
+    the drafts DISAGREE -- disagreement between drafts is the only thing that
+    raises the union merge_v2 harvests. The middle comes next: subtree_middle.py
+    found 68% of an axis's non-pole subgroups genuinely lie BETWEEN the poles, so
+    a third persona is a real third position, not a blend of the first two.
+    """
+    leaves = spectrum_leaves(fork, graph)
+    if n < 1:
+        return []
+    if len(leaves) < 2:
+        return leaves[:n]
+    picks = [0, len(leaves) - 1]                     # both poles
+    while len(picks) < min(n, len(leaves)):          # then split the widest gap
+        gaps = sorted(zip(picks, picks[1:]), key=lambda ab: ab[1] - ab[0])
+        if not gaps:
+            break
+        lo, hi = gaps[-1]
+        mid = (lo + hi) // 2
+        if mid in picks:
+            break
+        picks = sorted(picks + [mid])
+    return [leaves[i] for i in picks[:n]]
+
+
+def persona_context(graph, leaf: int, k: int = 1) -> str:
+    """One subgroup's actual survey distribution, as the draft's vantage point."""
+    return f"[group {k}] {describe_node(graph, leaf, 0, show_q=True)}"
 
 
 def forks_to_context(forks: list[ScoredFork], graph, full_dist: bool = False) -> str:
@@ -631,6 +684,68 @@ def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
     return concat_drafts(kept, labels), info
 
 
+PERSONA_INSTRUCTION = (
+    "You are shown how one specific group of people actually answered a survey "
+    "question, with their real response percentages. Write the most thoughtful "
+    "answer to the question that reflects how that group sees it, and the "
+    "reasons they would give.\n"
+    "Commit to that view. Do not hedge, do not present other groups' positions, "
+    "and do not mention the group, the survey, or these instructions -- write "
+    "the answer itself, as someone holding that view would argue it."
+)
+
+
+def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str,
+                          cfg: MergeConfig = MergeConfig(),
+                          chat_fn=None) -> tuple[str, dict]:
+    """merge_v2's machinery, drafts diversified by SUBGROUP instead of instruction.
+
+    merge_v2 varies the INSTRUCTION across drafts (plain / scout / distributional)
+    and its whole gain comes from the union over drafts that disagree. But those
+    three drafts see the same fork block, so they disagree only as much as three
+    phrasings of one context can. Conditioning each draft on a DIFFERENT point of
+    the anchor's opinion spectrum makes them disagree about content instead.
+
+    Compute-matched to merge_v2 on purpose: n_drafts drafts + one merge call, and
+    the first draft is the same plain baseline. Only the source of draft-to-draft
+    variation differs, so persona_merge vs merge_v2 isolates exactly that.
+
+    Falls back to plain-only when the anchor has no usable spectrum (<3 opinion
+    leaves) -- which is also the signal that this question had no subgroup
+    disagreement to exploit.
+    """
+    chat_fn = chat_fn or chat
+    n = max(1, min(cfg.n_drafts, len(DRAFT_SPECS)))
+    personas = pick_personas(forks[0], graph, n - 1) if forks else []
+
+    drafts, labels = [], []
+    # Draft 1 is the plain baseline -- the strongest single condition measured
+    # (0.4967 vs scout 0.3927), so dropping it to buy a third persona would
+    # trade the best draft for a marginal one.
+    raw = chat_fn(base_url, model,
+                  build_prompt(question, None, graph, BASELINE_INSTRUCTION),
+                  temperature=0.7, max_tokens=2048)
+    text, _ = extract_answer(raw)
+    if text.strip():
+        drafts.append(text.strip()); labels.append("plain")
+
+    for k, leaf in enumerate(personas, 1):
+        msgs = [{"role": "system", "content": PERSONA_INSTRUCTION},
+                {"role": "user", "content": persona_context(graph, leaf, k)
+                 + "\n\nQuestion: " + question}]
+        raw = chat_fn(base_url, model, msgs, temperature=0.7, max_tokens=2048)
+        text, _ = extract_answer(raw)
+        if text.strip():
+            drafts.append(text.strip()); labels.append(f"persona{k}")
+
+    merged, info = merge_drafts(question, drafts, base_url, model, cfg=cfg,
+                                chat_fn=chat_fn, labels=labels)
+    info["n_personas"] = len(personas)
+    parts = {"draft_a": drafts[0] if drafts else "",
+             "draft_b": drafts[1] if len(drafts) > 1 else "", **info}
+    return merged, parts
+
+
 def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
                      full_dist: bool = False, cfg: MergeConfig = MergeConfig(),
                      chat_fn=None) -> tuple[str, dict]:
@@ -714,7 +829,11 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
         prompt = "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
         return _pack(prompt, prompt)
     if condition in MULTI_PASS_CONDITIONS:
-        if condition == "merge_v2":
+        if condition == "persona_merge":
+            merged, parts = _persona_merge_answer(
+                question, forks, graph, base_url, model,
+                merge_cfg or MergeConfig(), chat_fn)
+        elif condition == "merge_v2":
             merged, parts = _merge_answer_v2(
                 question, forks, graph, base_url, model, full_dist,
                 merge_cfg or MergeConfig(), chat_fn)
@@ -751,6 +870,64 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
 # ---------------------------------------------------------------------------
 # Self-test (no endpoint required: chat_fn is stubbed)
 # ---------------------------------------------------------------------------
+def _persona_selftest() -> None:
+    """pick_personas spreads along the spectrum; the draft path stays compute-matched.
+
+    Two things that would silently break the A/B with merge_v2 and are invisible
+    at runtime: picking personas that are NOT spread (so the drafts agree and the
+    union gains nothing), and spending a different number of calls (so any win is
+    just extra compute). Both are asserted here.
+    """
+    class _G:                                    # 5 subgroups on one axis
+        children_indices = {0: [1, 2, 3, 4, 5]}
+        id_to_entity = {i: f"op:q1:PARTY:g{i}" for i in range(6)}
+        opinion_texts = {i: ["Agree", "Disagree"] for i in range(1, 6)}
+        # a clean gradient from all-agree to all-disagree
+        opinion_dist = {i: [1.0 - (i - 1) / 4.0, (i - 1) / 4.0] for i in range(1, 6)}
+        entity_text = {}
+
+    class _F:
+        anchor, branch_a, branch_b = 0, 1, 5
+        w, relevance, top_pairs = 3.0, 0.9, []
+
+    g, fork = _G(), _F()
+    leaves = spectrum_leaves(fork, g)
+    assert leaves == [1, 2, 3, 4, 5], leaves          # ordered along A->B
+
+    assert pick_personas(fork, g, 2) == [1, 5]        # both poles first
+    p3 = pick_personas(fork, g, 3)
+    assert p3 == [1, 3, 5], p3                        # then the true middle
+    assert len(pick_personas(fork, g, 9)) == 5        # never more than exist
+
+    # An anchor with no spectrum yields no personas -- the caller must degrade to
+    # the plain draft rather than inventing a vantage point.
+    class _Flat(_G):
+        children_indices = {0: [1]}
+    assert pick_personas(_F(), _Flat(), 2) in ([], [1]), "flat anchor"
+
+    # Compute parity with merge_v2: n_drafts draft calls + exactly one merge.
+    seen = []
+
+    def _chat(base_url, model, messages, **kw):
+        seen.append(messages[0]["content"])
+        if messages[0]["content"] == MERGE_INSTRUCTION_V2:
+            return "<answer>" + ("word " * 400) + "</answer>"
+        return "<answer>" + ("word " * 120) + "</answer>"
+
+    cfg = MergeConfig(n_drafts=3)
+    _out, parts = _persona_merge_answer("Q?", [fork], g, "", "", cfg, _chat)
+    n_merge = sum(1 for c in seen if c == MERGE_INSTRUCTION_V2)
+    n_persona = sum(1 for c in seen if c == PERSONA_INSTRUCTION)
+    n_plain = sum(1 for c in seen if c == BASELINE_INSTRUCTION)
+    assert n_merge == 1, seen
+    assert n_plain == 1 and n_persona == 2, (n_plain, n_persona)
+    assert len(seen) == cfg.n_drafts + 1 == 4, len(seen)
+    assert parts["n_personas"] == 2, parts["n_personas"]
+    print("  persona   : leaves ordered, poles-then-middle, "
+          f"{n_plain} plain + {n_persona} persona + {n_merge} merge = "
+          f"{len(seen)} calls (merge_v2 parity)")
+
+
 def _selftest() -> None:
     """Exercise the merge_v2 guard against canned merger outputs.
 
@@ -838,6 +1015,7 @@ def _selftest() -> None:
     out, parts = _merge_answer_v2(q, None, None, "", "", cfg=cfg, chat_fn=fn)
     assert len(calls) == 1 and out == draft_a and not parts["merge_fallback"], parts
 
+    _persona_selftest()
     print("merge_v2 self-test OK")
     print(f"  lossless  : {s_good['merged_words']}w/{s_good['merged_positions']}pos "
           f"vs longest draft {s_good['max_draft_words']}w/"

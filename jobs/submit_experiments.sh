@@ -26,6 +26,14 @@ source ~/pluraltree-env/bin/activate
 export HF_HOME="${HF_HOME:-$HOME/projects/def-enaskt/shawnj/hf_cache}"
 export OPINIONQA_DIR="${OPINIONQA_DIR:-$HOME/projects/def-enaskt/shawnj/data/human_resp}"
 export PYTHONUNBUFFERED=1
+# Compute nodes have NO outbound network. Jobs [1]/[2] are --wrap one-liners with
+# no preamble of their own, so they inherit THIS environment -- without these,
+# sentence-transformers probes the hub for an adapter config and dies on
+# "Network is unreachable" (selector_search_244676.err). The other jobs set these
+# in their own scripts; these two cannot.
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
 mkdir -p logs artifacts docs

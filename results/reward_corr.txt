@@ -1,0 +1,369 @@
+================================================================
+=== [v6] all conditions (includes route -- easy case)
+================================================================
+  ATP American_Trends_Panel_W26: cumulative 3597 records
+  ATP American_Trends_Panel_W27: cumulative 8402 records
+  ATP American_Trends_Panel_W29: cumulative 12251 records
+  ATP American_Trends_Panel_W32: cumulative 17539 records
+  ATP American_Trends_Panel_W34: cumulative 20709 records
+  ATP American_Trends_Panel_W36: cumulative 27055 records
+  ATP American_Trends_Panel_W41: cumulative 31323 records
+  ATP American_Trends_Panel_W42: cumulative 37867 records
+  ATP American_Trends_Panel_W43: cumulative 44013 records
+  ATP American_Trends_Panel_W45: cumulative 49201 records
+  ATP American_Trends_Panel_W49: cumulative 54118 records
+  ATP American_Trends_Panel_W50: cumulative 59966 records
+  ATP American_Trends_Panel_W54: cumulative 66172 records
+  ATP American_Trends_Panel_W82: cumulative 71334 records
+  ATP American_Trends_Panel_W92: cumulative 75695 records
+  OpinionQA/ATP: 75695 records — 1492 questions, 58 (attribute, group) subpopulations, min_group=100
+  OpinionQA/SubPOP: 94423 entities (12 topics, 48 subtopics, 1492 questions, 17835 axes, 75035 opinions)
+  Opinion triples — train 60556 | val 7569 | test 7570 | leakage_safe=True
+reward cfg: min_depth_words=[0, 30, 60, 90, 120, 150] (headline d=60) weight=uniform l_precision=0.5 l_verbose=0.0
+
+scored 224 responses over 56 questions (4 skipped: no resolvable anchor)
+
+=== WITHIN-QUESTION pairwise concordance (chance = 0.500) ===
+  reward_v1 (depth-blind)      0.163   over 240 condition pairs
+  reward_v2  d=0               0.183   over 240 condition pairs
+  reward_v2  d=30              0.121   over 240 condition pairs
+  reward_v2  d=60              0.104   over 240 condition pairs <- headline
+  reward_v2  d=90              0.062   over 240 condition pairs
+  reward_v2  d=120             0.042   over 240 condition pairs
+  reward_v2  d=150             0.021   over 240 condition pairs
+  ^ THIS is what GRPO's advantage consumes. At ~0.5 the reward cannot
+    order rollouts of the same prompt and training optimizes noise.
+
+=== decomposed: ties vs wrong ordering ===
+                      tie_rate  conc|separated   n_sep
+  reward_v1              0.725           0.591      66
+  reward_v2 d=0          0.700           0.611      72
+  reward_v2 d=30         0.796           0.592      49
+  reward_v2 d=60         0.858           0.735      34
+  reward_v2 d=90         0.912           0.714      21
+  reward_v2 d=120        0.933           0.625      16
+  reward_v2 d=150        0.967           0.625       8
+  tie_rate high + conc|separated ~0.5+ => reward is too SPARSE;
+    lower match_thr (or fix the position embed_text), do not redesign.
+  tie_rate low + conc|separated <0.5  => reward orders WRONGLY;
+    the objective itself disagrees with the judge.
+
+=== picks the judge's best condition (chance = 1/n_conds) ===
+  reward_v1        22/52 (0.42)
+  reward_v2 d=0    22/52 (0.42)
+  reward_v2 d=30   25/52 (0.48)
+  reward_v2 d=60   25/52 (0.48)
+  reward_v2 d=90   26/52 (0.50)
+  reward_v2 d=120  25/52 (0.48)
+  reward_v2 d=150  26/52 (0.50)
+
+=== POOLED correlation (for contrast -- NOT the relevant number) ===
+  corr(reward_v1, judge)      = -0.073
+  corr(reward_v2 d=0, judge) = -0.064
+  corr(reward_v2 d=30, judge) = -0.019
+  corr(reward_v2 d=60, judge) = +0.042
+  corr(reward_v2 d=90, judge) = +0.071
+  corr(reward_v2 d=120, judge) = +0.008
+  corr(reward_v2 d=150, judge) = -0.014
+  ^ can look fine purely from between-question difficulty variance
+
+=== reward distributions (is the reward even discriminative?) ===
+  v1         mean=0.148 sd=0.297 frac_zero=0.77
+  v2 d=0     mean=0.117 sd=0.238 frac_zero=0.76
+  v2 d=30    mean=0.051 sd=0.147 frac_zero=0.85
+  v2 d=60    mean=0.029 sd=0.111 frac_zero=0.92
+  v2 d=90    mean=0.017 sd=0.085 frac_zero=0.95
+  v2 d=120   mean=0.012 sd=0.063 frac_zero=0.96
+  v2 d=150   mean=0.008 sd=0.053 frac_zero=0.98
+  judge      mean=0.344 sd=0.332 frac_zero=0.37
+
+=== cosine distributions that match_thr=0.5 slices ===
+  pos_best (mentioned?)    p10=0.137  p25=0.229  p50=0.341  p75=0.475  p90=0.541   >=thr: 0.180
+  unit_best (precision?)   p10=0.088  p25=0.171  p50=0.287  p75=0.398  p90=0.497   >=thr: 0.095
+  If pos_best p75 < match_thr the threshold is the binding
+  constraint -- recalibrate it before touching min_depth_words.
+  units/response: mean=5.4 min=1  frac_with_ZERO_units=0.000
+  ^ split_units drops any unit under 8 words; a response left with
+    no units scores 0 no matter what it says.
+
+wrote docs/reward_eval_correlation_v6_all.csv
+
+================================================================
+=== [v6] excluding route (near-ties -- THE GATE, needs >=0.60)
+================================================================
+  ATP American_Trends_Panel_W26: cumulative 3597 records
+  ATP American_Trends_Panel_W27: cumulative 8402 records
+  ATP American_Trends_Panel_W29: cumulative 12251 records
+  ATP American_Trends_Panel_W32: cumulative 17539 records
+  ATP American_Trends_Panel_W34: cumulative 20709 records
+  ATP American_Trends_Panel_W36: cumulative 27055 records
+  ATP American_Trends_Panel_W41: cumulative 31323 records
+  ATP American_Trends_Panel_W42: cumulative 37867 records
+  ATP American_Trends_Panel_W43: cumulative 44013 records
+  ATP American_Trends_Panel_W45: cumulative 49201 records
+  ATP American_Trends_Panel_W49: cumulative 54118 records
+  ATP American_Trends_Panel_W50: cumulative 59966 records
+  ATP American_Trends_Panel_W54: cumulative 66172 records
+  ATP American_Trends_Panel_W82: cumulative 71334 records
+  ATP American_Trends_Panel_W92: cumulative 75695 records
+  OpinionQA/ATP: 75695 records — 1492 questions, 58 (attribute, group) subpopulations, min_group=100
+  OpinionQA/SubPOP: 94423 entities (12 topics, 48 subtopics, 1492 questions, 17835 axes, 75035 opinions)
+  Opinion triples — train 60556 | val 7569 | test 7570 | leakage_safe=True
+reward cfg: min_depth_words=[0, 30, 60, 90, 120, 150] (headline d=60) weight=uniform l_precision=0.5 l_verbose=0.0
+
+scored 168 responses over 56 questions (4 skipped: no resolvable anchor)
+
+=== WITHIN-QUESTION pairwise concordance (chance = 0.500) ===
+  reward_v1 (depth-blind)      0.149   over 114 condition pairs
+  reward_v2  d=0               0.175   over 114 condition pairs
+  reward_v2  d=30              0.105   over 114 condition pairs
+  reward_v2  d=60              0.079   over 114 condition pairs <- headline
+  reward_v2  d=90              0.044   over 114 condition pairs
+  reward_v2  d=120             0.018   over 114 condition pairs
+  reward_v2  d=150             0.009   over 114 condition pairs
+  ^ THIS is what GRPO's advantage consumes. At ~0.5 the reward cannot
+    order rollouts of the same prompt and training optimizes noise.
+
+=== decomposed: ties vs wrong ordering ===
+                      tie_rate  conc|separated   n_sep
+  reward_v1              0.728           0.548      31
+  reward_v2 d=0          0.693           0.571      35
+  reward_v2 d=30         0.789           0.500      24
+  reward_v2 d=60         0.851           0.529      17
+  reward_v2 d=90         0.904           0.455      11
+  reward_v2 d=120        0.930           0.250       8
+  reward_v2 d=150        0.965           0.250       4
+  tie_rate high + conc|separated ~0.5+ => reward is too SPARSE;
+    lower match_thr (or fix the position embed_text), do not redesign.
+  tie_rate low + conc|separated <0.5  => reward orders WRONGLY;
+    the objective itself disagrees with the judge.
+
+=== picks the judge's best condition (chance = 1/n_conds) ===
+  reward_v1        22/48 (0.46)
+  reward_v2 d=0    22/48 (0.46)
+  reward_v2 d=30   23/48 (0.48)
+  reward_v2 d=60   22/48 (0.46)
+  reward_v2 d=90   23/48 (0.48)
+  reward_v2 d=120  22/48 (0.46)
+  reward_v2 d=150  23/48 (0.48)
+
+=== POOLED correlation (for contrast -- NOT the relevant number) ===
+  corr(reward_v1, judge)      = -0.082
+  corr(reward_v2 d=0, judge) = -0.053
+  corr(reward_v2 d=30, judge) = -0.075
+  corr(reward_v2 d=60, judge) = -0.020
+  corr(reward_v2 d=90, judge) = +0.018
+  corr(reward_v2 d=120, judge) = -0.053
+  corr(reward_v2 d=150, judge) = -0.063
+  ^ can look fine purely from between-question difficulty variance
+
+=== reward distributions (is the reward even discriminative?) ===
+  v1         mean=0.152 sd=0.300 frac_zero=0.77
+  v2 d=0     mean=0.116 sd=0.234 frac_zero=0.75
+  v2 d=30    mean=0.060 sd=0.162 frac_zero=0.83
+  v2 d=60    mean=0.038 sd=0.126 frac_zero=0.89
+  v2 d=90    mean=0.023 sd=0.097 frac_zero=0.93
+  v2 d=120   mean=0.017 sd=0.073 frac_zero=0.95
+  v2 d=150   mean=0.010 sd=0.061 frac_zero=0.97
+  judge      mean=0.432 sd=0.323 frac_zero=0.23
+
+=== cosine distributions that match_thr=0.5 slices ===
+  pos_best (mentioned?)    p10=0.139  p25=0.225  p50=0.348  p75=0.470  p90=0.542   >=thr: 0.184
+  unit_best (precision?)   p10=0.088  p25=0.171  p50=0.287  p75=0.397  p90=0.497   >=thr: 0.095
+  If pos_best p75 < match_thr the threshold is the binding
+  constraint -- recalibrate it before touching min_depth_words.
+  units/response: mean=6.2 min=2  frac_with_ZERO_units=0.000
+  ^ split_units drops any unit under 8 words; a response left with
+    no units scores 0 no matter what it says.
+
+wrote docs/reward_eval_correlation_v6_noroute.csv
+
+GATE: FAIL  concordance 0.079 < 0.600 at d=60
+
+================================================================
+=== [v5] all conditions (includes route -- easy case)
+================================================================
+  ATP American_Trends_Panel_W26: cumulative 3597 records
+  ATP American_Trends_Panel_W27: cumulative 8402 records
+  ATP American_Trends_Panel_W29: cumulative 12251 records
+  ATP American_Trends_Panel_W32: cumulative 17539 records
+  ATP American_Trends_Panel_W34: cumulative 20709 records
+  ATP American_Trends_Panel_W36: cumulative 27055 records
+  ATP American_Trends_Panel_W41: cumulative 31323 records
+  ATP American_Trends_Panel_W42: cumulative 37867 records
+  ATP American_Trends_Panel_W43: cumulative 44013 records
+  ATP American_Trends_Panel_W45: cumulative 49201 records
+  ATP American_Trends_Panel_W49: cumulative 54118 records
+  ATP American_Trends_Panel_W50: cumulative 59966 records
+  ATP American_Trends_Panel_W54: cumulative 66172 records
+  ATP American_Trends_Panel_W82: cumulative 71334 records
+  ATP American_Trends_Panel_W92: cumulative 75695 records
+  OpinionQA/ATP: 75695 records — 1492 questions, 58 (attribute, group) subpopulations, min_group=100
+  OpinionQA/SubPOP: 94423 entities (12 topics, 48 subtopics, 1492 questions, 17835 axes, 75035 opinions)
+  Opinion triples — train 60556 | val 7569 | test 7570 | leakage_safe=True
+reward cfg: min_depth_words=[0, 30, 60, 90, 120, 150] (headline d=60) weight=uniform l_precision=0.5 l_verbose=0.0
+
+scored 168 responses over 56 questions (4 skipped: no resolvable anchor)
+
+=== WITHIN-QUESTION pairwise concordance (chance = 0.500) ===
+  reward_v1 (depth-blind)      0.135   over 141 condition pairs
+  reward_v2  d=0               0.142   over 141 condition pairs
+  reward_v2  d=30              0.113   over 141 condition pairs
+  reward_v2  d=60              0.078   over 141 condition pairs <- headline
+  reward_v2  d=90              0.057   over 141 condition pairs
+  reward_v2  d=120             0.021   over 141 condition pairs
+  reward_v2  d=150             0.021   over 141 condition pairs
+  ^ THIS is what GRPO's advantage consumes. At ~0.5 the reward cannot
+    order rollouts of the same prompt and training optimizes noise.
+
+=== decomposed: ties vs wrong ordering ===
+                      tie_rate  conc|separated   n_sep
+  reward_v1              0.702           0.452      42
+  reward_v2 d=0          0.688           0.455      44
+  reward_v2 d=30         0.745           0.444      36
+  reward_v2 d=60         0.816           0.423      26
+  reward_v2 d=90         0.879           0.471      17
+  reward_v2 d=120        0.922           0.273      11
+  reward_v2 d=150        0.929           0.300      10
+  tie_rate high + conc|separated ~0.5+ => reward is too SPARSE;
+    lower match_thr (or fix the position embed_text), do not redesign.
+  tie_rate low + conc|separated <0.5  => reward orders WRONGLY;
+    the objective itself disagrees with the judge.
+
+=== picks the judge's best condition (chance = 1/n_conds) ===
+  reward_v1        22/56 (0.39)
+  reward_v2 d=0    22/56 (0.39)
+  reward_v2 d=30   24/56 (0.43)
+  reward_v2 d=60   23/56 (0.41)
+  reward_v2 d=90   24/56 (0.43)
+  reward_v2 d=120  23/56 (0.41)
+  reward_v2 d=150  23/56 (0.41)
+
+=== POOLED correlation (for contrast -- NOT the relevant number) ===
+  corr(reward_v1, judge)      = -0.118
+  corr(reward_v2 d=0, judge) = -0.088
+  corr(reward_v2 d=30, judge) = -0.078
+  corr(reward_v2 d=60, judge) = -0.011
+  corr(reward_v2 d=90, judge) = -0.043
+  corr(reward_v2 d=120, judge) = -0.155
+  corr(reward_v2 d=150, judge) = -0.120
+  ^ can look fine purely from between-question difficulty variance
+
+=== reward distributions (is the reward even discriminative?) ===
+  v1         mean=0.155 sd=0.303 frac_zero=0.77
+  v2 d=0     mean=0.106 sd=0.220 frac_zero=0.76
+  v2 d=30    mean=0.047 sd=0.128 frac_zero=0.83
+  v2 d=60    mean=0.032 sd=0.106 frac_zero=0.89
+  v2 d=90    mean=0.021 sd=0.079 frac_zero=0.93
+  v2 d=120   mean=0.014 sd=0.066 frac_zero=0.95
+  v2 d=150   mean=0.012 sd=0.060 frac_zero=0.96
+  judge      mean=0.461 sd=0.325 frac_zero=0.20
+
+=== cosine distributions that match_thr=0.5 slices ===
+  pos_best (mentioned?)    p10=0.146  p25=0.224  p50=0.346  p75=0.475  p90=0.550   >=thr: 0.190
+  unit_best (precision?)   p10=0.077  p25=0.175  p50=0.285  p75=0.393  p90=0.485   >=thr: 0.082
+  If pos_best p75 < match_thr the threshold is the binding
+  constraint -- recalibrate it before touching min_depth_words.
+  units/response: mean=7.0 min=2  frac_with_ZERO_units=0.000
+  ^ split_units drops any unit under 8 words; a response left with
+    no units scores 0 no matter what it says.
+
+wrote docs/reward_eval_correlation_v5_all.csv
+
+================================================================
+=== [v5] excluding route (near-ties -- THE GATE, needs >=0.60)
+================================================================
+  ATP American_Trends_Panel_W26: cumulative 3597 records
+  ATP American_Trends_Panel_W27: cumulative 8402 records
+  ATP American_Trends_Panel_W29: cumulative 12251 records
+  ATP American_Trends_Panel_W32: cumulative 17539 records
+  ATP American_Trends_Panel_W34: cumulative 20709 records
+  ATP American_Trends_Panel_W36: cumulative 27055 records
+  ATP American_Trends_Panel_W41: cumulative 31323 records
+  ATP American_Trends_Panel_W42: cumulative 37867 records
+  ATP American_Trends_Panel_W43: cumulative 44013 records
+  ATP American_Trends_Panel_W45: cumulative 49201 records
+  ATP American_Trends_Panel_W49: cumulative 54118 records
+  ATP American_Trends_Panel_W50: cumulative 59966 records
+  ATP American_Trends_Panel_W54: cumulative 66172 records
+  ATP American_Trends_Panel_W82: cumulative 71334 records
+  ATP American_Trends_Panel_W92: cumulative 75695 records
+  OpinionQA/ATP: 75695 records — 1492 questions, 58 (attribute, group) subpopulations, min_group=100
+  OpinionQA/SubPOP: 94423 entities (12 topics, 48 subtopics, 1492 questions, 17835 axes, 75035 opinions)
+  Opinion triples — train 60556 | val 7569 | test 7570 | leakage_safe=True
+reward cfg: min_depth_words=[0, 30, 60, 90, 120, 150] (headline d=60) weight=uniform l_precision=0.5 l_verbose=0.0
+
+scored 168 responses over 56 questions (4 skipped: no resolvable anchor)
+
+=== WITHIN-QUESTION pairwise concordance (chance = 0.500) ===
+  reward_v1 (depth-blind)      0.135   over 141 condition pairs
+  reward_v2  d=0               0.142   over 141 condition pairs
+  reward_v2  d=30              0.113   over 141 condition pairs
+  reward_v2  d=60              0.078   over 141 condition pairs <- headline
+  reward_v2  d=90              0.057   over 141 condition pairs
+  reward_v2  d=120             0.021   over 141 condition pairs
+  reward_v2  d=150             0.021   over 141 condition pairs
+  ^ THIS is what GRPO's advantage consumes. At ~0.5 the reward cannot
+    order rollouts of the same prompt and training optimizes noise.
+
+=== decomposed: ties vs wrong ordering ===
+                      tie_rate  conc|separated   n_sep
+  reward_v1              0.702           0.452      42
+  reward_v2 d=0          0.688           0.455      44
+  reward_v2 d=30         0.745           0.444      36
+  reward_v2 d=60         0.816           0.423      26
+  reward_v2 d=90         0.879           0.471      17
+  reward_v2 d=120        0.922           0.273      11
+  reward_v2 d=150        0.929           0.300      10
+  tie_rate high + conc|separated ~0.5+ => reward is too SPARSE;
+    lower match_thr (or fix the position embed_text), do not redesign.
+  tie_rate low + conc|separated <0.5  => reward orders WRONGLY;
+    the objective itself disagrees with the judge.
+
+=== picks the judge's best condition (chance = 1/n_conds) ===
+  reward_v1        22/56 (0.39)
+  reward_v2 d=0    22/56 (0.39)
+  reward_v2 d=30   24/56 (0.43)
+  reward_v2 d=60   23/56 (0.41)
+  reward_v2 d=90   24/56 (0.43)
+  reward_v2 d=120  23/56 (0.41)
+  reward_v2 d=150  23/56 (0.41)
+
+=== POOLED correlation (for contrast -- NOT the relevant number) ===
+  corr(reward_v1, judge)      = -0.118
+  corr(reward_v2 d=0, judge) = -0.088
+  corr(reward_v2 d=30, judge) = -0.078
+  corr(reward_v2 d=60, judge) = -0.011
+  corr(reward_v2 d=90, judge) = -0.043
+  corr(reward_v2 d=120, judge) = -0.155
+  corr(reward_v2 d=150, judge) = -0.120
+  ^ can look fine purely from between-question difficulty variance
+
+=== reward distributions (is the reward even discriminative?) ===
+  v1         mean=0.155 sd=0.303 frac_zero=0.77
+  v2 d=0     mean=0.106 sd=0.220 frac_zero=0.76
+  v2 d=30    mean=0.047 sd=0.128 frac_zero=0.83
+  v2 d=60    mean=0.032 sd=0.106 frac_zero=0.89
+  v2 d=90    mean=0.021 sd=0.079 frac_zero=0.93
+  v2 d=120   mean=0.014 sd=0.066 frac_zero=0.95
+  v2 d=150   mean=0.012 sd=0.060 frac_zero=0.96
+  judge      mean=0.461 sd=0.325 frac_zero=0.20
+
+=== cosine distributions that match_thr=0.5 slices ===
+  pos_best (mentioned?)    p10=0.146  p25=0.224  p50=0.346  p75=0.475  p90=0.550   >=thr: 0.190
+  unit_best (precision?)   p10=0.077  p25=0.175  p50=0.285  p75=0.393  p90=0.485   >=thr: 0.082
+  If pos_best p75 < match_thr the threshold is the binding
+  constraint -- recalibrate it before touching min_depth_words.
+  units/response: mean=7.0 min=2  frac_with_ZERO_units=0.000
+  ^ split_units drops any unit under 8 words; a response left with
+    no units scores 0 no matter what it says.
+
+wrote docs/reward_eval_correlation_v5_noroute.csv
+
+GATE: FAIL  concordance 0.078 < 0.600 at d=60
+
+STAGE 0 GATE: FAIL on 2/2 version(s).
+The reward cannot order same-prompt rollouts. Fix it before training:
+  - concordance flat across d  => depth gate inert; build
+    scripts/analysis/reward_length_control.py and check for a length proxy
+  - a non-default d passes     => refit min_depth_words, do not cherry-pick

@@ -99,7 +99,21 @@ def triage(rows, indep, top: int, tol: float, usable=None,
           f"  {'SIGNIFICANT' if pb < 0.05 else 'not significant'}  (10k resamples)")
     print("  ^ this, not the sign test, is the headline: it keeps magnitudes and")
     print("    counts the ties, which the sign test drops.")
-    print("  That is a POWER limit, not a null result -- more rollouts, not more questions.")
+    # Which lever helps depends on WHERE the variance is. Ties come from
+    # measurement noise (more rollouts fix them); a wide CI on the mean with few
+    # ties comes from real per-question heterogeneity (only more questions fix
+    # that). Say which regime this run is in instead of guessing.
+    sd = st.pstdev(deltas) if len(deltas) > 1 else 0.0
+    if len(ties) / len(rows) > 0.40:
+        print("  POWER LIMIT, ties dominate -> MORE ROLLOUTS per question.")
+    else:
+        se = sd / len(deltas) ** 0.5 if deltas else float("nan")
+        need = (len(deltas) * (se * 1.96 / abs(st.mean(deltas))) ** 2
+                if st.mean(deltas) else float("nan"))
+        print(f"  POWER LIMIT, spread is real (delta sd={sd:.3f}, ties "
+              f"{len(ties) / len(rows):.0%}) -> MORE QUESTIONS.")
+        if need == need and need > len(deltas):
+            print(f"  ~{need:.0f} questions needed for p<0.05 at this effect size.")
 
     print(f"\n=== worst {top}: injection hurt most ===")
     print(f"  {'qid':>6}{'base':>8}{'inj':>8}{'delta':>9}")
