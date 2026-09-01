@@ -263,6 +263,144 @@ def scout(
 
 
 # ---------------------------------------------------------------------------
+# Random-fork control (docs/random_fork_control.md)
+# ---------------------------------------------------------------------------
+_DEPTH_CACHE: dict = {}
+
+
+def _node_depths(children_indices: list[list[int]]) -> list[int]:
+    """Depth of every node, BFS from the root (entity 0). -1 if unreachable."""
+    key = id(children_indices)
+    if key in _DEPTH_CACHE:
+        return _DEPTH_CACHE[key]
+    depth = [-1] * len(children_indices)
+    if depth:
+        depth[0] = 0
+        queue = [0]
+        while queue:
+            nxt = []
+            for v in queue:
+                for c in children_indices[v]:
+                    if depth[c] < 0:
+                        depth[c] = depth[v] + 1
+                        nxt.append(c)
+            queue = nxt
+    _DEPTH_CACHE[key] = depth
+    return depth
+
+
+def _related(a: int, b: int, children_indices: list[list[int]],
+             max_nodes: int) -> bool:
+    """True if either anchor sits in the other's subtree -- i.e. not unrelated."""
+    return (b in subtree_nodes(a, children_indices, max_nodes)
+            or a in subtree_nodes(b, children_indices, max_nodes))
+
+
+def random_forks(
+    real: ScoredFork,
+    graph,
+    h_all: Tensor,
+    rel: Tensor,
+    manifold,
+    cfg: ScoutConfig,
+    n_candidates: int = 12,
+    seed: int = 0,
+) -> list[ScoredFork]:
+    """Structurally comparable forks from UNRELATED parts of the graph.
+
+    The control arm for "does the graph supply CONTENT, or just variance?"
+    (docs/random_fork_control.md). Every current result is consistent with the
+    graph acting as a randomizer: `scout` 0.3927 and `distributional` 0.3941 both
+    LOSE to baseline 0.4967, and they differ from each other by +0.0014 against a
+    0.027 noise floor -- two very different payloads, indistinguishable outcomes.
+
+    MATCHING IS THE EXPERIMENT. A random fork that is shorter, shallower, or has
+    fewer branches changes prompt length and position count at the same time as
+    relevance, and then the arm measures nothing. Candidates are therefore drawn
+    at the SAME DEPTH with a comparable child count, and the caller picks among
+    them on rendered length (`answer._matched_random_fork`).
+
+    Relevance and W are recomputed honestly for each candidate rather than copied
+    from ``real`` -- the logged `g_relevance` should show these are irrelevant,
+    and that is the manipulation check.
+
+    Returns [] if the graph offers no comparable unrelated anchor, which the
+    caller must treat as "skip this question", never as "inject nothing".
+    """
+    import random as _random
+
+    kids = graph.children_indices
+    depth = _node_depths(kids)
+    d_real = depth[real.anchor]
+    n_kids_real = len(kids[real.anchor])
+
+    pool = [v for v in range(len(kids))
+            if len(kids[v]) >= 2 and depth[v] == d_real and v != real.anchor]
+    # Same depth AND a comparable branching factor, so the rendered fork has a
+    # similar number of positions to choose between.
+    tight = [v for v in pool if abs(len(kids[v]) - n_kids_real) <= 1]
+    pool = tight or pool
+    if not pool:
+        return []
+
+    rng = _random.Random(seed)
+    rng.shuffle(pool)
+    out: list[ScoredFork] = []
+    for a in pool:
+        if len(out) >= n_candidates:
+            break
+        if _related(a, real.anchor, kids, cfg.max_nodes):
+            continue
+        # score_anchor applies the SAME relevance gate; a genuinely unrelated
+        # anchor will usually fail it, so score the pair directly instead.
+        cand = _unscored_fork(a, graph, h_all, rel, manifold, cfg)
+        if cand is not None:
+            out.append(cand)
+    return out
+
+
+def _unscored_fork(anchor: int, graph, h_all: Tensor, rel: Tensor, manifold,
+                   cfg: ScoutConfig) -> ScoredFork | None:
+    """The most divergent child pair of ``anchor``, WITHOUT the relevance gate.
+
+    `score_anchor` drops branches below `cfg.tau`, which by construction removes
+    every unrelated anchor -- exactly the ones this control needs. The clouds are
+    still capped and mass-weighted the same way, so the only difference from the
+    real path is that irrelevance does not disqualify.
+    """
+    kids = graph.children_indices[anchor][: cfg.max_children]
+    clouds = [(c, subtree_nodes(c, graph.children_indices, cfg.max_nodes))
+              for c in kids]
+    clouds = [(c, n) for c, n in clouds if len(n) >= 1]
+    if len(clouds) < 2:
+        return None
+    best = None
+    for i in range(len(clouds)):
+        for j in range(i + 1, len(clouds)):
+            ca, na = clouds[i]
+            cb, nb = clouds[j]
+            P = h_all[torch.tensor(na, dtype=torch.long)]
+            Q = h_all[torch.tensor(nb, dtype=torch.long)]
+            w = wasserstein(P, Q, manifold,
+                            weights=(_cloud_mass(na, rel, cfg.temp),
+                                     _cloud_mass(nb, rel, cfg.temp)))
+            if w != w:                                   # NaN guard
+                continue
+            if best is None or w > best[0]:
+                best = (w, ca, cb, na, nb)
+    if best is None:
+        return None
+    w, ca, cb, na, nb = best
+    idx = torch.tensor(na + nb, dtype=torch.long)
+    r = float(rel[idx].mean())
+    fork = ScoredFork(anchor=anchor, branch_a=ca, branch_b=cb, w=float(w),
+                      relevance=r, score=max(r, 0.0) ** cfg.alpha * float(w),
+                      nodes_a=na, nodes_b=nb)
+    _fill_top_pairs(fork, h_all, rel, manifold, cfg)
+    return fork
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 def _opinion_prefix(texts: list[str]) -> str:

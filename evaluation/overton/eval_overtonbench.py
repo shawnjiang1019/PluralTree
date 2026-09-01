@@ -128,9 +128,19 @@ def main():
                     # merge_v2 adds merge_fallback/merge_fail/merge_stats: the
                     # rate at which its lossless-merge guard fired is a finding.
                     for k in ("draft_a", "draft_b", "merge_fallback",
-                              "merge_fail", "merge_stats", "labels"):
+                              "merge_fail", "merge_stats", "labels",
+                              "random_fork"):
                         if k in trace:
                             row[k] = trace[k]
+                    # merge_v2_rand skips questions with no comparable unrelated
+                    # anchor. Writing an EMPTY response would score 0 and drag the
+                    # control arm down on exactly the questions where matching is
+                    # hardest; omitting the row drops that question from the
+                    # pairing instead, which is what the analysis expects.
+                    if trace.get("skipped"):
+                        print(f"  Q{qid} [{cond}] SKIPPED "
+                              f"({trace['skipped']}) -- row not written")
+                        continue
                     f.write(json.dumps(row) + "\n")
                     f.flush()
                     tag = f" r{rollout}" if args.n_rollouts > 1 else ""

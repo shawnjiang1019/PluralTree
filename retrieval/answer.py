@@ -26,7 +26,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from retrieval.scout import ScoredFork, ScoutConfig, describe_node, scout
+from retrieval.scout import (ScoredFork, ScoutConfig, describe_node,
+                            node_relevance, random_forks, scout)
 
 # Condition -> ScoutConfig overrides. baseline = no retrieval at all;
 # div_only ablates the relevance guards (old pure-divergence scout).
@@ -48,6 +49,12 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #        lossless: N drafts, one paragraph per position, plus a length/position
     #        guard that falls back to concatenation when the merge compresses
     #        (MERGE_INSTRUCTION_V2 / merge_drafts)
+    "merge_v2_rand": ScoutConfig(tau=0.25, alpha=1.0),  # CONTROL: merge_v2 with
+    #        the retrieved fork swapped for a structurally matched fork from an
+    #        UNRELATED part of the graph. Everything else identical, so the arm
+    #        isolates fork CONTENT from draft VARIANCE. See
+    #        docs/random_fork_control.md -- if this ties merge_v2, the graph is a
+    #        randomizer and the retrieval contribution does not exist.
     "persona_merge": ScoutConfig(tau=0.25, alpha=1.0),  # merge_v2's machinery,
     #        but the drafts are diversified by SUBGROUP rather than by
     #        instruction: one draft per point on the anchor's opinion spectrum.
@@ -220,7 +227,11 @@ INSTRUCTION_BY_CONDITION: dict[str, str] = {
 
 # Conditions that make MULTIPLE generation calls (draft A, draft B, then merge)
 # instead of one. Handled by _merge_answer*(), not the single-call path.
-MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge"}
+MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
+                                   "merge_v2_rand"}
+
+# Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
+RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
 
 
 @dataclass(frozen=True)
@@ -467,6 +478,45 @@ def forks_to_context(forks: list[ScoredFork], graph, full_dist: bool = False) ->
     """
     render = fork_context_full if full_dist else fork_context
     return "\n\n".join(render(f, graph, k) for k, f in enumerate(forks, 1))
+
+
+
+def matched_random_fork(real, graph, h_all, text_feat, manifold,
+                        cfg: ScoutConfig, q_emb, full_dist: bool, seed: int = 0):
+    """Swap the retrieved fork for a matched IRRELEVANT one; returns (forks, stats).
+
+    The control for docs/random_fork_control.md. `random_forks` supplies
+    candidates at the same depth with a comparable branching factor; this picks
+    among them on RENDERED LENGTH, because that is what actually reaches the
+    prompt. Matching on depth alone would still let the injected block be half
+    the size, confounding relevance with prompt length.
+
+    Returns ``([], stats)`` when the graph offers no comparable unrelated anchor.
+    The caller must SKIP such a question rather than fall through to an
+    uninjected prompt -- a silent baseline row inside the control arm would bias
+    it toward merge_v2 by exactly the questions where matching is hardest.
+    """
+    stats = {"randomized": False, "n_candidates": 0, "len_real": 0,
+             "len_rand": 0, "rel_real": float("nan"), "rel_rand": float("nan")}
+    if not real:
+        return [], stats
+    top = real[0]
+    rel = node_relevance(q_emb, text_feat)
+    cands = random_forks(top, graph, h_all, rel, manifold, cfg, seed=seed)
+    stats["n_candidates"] = len(cands)
+    if not cands:
+        return [], stats
+
+    target = len(forks_to_context([top], graph, full_dist))
+    best, best_gap = None, None
+    for c in cands:
+        gap = abs(len(forks_to_context([c], graph, full_dist)) - target)
+        if best_gap is None or gap < best_gap:
+            best, best_gap = c, gap
+    stats.update(randomized=True, len_real=target,
+                 len_rand=len(forks_to_context([best], graph, full_dist)),
+                 rel_real=top.relevance, rel_rand=best.relevance)
+    return [best], stats
 
 
 def build_prompt(question: str, forks: list[ScoredFork] | None, graph,
@@ -784,6 +834,57 @@ def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
     return merged, parts
 
 
+def _selftest_random_fork() -> None:
+    """random_forks must pick UNRELATED anchors at MATCHED depth.
+
+    Synthetic tree, so this checks the sampler's contract rather than the graph:
+    root -> {1,2,3}, each with three leaves, and only anchor 1 made relevant. The
+    relevance assertion is the manipulation check -- if the sampled forks were as
+    relevant as the real one, the control would not be a control.
+    """
+    import types
+
+    from retrieval.scout import _node_depths
+
+    kids = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]] + [[] for _ in range(9)]
+    g = types.SimpleNamespace(children_indices=kids)
+    torch_mod = __import__("torch")
+    torch_mod.manual_seed(0)
+    h = torch_mod.randn(13, 8)
+    rel = torch_mod.zeros(13)
+    for i in (1, 4, 5, 6):
+        rel[i] = 0.9
+    cfg = ScoutConfig()
+    real = ScoredFork(anchor=1, branch_a=4, branch_b=5, w=1.0, relevance=0.9,
+                      score=0.9, nodes_a=[4], nodes_b=[5])
+
+    cands = random_forks(real, g, h, rel, None, cfg, seed=0)
+    assert cands, "should find unrelated anchors at the same depth"
+    assert all(c.anchor in (2, 3) for c in cands), "must exclude the real anchor"
+    assert all(_node_depths(kids)[c.anchor] == 1 for c in cands), "depth must match"
+    assert all(c.relevance < real.relevance for c in cands),         "sampled forks must be LESS relevant -- the manipulation check"
+    assert all(c.w == c.w and c.w > 0 for c in cands), "W recomputed, not copied"
+
+    # A graph with no comparable anchor must return [], so answer() skips the
+    # question rather than silently generating an uninjected (baseline) row.
+    kids2 = [[1], [2, 3], [], []]
+    g2 = types.SimpleNamespace(children_indices=kids2)
+    real2 = ScoredFork(anchor=1, branch_a=2, branch_b=3, w=1.0, relevance=0.9,
+                       score=0.9, nodes_a=[2], nodes_b=[3])
+    assert random_forks(real2, g2, torch_mod.randn(4, 8), torch_mod.ones(4),
+                        None, cfg) == [], "no alternative anchor -> skip"
+    print("  rand fork : unrelated, depth-matched, less relevant, W recomputed")
+
+
+def _pack_skip(with_trace: bool, with_raw: bool):
+    """Sentinel for a question the control arm cannot match. Empty answer, plus a
+    trace saying why -- so the row is visibly skipped, not silently baseline."""
+    if with_trace:
+        return "", {"raw": "", "think": "", "fork_context": "", "n_forks": 0,
+                    "skipped": "no_matched_random_fork"}
+    return ("", "") if with_raw else ""
+
+
 def answer(question: str, condition: str, *, graph=None, h_all=None,
            text_feat=None, manifold=None, base_url: str = "",
            model: str = "", dry_run: bool = False, q_emb=None,
@@ -816,6 +917,19 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
                   f"baseline prompt used for: {question[:60]}", file=sys.stderr)
     instruction = INSTRUCTION_BY_CONDITION.get(condition, PLURALISM_INSTRUCTION)
     full_dist = condition in FULL_DIST_CONDITIONS
+    rand_stats = None
+    if condition in RANDOM_FORK_CONDITIONS and forks:
+        if q_emb is None:
+            from retrieval.scout import embed_question
+            q_emb = embed_question(question)
+        forks, rand_stats = matched_random_fork(
+            forks, graph, h_all, text_feat, manifold, cfg, q_emb, full_dist)
+        if not forks:
+            # No comparable unrelated anchor. Falling through would inject
+            # nothing and silently score a baseline answer inside the control.
+            print(f"warning: {condition} found no matched random fork -- "
+                  f"SKIPPING: {question[:60]}", file=sys.stderr)
+            return _pack_skip(with_trace, with_raw)
     messages = build_prompt(question, forks, graph, instruction, full_dist)
     ctx = forks_to_context(forks, graph, full_dist) if forks else ""
 
@@ -850,6 +964,8 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             for k in ("merge_fallback", "merge_fail", "merge_stats", "labels"):
                 if k in parts:
                     trace[k] = parts[k]
+            if rand_stats is not None:
+                trace["random_fork"] = rand_stats
             return merged, trace
         return (merged, parts["raw_merge"]) if with_raw else merged
     chat_fn = chat_fn or chat
@@ -1016,6 +1132,7 @@ def _selftest() -> None:
     assert len(calls) == 1 and out == draft_a and not parts["merge_fallback"], parts
 
     _persona_selftest()
+    _selftest_random_fork()
     print("merge_v2 self-test OK")
     print(f"  lossless  : {s_good['merged_words']}w/{s_good['merged_positions']}pos "
           f"vs longest draft {s_good['max_draft_words']}w/"
