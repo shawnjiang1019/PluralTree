@@ -15,10 +15,15 @@ ARMS. Every arm runs through `cad_generate_ids`, including the two references,
 so the sampling code, temperature, top-p and RNG consumption are identical and
 the only difference between arms is the decoding rule:
 
-    base7b   ctx=plain      plain=plain      alpha=0   the 7B reference
+    base7b   ctx=base       plain=base       alpha=0   the plain-pipeline reference
     ctx0     ctx=forks      plain=forks      alpha=0   plain with-context decoding
-    cad<a>   ctx=forks      plain=plain      alpha=a   the contrast
-    cad_soft ctx=forks      plain=plain      alpha=f(contestedness)
+    cad<a>   ctx=forks      plain=noctx      alpha=a   the contrast
+    cad_soft ctx=forks      plain=noctx      alpha=f(contestedness)
+
+where `base` = BASELINE_INSTRUCTION with no forks, `noctx` = the SAME
+PLURALISM_INSTRUCTION as `forks` but with the fork block removed. Contrasting
+against `base` instead of `noctx` would make alpha scale the instruction change
+as well as the forks, which is not the quantity under test.
 
 `ctx0` is load-bearing. Without it, a CAD-vs-baseline difference confounds the
 decoding change with the MODEL change (7B here, 72B-AWQ in v9/v10). These numbers
@@ -156,12 +161,22 @@ def main():
             q_emb = embed_question(question)
             forks = scout(question, graph, h_all, text_feat, manifold,
                           cfg=cfg_scout, q_emb=q_emb)
+            # THREE prompts, not two. The CAD contrast must vary ONLY the fork
+            # block: `msgs_noctx` keeps PLURALISM_INSTRUCTION and drops the
+            # forks, so `A - B` is the forks' effect and nothing else. Pairing
+            # the fork prompt against BASELINE_INSTRUCTION (the first version of
+            # this file) made alpha scale "forks + a different instruction",
+            # which is not the quantity the experiment is about.
             msgs_ctx = build_prompt(question, forks, graph,
                                     PLURALISM_INSTRUCTION, False)
-            msgs_plain = build_prompt(question, None, graph,
-                                      BASELINE_INSTRUCTION, False)
+            msgs_noctx = build_prompt(question, None, graph,
+                                      PLURALISM_INSTRUCTION, False)
+            msgs_base = build_prompt(question, None, graph,
+                                     BASELINE_INSTRUCTION, False)
             ctx_text = forks_to_context(forks, graph, False) if forks else ""
-            ids_ctx, ids_plain = ids_for(msgs_ctx), ids_for(msgs_plain)
+            ids_ctx = ids_for(msgs_ctx)
+            ids_noctx = ids_for(msgs_noctx)
+            ids_base = ids_for(msgs_base)
 
             for arm, kind, alpha in parsed:
                 if (qid, arm) in done:
@@ -172,14 +187,14 @@ def main():
                         continue
                     alpha = alpha_from_contestedness(scores[qid])
                 if kind == "base7b":
-                    a_ids, b_ids = ids_plain, ids_plain
+                    a_ids, b_ids = ids_base, ids_base       # plain pipeline ref
                 elif kind == "ctx0":
-                    a_ids, b_ids = ids_ctx, ids_ctx
+                    a_ids, b_ids = ids_ctx, ids_ctx         # with-context, a=0
                 else:
                     if not forks:
                         print(f"  Q{qid} [{arm}] no forks, skipped")
                         continue
-                    a_ids, b_ids = ids_ctx, ids_plain
+                    a_ids, b_ids = ids_ctx, ids_noctx       # forks only
 
                 # Per (question, arm) seed: reproducible, and the arms do not
                 # share an RNG stream, so one arm's token count cannot shift
