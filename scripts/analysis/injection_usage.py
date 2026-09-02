@@ -58,7 +58,7 @@ def parse_positions(ctx: str) -> list[str]:
     return out
 
 
-def analyse(rows, conditions, embed_fn, thresholds):
+def analyse(rows, conditions, embed_fn, thresholds, dump=None):
     from alignment.reward import split_units
 
     import numpy as np
@@ -89,7 +89,21 @@ def analyse(rows, conditions, embed_fn, thresholds):
                 c = float(sim[i, j])
                 best_cos.append(c)
                 # WHERE in the answer this position landed, 0=first unit, 1=last.
-                first_loc.append(j / max(1, len(units) - 1))
+                loc = j / max(1, len(units) - 1)
+                first_loc.append(loc)
+                if dump is not None:
+                    # One row per injected position. Aggregates hide the shape:
+                    # used@t is three points on a distribution, and the survival
+                    # curve over these cosines shows the whole thing.
+                    dump.append({
+                        "question_id": r.get("question_id"),
+                        "condition": cond, "rollout": r.get("rollout", 0),
+                        "pos_index": i, "n_positions": len(positions),
+                        "n_units": len(units), "best_cos": round(c, 4),
+                        "unit_index": j, "loc": round(loc, 4),
+                        "position": positions[i][:200],
+                        "unit": units[j][:200],
+                    })
             for t in thresholds:
                 hit = [i for i in range(len(positions)) if float(sim[i].max()) >= t]
                 per_row_used[t].append(len(hit) / len(positions))
@@ -124,6 +138,10 @@ def main():
     ap.add_argument("--thresholds", default="0.35,0.45,0.55")
     ap.add_argument("--embedder", default="sentence-transformers/all-mpnet-base-v2")
     ap.add_argument("--out", default=None, help="csv of the summary rows")
+    ap.add_argument("--dump", default=None,
+                    help="csv with ONE ROW PER INJECTED POSITION (cosine, matched "
+                         "unit index, location). Needed by plot_injection_usage.py "
+                         "and for any per-position cut.")
     args = ap.parse_args()
 
     from alignment.reward import default_embed_fn
@@ -137,7 +155,8 @@ def main():
     thrs = [float(t) for t in args.thresholds.split(",")]
 
     print(f"{len(rows)} rows from {os.path.basename(args.responses)}")
-    stats = analyse(rows, conds, default_embed_fn(args.embedder), thrs)
+    dump = [] if args.dump else None
+    stats = analyse(rows, conds, default_embed_fn(args.embedder), thrs, dump)
     if not stats:
         ap.error("nothing measurable; check --conditions against the file")
 
@@ -168,6 +187,14 @@ def main():
         print("  rather than in how the injection is consumed.")
         print("  NOTE: cosine against an unrelated position is not zero. Read the")
         print("  DIFFERENCE, never the level.")
+
+    if dump:
+        import csv as _csv
+        with open(args.dump, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=list(dump[0]))
+            w.writeheader()
+            w.writerows(dump)
+        print(f"\nwrote {args.dump}  ({len(dump)} injected positions)")
 
     if args.out:
         import csv as _csv

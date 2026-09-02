@@ -483,40 +483,60 @@ def forks_to_context(forks: list[ScoredFork], graph, full_dist: bool = False) ->
 
 def matched_random_fork(real, graph, h_all, text_feat, manifold,
                         cfg: ScoutConfig, q_emb, full_dist: bool, seed: int = 0):
-    """Swap the retrieved fork for a matched IRRELEVANT one; returns (forks, stats).
+    """Swap the retrieved forks for matched IRRELEVANT ones; returns (forks, stats).
 
     The control for docs/random_fork_control.md. `random_forks` supplies
     candidates at the same depth with a comparable branching factor; this picks
     among them on RENDERED LENGTH, because that is what actually reaches the
-    prompt. Matching on depth alone would still let the injected block be half
-    the size, confounding relevance with prompt length.
+    prompt.
+
+    MATCHES THE WHOLE BLOCK, NOT ONE FORK. The first version returned a single
+    random fork and compared its rendering against the top real fork -- so the
+    stats reported "length ratio 0.97" while the arms actually injected 4256 vs
+    859 characters (4.85 forks vs 1). That made the control vary VOLUME 5x as
+    well as relevance, and any difference between the arms was uninterpretable.
+    One random fork is now drawn per real fork, greedily nearest on rendered
+    length, without reuse.
 
     Returns ``([], stats)`` when the graph offers no comparable unrelated anchor.
     The caller must SKIP such a question rather than fall through to an
     uninjected prompt -- a silent baseline row inside the control arm would bias
     it toward merge_v2 by exactly the questions where matching is hardest.
     """
-    stats = {"randomized": False, "n_candidates": 0, "len_real": 0,
-             "len_rand": 0, "rel_real": float("nan"), "rel_rand": float("nan")}
+    stats = {"randomized": False, "n_candidates": 0, "n_real": 0, "n_rand": 0,
+             "len_real": 0, "len_rand": 0,
+             "rel_real": float("nan"), "rel_rand": float("nan")}
     if not real:
         return [], stats
-    top = real[0]
     rel = node_relevance(q_emb, text_feat)
-    cands = random_forks(top, graph, h_all, rel, manifold, cfg, seed=seed)
+    # Candidates are drawn once, matched to the TOP real fork's shape, then
+    # reused across slots -- n_candidates only has to exceed len(real).
+    cands = random_forks(real[0], graph, h_all, rel, manifold, cfg,
+                         n_candidates=max(12, 3 * len(real)), seed=seed)
     stats["n_candidates"] = len(cands)
     if not cands:
         return [], stats
 
-    target = len(forks_to_context([top], graph, full_dist))
-    best, best_gap = None, None
-    for c in cands:
-        gap = abs(len(forks_to_context([c], graph, full_dist)) - target)
-        if best_gap is None or gap < best_gap:
-            best, best_gap = c, gap
-    stats.update(randomized=True, len_real=target,
-                 len_rand=len(forks_to_context([best], graph, full_dist)),
-                 rel_real=top.relevance, rel_rand=best.relevance)
-    return [best], stats
+    chosen, pool = [], list(cands)
+    for rf in real:                       # one random fork per real fork
+        if not pool:
+            break
+        target = len(forks_to_context([rf], graph, full_dist))
+        best_i, best_gap = 0, None
+        for i, c in enumerate(pool):
+            gap = abs(len(forks_to_context([c], graph, full_dist)) - target)
+            if best_gap is None or gap < best_gap:
+                best_i, best_gap = i, gap
+        chosen.append(pool.pop(best_i))   # no reuse: a repeated block is not a fork set
+    if not chosen:
+        return [], stats
+
+    stats.update(randomized=True, n_real=len(real), n_rand=len(chosen),
+                 len_real=len(forks_to_context(real, graph, full_dist)),
+                 len_rand=len(forks_to_context(chosen, graph, full_dist)),
+                 rel_real=sum(f.relevance for f in real) / len(real),
+                 rel_rand=sum(f.relevance for f in chosen) / len(chosen))
+    return chosen, stats
 
 
 def build_prompt(question: str, forks: list[ScoredFork] | None, graph,
@@ -960,8 +980,14 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
                      "fork_context": ctx, "n_forks": len(forks or []),
                      "draft_a": parts["draft_a"],
                      "draft_b": parts["draft_b"]}
-            # merge_v2 only: whether the guard fired (the rate is the finding)
-            for k in ("merge_fallback", "merge_fail", "merge_stats", "labels"):
+            # merge_v2 only: whether the guard fired (the rate is the finding).
+            # n_personas is here because persona_merge falls back to plain-only
+            # when the anchor has <3 opinion leaves, and such a row is a BASELINE
+            # row wearing the condition's name -- it drags both the score and the
+            # union gain toward zero. Without the field the v11 run could not say
+            # how many rows actually tested the condition.
+            for k in ("merge_fallback", "merge_fail", "merge_stats", "labels",
+                      "n_personas"):
                 if k in parts:
                     trace[k] = parts[k]
             if rand_stats is not None:

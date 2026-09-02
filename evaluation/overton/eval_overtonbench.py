@@ -127,9 +127,13 @@ def main():
                     # merge that LOSES coverage can be diagnosed against them.
                     # merge_v2 adds merge_fallback/merge_fail/merge_stats: the
                     # rate at which its lossless-merge guard fired is a finding.
+                    # n_personas: persona_merge falls back to plain-only when the
+                    # anchor has <3 opinion leaves, and such a row is a BASELINE
+                    # row under the condition's name. Without it the v11 run could
+                    # not say how many rows actually tested the condition.
                     for k in ("draft_a", "draft_b", "merge_fallback",
                               "merge_fail", "merge_stats", "labels",
-                              "random_fork"):
+                              "random_fork", "n_personas"):
                         if k in trace:
                             row[k] = trace[k]
                     # merge_v2_rand skips questions with no comparable unrelated

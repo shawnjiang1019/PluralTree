@@ -10,6 +10,10 @@ claim fails silently, and both are checkable from the response rows alone:
   length     If the random block is much shorter or longer than the real one,
              the arm varies prompt length as well as relevance, and any
              difference is uninterpretable.
+  count      Same for the number of forks. The first version of the sampler
+             returned ONE random fork and compared it against the top real fork,
+             reporting "ratio 0.97" while the arms injected 4.85 vs 1.00 forks
+             (4256 vs 859 chars). Both are now checked on the WHOLE block.
 
 Exits non-zero when either fails, so a chained analysis job stops instead of
 reporting deltas nobody should read.
@@ -58,11 +62,14 @@ def main() -> int:
     len_rand = st.mean(s["len_rand"] for s in stats)
     n_cand = st.mean(s["n_candidates"] for s in stats)
     ratio = len_rand / len_real if len_real else float("inf")
+    n_real = st.mean(s.get("n_real", 0) for s in stats)
+    n_rand = st.mean(s.get("n_rand", 0) for s in stats)
 
     print(f"  randomized rows      {len(stats)}   (skipped, no match: {skipped})")
     print(f"  candidates/question  {n_cand:.1f}")
     print(f"  fork relevance       real {rel_real:.3f}  ->  random {rel_rand:.3f}"
           f"   gap {rel_real - rel_rand:+.3f}")
+    print(f"  forks per question   real {n_real:.2f}  ->  random {n_rand:.2f}")
     print(f"  rendered length      real {len_real:.0f}  ->  random {len_rand:.0f}"
           f"   ratio {ratio:.2f}")
 
@@ -76,6 +83,11 @@ def main() -> int:
         print(f"  FAIL length ratio {ratio:.2f} outside "
               f"[{1 / args.max_len_ratio:.2f}, {args.max_len_ratio:.2f}] -- "
               f"prompt length is confounded with relevance")
+        ok = False
+    if n_real and abs(n_rand - n_real) > 0.5:
+        print(f"  FAIL fork count {n_real:.2f} vs {n_rand:.2f} -- the arms inject "
+              f"different VOLUMES, so relevance is confounded with how much "
+              f"context there is")
         ok = False
     if skipped > len(stats) * 0.25:
         print(f"  WARN {skipped} questions had no comparable unrelated anchor; "
