@@ -100,6 +100,7 @@ python -m evaluation.overton.judge_overtonbench --score "${OUT}" \
     --max_users "${MAXU}" --k_rollouts "${KROLL}" ${UNION_FLAG} \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     --out "${SCORES}" \
+    --dump_clusters "${SCORES%.csv}_clusters.csv" \
     || { echo "JUDGING FAILED (see .err)"; exit 1; }
 
 echo "Done. Responses: ${OUT}  Scores: ${SCORES}"

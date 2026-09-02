@@ -514,7 +514,7 @@ def _report_unions(covered: dict, n_clusters_by: dict, combos: list[list[str]]) 
 
 def score(idx, responses_path: str, base_url: str, model: str,
           max_users: int, seed: int, out_path: str, k_rollouts: int = 0,
-          union_spec: str | None = None) -> None:
+          union_spec: str | None = None, dump_clusters: str | None = None) -> None:
     """Score responses. With one response per (question, condition) this is the
     paper's OvertonScore. With K rollouts per pair (eval_overtonbench --n_rollouts
     K), it ALSO reports across-sample coverage@K -- the same human-grounded
@@ -545,7 +545,7 @@ def score(idx, responses_path: str, base_url: str, model: str,
             user_subset[qid] = us
         return user_subset[qid]
 
-    from collections import defaultdict
+    from collections import Counter, defaultdict
     groups: dict[tuple[int, str], list[dict]] = defaultdict(list)
     for line in open(responses_path, encoding="utf-8"):
         r = json.loads(line)
@@ -554,6 +554,7 @@ def score(idx, responses_path: str, base_url: str, model: str,
     results = []
     covered: dict[tuple[int, str], set] = {}      # (qid, cond) -> covered clusters
     n_clusters_by: dict[int, int] = {}
+    cluster_rows: list[dict] = []
     for (qid, cond), rs in sorted(groups.items()):
         users = users_for(qid)
         if not users:
@@ -569,6 +570,26 @@ def score(idx, responses_path: str, base_url: str, model: str,
             continue
         covered[(qid, cond)] = set().union(*per_resp)
         n_clusters_by[qid] = n_clusters
+        if dump_clusters is not None:
+            # One row per (question, condition, CLUSTER). The scores csv carries
+            # only scalars, so "which clusters did this arm hit" is unanswerable
+            # from it -- and that is exactly what the union table depends on. Two
+            # arms with identical means can have very different unions depending
+            # on whether they miss the SAME clusters or different ones.
+            # cluster_size is the participant count, i.e. how widely held the
+            # viewpoint is: it decides whether an arm's unique coverage is of
+            # MINORITY positions (what pluralism is about) or of majority ones.
+            sizes = Counter(e["cluster"] for e in users)
+            u = covered[(qid, cond)]
+            for cl, sz in sizes.items():
+                cluster_rows.append({
+                    "question_id": qid, "condition": cond, "cluster": cl,
+                    "covered": int(cl in u),
+                    "n_covering_rollouts": sum(1 for c in per_resp if cl in c),
+                    "n_rollouts": len(per_resp),
+                    "cluster_size": sz, "n_participants": len(users),
+                    "prevalence": round(sz / max(1, len(users)), 4),
+                    "n_clusters": n_clusters})
         within = st.mean(len(c) for c in per_resp) / n_clusters
         union = len(set().union(*per_resp)) / n_clusters
         positions = st.mean(len(c) for c in per_resp)
@@ -588,6 +609,15 @@ def score(idx, responses_path: str, base_url: str, model: str,
             f.write(f"{r['condition']},{r['question_id']},{r['coverage']:.4f},"
                     f"{r['union_coverage']:.4f},{r['positions_per_answer']:.4f},"
                     f"{r['n_rollouts']},{r['n_clusters']}\n")
+
+    if dump_clusters and cluster_rows:
+        import csv as _csv
+        with open(dump_clusters, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=list(cluster_rows[0]))
+            w.writeheader()
+            w.writerows(cluster_rows)
+        print(f"wrote {dump_clusters}  ({len(cluster_rows)} "
+              f"(question, condition, cluster) rows)")
 
     multi = any(r["n_rollouts"] > 1 for r in results)
     print(f"\nby condition (mean over questions):")
@@ -651,6 +681,12 @@ def main():
     ap.add_argument("--union", default=None, metavar="A+B,A+B+C",
                     help="condition groups to union-score (default: baseline+X "
                          "for each other condition, plus all together)")
+    ap.add_argument("--dump_clusters", default=None, metavar="CSV",
+                    help="one row per (question, condition, CLUSTER) with covered "
+                         "0/1 and the cluster's participant count. The scores csv "
+                         "has only scalars, so which clusters an arm hits -- and "
+                         "whether the ones it uniquely covers are MINORITY "
+                         "viewpoints -- is unanswerable without this.")
     ap.add_argument("--k_rollouts", type=int, default=0,
                     help="cap rollouts per (question, condition) used for "
                          "coverage@K (0 = all present). >1 requires responses "
@@ -676,7 +712,8 @@ def main():
                            args.seed)
     if args.score:
         score(idx, args.score, args.base_url, args.model,
-              args.max_users, args.seed, args.out, args.k_rollouts, args.union)
+              args.max_users, args.seed, args.out, args.k_rollouts, args.union,
+              args.dump_clusters)
 
 
 if __name__ == "__main__":

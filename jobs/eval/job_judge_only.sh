@@ -35,6 +35,9 @@ RESP="${RESP:-cad_responses_a.jsonl}"
 SCORES="${SCORES:-cad_scores_a.csv}"
 MODEL="${MODEL:-Qwen/Qwen2.5-72B-Instruct-AWQ}"
 MAXU="${MAXU:-20}"
+# Per-cluster hit/miss. Free: the judge already computes the covered
+# sets and discards them after printing the union table.
+CLUSTERS="${CLUSTERS:-${SCORES%.csv}_clusters.csv}"
 KROLL="${KROLL:-0}"
 PORT="${PORT:-8000}"
 TP="${TP:-4}"
@@ -65,6 +68,7 @@ python -u -m evaluation.overton.judge_overtonbench --score "${RESP}" \
     --max_users "${MAXU}" --k_rollouts "${KROLL}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     --out "${SCORES}" \
+    --dump_clusters "${CLUSTERS}" \
     || { echo "JUDGING FAILED"; exit 1; }
 
 echo ""
