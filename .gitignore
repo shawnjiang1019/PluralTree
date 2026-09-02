@@ -38,3 +38,21 @@ overton_scores_*.csv
 hivemind_*.jsonl
 hivemind_*.csv
 grpo_prompts.jsonl
+
+# Generated analysis plots — regenerate from the scores csv in seconds. Both
+# machines write these, so committing them produces add/add binary conflicts on
+# every pull (docs/bars_v11.png did exactly that). The CSVs are the record;
+# the figures are a view of it. docs/figures/ is NOT covered: those are the
+# hand-made paper figures.
+docs/bars_*.png
+docs/delta_ci_*.png
+docs/feature_routing_*.png
+docs/injection_usage*.png
+docs/union_gain*.png
+_routing_selftest.png
+
+# Analysis outputs written next to the scores
+docs/*_clusters.csv
+docs/usage_positions*.csv
+docs/injection_triage*.txt
+docs/anchor_coverage.csv
