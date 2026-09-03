@@ -264,7 +264,13 @@ def g2_generate(model, tokenizer, question: str, priors: Sequence[str],
                                             return_tensors="pt")
         return enc["input_ids"] if hasattr(enc, "input_ids") else enc
     ids_b = _ids(m_b)
-    ids_p, ids_m = (ids_b, ids_b) if not sel else (_ids(m_p), _ids(m_m))
+    # Vanilla G2 has nothing to contrast on answer 1 (no priors), so the guides
+    # collapse to base. The GRAPH-GUIDED variant does: the target names a
+    # position independently of what came before, and answer 1 seeds the priors
+    # for the rest of the pool, so dropping the contrast there weakens every
+    # later answer too.
+    ids_p, ids_m = ((ids_b, ids_b) if not (sel or target_position)
+                    else (_ids(m_p), _ids(m_m)))
     out = g2_generate_ids(model, ids_b, ids_p, ids_m, cfg,
                           eos_token_id=tokenizer.eos_token_id)
     return tokenizer.decode(out, skip_special_tokens=True)
