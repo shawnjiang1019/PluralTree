@@ -56,7 +56,21 @@ THRS="${THRS:-0.25,0.30,0.35,0.40,0.50}"
 EMBEDDER="${EMBEDDER:-sentence-transformers/all-mpnet-base-v2}"
 SEED="${SEED:-42}"
 GATE="${GATE:-0.60}"           # exit 2 if the no-route arm falls below this
+# graph | clusters | both. `graph` is the historical target set
+# (positions_from_subtree, ~19.9/question); `clusters` scores the reward against
+# the judge's own cluster_kmeans groups (~5.65/question), testing whether the
+# below-chance concordance is a TARGET MISMATCH rather than a broken reward.
+# `both` runs them back to back so the comparison sits in one log.
+TARGETS="${TARGETS:-graph}"
+HOLDOUT="${HOLDOUT:-1}"        # clusters: also run the every-2nd-participant arm
+SPLIT="${SPLIT:-full}"         # OvertonBench split the cluster targets come from
+case "${TARGETS}" in
+    graph|clusters) MODES="${TARGETS}" ;;
+    both)           MODES="graph clusters" ;;
+    *) echo "TARGETS must be graph|clusters|both, got '${TARGETS}'"; exit 1 ;;
+esac
 echo "VERSIONS='${VERSIONS}' DEPTHS=${DEPTHS} SEED=${SEED} GATE=${GATE}"
+echo "TARGETS='${TARGETS}' (modes: ${MODES}) HOLDOUT=${HOLDOUT} SPLIT=${SPLIT}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 # Exit 2 from the script means the GATE failed (a real result); anything else
@@ -93,16 +107,38 @@ for V in ${VERSIONS}; do
         continue
     fi
 
-    # ALL conditions: `route` collapsed to 0.072, so the reward only has to
-    # notice a 0.4 gap. Easy, and NOT the regime GRPO runs in.
-    run "${resp}" "${scores}" "[${V}] all conditions (includes route -- easy case)" \
-        --out "docs/reward_eval_correlation_${V}_all.csv"
+    for T in ${MODES}; do
+        targs="--targets ${T}"
+        [ "${T}" = "clusters" ] && targs="${targs} --split ${SPLIT}"
+        # Only the LAST mode carries --gate. Under TARGETS=both the graph arm is
+        # expected to fail -- it is the known result being compared against, not
+        # a decision point -- so gating it would abort on the control.
+        gate_args=""
+        if [ "${T}" = "$(echo ${MODES} | awk '{print $NF}')" ]; then
+            gate_args="--gate ${GATE}"
+        fi
 
-    # NEAR-TIES: every rollout in a GRPO group comes from the SAME policy and
-    # they resemble each other far more than baseline resembles route. THE GATE.
-    run "${resp}" "${scores}" "[${V}] excluding route (near-ties -- THE GATE, needs >=${GATE})" \
-        --exclude route --gate "${GATE}" \
-        --out "docs/reward_eval_correlation_${V}_noroute.csv"
+        # ALL conditions: `route` collapsed to 0.072, so the reward only has to
+        # notice a 0.4 gap. Easy, and NOT the regime GRPO runs in.
+        run "${resp}" "${scores}" "[${V}/${T}] all conditions (includes route -- easy case)" \
+            ${targs} --out "docs/reward_eval_correlation_${V}_${T}_all.csv"
+
+        # NEAR-TIES: every rollout in a GRPO group comes from the SAME policy and
+        # they resemble each other far more than baseline resembles route. THE GATE.
+        run "${resp}" "${scores}" "[${V}/${T}] excluding route (near-ties -- THE GATE, needs >=${GATE})" \
+            ${targs} --exclude route ${gate_args} \
+            --out "docs/reward_eval_correlation_${V}_${T}_noroute.csv"
+
+        # Cluster targets share text with what the judge rates, so the arm above
+        # is an UPPER BOUND. The holdout arm builds each target from every 2nd
+        # participant; it never gates, because it is the honest reading of a
+        # result the gate has already decided.
+        if [ "${T}" = "clusters" ] && [ "${HOLDOUT}" = "1" ]; then
+            run "${resp}" "${scores}" "[${V}/clusters+holdout] excluding route (overlap-reduced)" \
+                ${targs} --holdout --exclude route \
+                --out "docs/reward_eval_correlation_${V}_clusters_ho_noroute.csv"
+        fi
+    done
     n_ok=$((n_ok + 1))
 done
 

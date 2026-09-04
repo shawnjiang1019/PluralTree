@@ -55,6 +55,11 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #        isolates fork CONTENT from draft VARIANCE. See
     #        docs/random_fork_control.md -- if this ties merge_v2, the graph is a
     #        randomizer and the retrieval contribution does not exist.
+    "merge_v2_sem": ScoutConfig(tau=0.25, alpha=1.0),  # merge_v2 + the SEMANTIC
+    #        retention guard. A separate condition, not a change to merge_v2:
+    #        v10/v11/v12 were all scored under the structural-only guard, and
+    #        editing it in place would silently make them incomparable. Pairs
+    #        with merge_v2 in one run for a clean A/B on the guard alone.
     "persona_merge": ScoutConfig(tau=0.25, alpha=1.0),  # merge_v2's machinery,
     #        but the drafts are diversified by SUBGROUP rather than by
     #        instruction: one draft per point on the anchor's opinion spectrum.
@@ -228,7 +233,7 @@ INSTRUCTION_BY_CONDITION: dict[str, str] = {
 # Conditions that make MULTIPLE generation calls (draft A, draft B, then merge)
 # instead of one. Handled by _merge_answer*(), not the single-call path.
 MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
-                                   "merge_v2_rand"}
+                                   "merge_v2_rand", "merge_v2_sem"}
 
 # Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
 RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
@@ -256,12 +261,36 @@ class MergeConfig:
                     pass the guard by listing position names.
     fallback        False disables concatenation (returns the lossy merge anyway);
                     only for measuring how often the guard would have fired.
+    min_cov_ratio   fraction of the drafts' DISTINCT deep units that must still
+                    be expressed in the merge. The two structural checks above
+                    are blind to substitution: a merge that keeps three solid
+                    paragraphs while collapsing three viewpoints into three
+                    restatements of the majority passes both. That is the
+                    measured failure -- persona_merge's drafts reach 0.7340 in
+                    union and 0.6423 merged, so the content is in the drafts and
+                    dies in the merge. 0.8 rather than 1.0 because a merge is
+                    ALLOWED to consolidate: the retention set is deduped first,
+                    but near-duplicates that survive dedupe should not force a
+                    fallback on their own. Requires an embedder; None disables
+                    the check and restores the structural-only behaviour.
+    cov_match_thr   cosine at which a draft unit counts as still expressed.
+                    0.55, above injection_usage's 0.35 exploratory floor: this
+                    one gates a fallback, so it should fire on paraphrase, not
+                    on shared topic.
+    cov_dedupe_thr  cosine at which two draft units are the same point. Drafts
+                    deliberately overlap (draft 1 is the plain baseline in both
+                    merge_v2 and persona_merge), so without dedupe the retention
+                    denominator is dominated by content every draft repeats.
     """
+
     n_drafts: int = 3
     min_len_ratio: float = 1.0
     min_pos_ratio: float = 1.0
     min_depth_words: int = 20
     fallback: bool = True
+    min_cov_ratio: float = 0.8
+    cov_match_thr: float = 0.55
+    cov_dedupe_thr: float = 0.8
     merge_max_tokens: int = 4096
     #   UPPER bound; the effective value is computed per call (see _merge_budget).
     #   vLLM rejects prompt_tokens + max_tokens > max_model_len with a bare HTTP
@@ -598,6 +627,19 @@ def _merge_answer(question: str, forks, graph, base_url: str, model: str,
 # ---------------------------------------------------------------------------
 # merge_v2: structurally lossless merge (guard + concatenation fallback)
 # ---------------------------------------------------------------------------
+_MERGE_EMBED = None
+
+
+def merge_embed_fn():
+    """mpnet, loaded once. Held-out from the scout's MiniLM on purpose: the guard
+    must not credit a merge for keeping retrieval-shaped phrasing."""
+    global _MERGE_EMBED
+    if _MERGE_EMBED is None:
+        from alignment.reward import default_embed_fn
+        _MERGE_EMBED = default_embed_fn()
+    return _MERGE_EMBED
+
+
 def _n_words(text: str) -> int:
     return len(re.findall(r"\w+", text or ""))
 
@@ -629,8 +671,68 @@ def count_positions(text: str, min_depth_words: int = 20) -> int:
     return sum(1 for u in split_paragraphs(text) if _n_words(u) >= min_depth_words)
 
 
+def _deep_units(drafts: list[str], min_depth_words: int) -> list[str]:
+    """Every substantial unit across the drafts, in order, before dedupe."""
+    from alignment.reward import split_units
+
+    out = []
+    for d in drafts:
+        for u in split_units(d or ""):
+            if _n_words(u) >= min_depth_words:
+                out.append(u.strip())
+    return out
+
+
+def merge_coverage_retention(merged: str, drafts: list[str], embed_fn,
+                             cfg: MergeConfig = MergeConfig()
+                             ) -> tuple[float, dict]:
+    """Fraction of the drafts' DISTINCT points still expressed in the merge.
+
+    The structural checks are blind to SUBSTITUTION: three viewpoints collapsed
+    into three restatements of the majority keeps both the word count and the
+    paragraph count. This is the semantic version, and it is the only check that
+    tests what the merge is actually for.
+
+    Dedupe first. Draft 1 is the plain baseline in both merge_v2 and
+    persona_merge, so the drafts overlap by construction; without dedupe the
+    denominator is dominated by points every draft repeats, and a merge that
+    correctly consolidates them scores as lossy. Greedy farthest-first over the
+    unit embeddings, which keeps the first occurrence of each distinct point.
+
+    Returns (retention, stats). retention is 1.0 when there is nothing to check
+    -- no drafts, no deep units, or no embedder -- so the caller never fails a
+    merge on a measurement that could not be made.
+    """
+    import numpy as np
+
+    units = _deep_units(drafts, cfg.min_depth_words)
+    m_units = [u.strip() for u in _deep_units([merged], cfg.min_depth_words)]
+    stats = {"draft_units": len(units), "distinct_units": 0,
+             "retained_units": 0, "merged_units": len(m_units)}
+    if not units or not m_units or embed_fn is None:
+        return 1.0, stats
+
+    # ONE call, then split -- embedding the two sides separately lets an encoder
+    # fit a different space to each (a bag-of-words fn builds a different vocab),
+    # so the cosines would not be comparable. Same pattern as injection_usage.
+    emb = np.asarray(embed_fn(units + m_units), dtype=float)
+    E, M = emb[:len(units)], emb[len(units):]
+
+    keep: list[int] = []
+    for i in range(len(units)):
+        if not keep or float((E[keep] @ E[i]).max()) < cfg.cov_dedupe_thr:
+            keep.append(i)
+    stats["distinct_units"] = len(keep)
+
+    sim = E[keep] @ M.T                              # normalized -> cosine
+    retained = int((sim.max(axis=1) >= cfg.cov_match_thr).sum())
+    stats["retained_units"] = retained
+    return retained / len(keep), stats
+
+
 def merge_guard(merged: str, drafts: list[str],
-                cfg: MergeConfig = MergeConfig()) -> tuple[bool, str, dict]:
+                cfg: MergeConfig = MergeConfig(),
+                embed_fn=None) -> tuple[bool, str, dict]:
     """(ok, reason, stats) — did the merge preserve its inputs?
 
     Two structural checks, both one-sided (they can only detect LOSS):
@@ -640,6 +742,10 @@ def merge_guard(merged: str, drafts: list[str],
     Neither proves losslessness -- a merge can keep the word count and still
     swap a position for filler -- but `merge`'s failure mode is compression, and
     compression is exactly what these catch.
+
+    ``embed_fn`` adds a third, SEMANTIC check (merge_coverage_retention), which
+    is the only one that catches substitution. Omitting it leaves the previous
+    behaviour exactly, so every already-computed run stays comparable.
     """
     m_words = _n_words(merged)
     d_words = max((_n_words(d) for d in drafts), default=0)
@@ -653,6 +759,14 @@ def merge_guard(merged: str, drafts: list[str],
         return False, f"short ({m_words} < {cfg.min_len_ratio:g}x{d_words})", stats
     if m_pos < cfg.min_pos_ratio * d_pos:
         return False, f"positions ({m_pos} < {cfg.min_pos_ratio:g}x{d_pos})", stats
+    if embed_fn is not None:
+        ret, cov = merge_coverage_retention(merged, drafts, embed_fn, cfg)
+        stats.update(cov)
+        stats["retention"] = round(ret, 4)
+        if ret < cfg.min_cov_ratio:
+            return False, (f"coverage ({cov['retained_units']}/"
+                           f"{cov['distinct_units']} = {ret:.2f} < "
+                           f"{cfg.min_cov_ratio:g})"), stats
     return True, "", stats
 
 
@@ -692,11 +806,14 @@ def _merge_budget(prompt_text: str, cfg: MergeConfig) -> int:
 
 def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
                  cfg: MergeConfig = MergeConfig(), chat_fn=None,
-                 labels: list[str] | None = None) -> tuple[str, dict]:
+                 labels: list[str] | None = None, embed_fn=None) -> tuple[str, dict]:
     """One merge call + guard + fallback. Pure w.r.t. retrieval — drafts in, answer out.
 
     ``chat_fn`` is injected (defaults to ``chat``) so the merge logic is testable
     without an endpoint; see ``--selftest``.
+
+    ``embed_fn`` turns on the semantic retention check. Default None keeps the
+    structural-only guard, so runs computed before it stay comparable.
     """
     chat_fn = chat_fn or chat
     kept = [d.strip() for d in drafts if d and d.strip()]
@@ -736,7 +853,7 @@ def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
         print(f"warning: merge_v2 missing <answer> tags for: {question[:60]}",
               file=sys.stderr)
 
-    ok, reason, stats = merge_guard(merged, kept, cfg)
+    ok, reason, stats = merge_guard(merged, kept, cfg, embed_fn)
     info["merge_stats"] = stats
     if ok:
         return merged, info
@@ -818,7 +935,7 @@ def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str
 
 def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
                      full_dist: bool = False, cfg: MergeConfig = MergeConfig(),
-                     chat_fn=None) -> tuple[str, dict]:
+                     chat_fn=None, embed_fn=None) -> tuple[str, dict]:
     """N drafts -> lossless merge. Returns (answer, parts). 1 + n_drafts calls.
 
     ``full_dist`` forces the fork-injected drafts to render the full subgroup
@@ -847,7 +964,7 @@ def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
             labels.append(label)
 
     merged, info = merge_drafts(question, drafts, base_url, model, cfg=cfg,
-                                chat_fn=chat_fn, labels=labels)
+                                chat_fn=chat_fn, labels=labels, embed_fn=embed_fn)
     # draft_a/draft_b keep the v1 trace schema so eval/analysis reads both alike
     parts = {"draft_a": drafts[0] if drafts else "",
              "draft_b": drafts[1] if len(drafts) > 1 else "", **info}
@@ -967,10 +1084,18 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             merged, parts = _persona_merge_answer(
                 question, forks, graph, base_url, model,
                 merge_cfg or MergeConfig(), chat_fn)
-        elif condition == "merge_v2":
+        elif condition in ("merge_v2", "merge_v2_rand", "merge_v2_sem"):
+            # merge_v2_rand belongs HERE, not in the `else`. It fell through to
+            # _merge_answer (merge v1: two drafts, no guard, no fallback) for
+            # every run up to and including v12, so the "control" differed from
+            # merge_v2 in the MERGE ALGORITHM as well as in fork content and
+            # fork count. Three confounds, not one -- the v12 tie (0.5440 vs
+            # 0.5309) and the inverted union gain (+0.0389 vs +0.0773) cannot be
+            # read as evidence about fork content.
             merged, parts = _merge_answer_v2(
                 question, forks, graph, base_url, model, full_dist,
-                merge_cfg or MergeConfig(), chat_fn)
+                merge_cfg or MergeConfig(), chat_fn,
+                merge_embed_fn() if condition == "merge_v2_sem" else None)
         else:
             merged, parts = _merge_answer(question, forks, graph, base_url,
                                           model, full_dist)
@@ -1159,6 +1284,7 @@ def _selftest() -> None:
 
     _persona_selftest()
     _selftest_random_fork()
+    _semantic_guard_selftest()
     print("merge_v2 self-test OK")
     print(f"  lossless  : {s_good['merged_words']}w/{s_good['merged_positions']}pos "
           f"vs longest draft {s_good['max_draft_words']}w/"
@@ -1167,6 +1293,67 @@ def _selftest() -> None:
           f"{s_short['merged_positions']}pos -> FALLBACK (short)")
     print(f"  collapsed : {s_wall['merged_words']}w/{s_wall['merged_positions']}pos "
           f"-> FALLBACK (positions; a length-only guard passes this)")
+
+
+def _semantic_guard_selftest() -> None:
+    """The substitution case: length and paragraph count kept, viewpoints gone.
+
+    This is the failure the structural checks cannot see, and the reason the
+    semantic guard exists. A bag-of-words embedder keeps the test offline and
+    deterministic -- the guard's contract is "did these points survive", which
+    does not depend on which encoder measures it.
+    """
+    import numpy as np
+
+    def embed_fn(texts):
+        vocab = sorted({w for t in texts for w in t.lower().split()})
+        idx = {w: i for i, w in enumerate(vocab)}
+        M = np.zeros((len(texts), len(vocab)))
+        for r, t in enumerate(texts):
+            for w in t.lower().split():
+                M[r, idx[w]] += 1.0
+        n = np.linalg.norm(M, axis=1, keepdims=True)
+        return M / np.where(n == 0, 1.0, n)
+
+    # Each unit is ONE sentence (no internal periods, or split_units would cut
+    # the short lead clause off from its padding and drop it below
+    # min_depth_words), and each is padded with its OWN vocabulary -- shared
+    # filler would dominate a bag-of-words cosine and dedupe the drafts to one.
+    a = ("Regulation protects consumers from predatory lending"
+         + " protection borrower safeguard lending" * 5 + ".")
+    b = ("Regulation raises compliance costs and shrinks credit access"
+         + " compliance cost credit lender" * 5 + ".")
+    c = ("Regulation belongs to states rather than federal agencies"
+         + " states federal jurisdiction local" * 5 + ".")
+    drafts = [a, b, c]
+    cfg = MergeConfig()
+    para = chr(10) + chr(10)                      # paragraph break
+
+    kept = para.join(drafts)                      # all three points survive
+    ok, reason, st = merge_guard(kept, drafts, cfg, embed_fn)
+    assert ok, (reason, st)
+    assert st["retention"] == 1.0, st
+
+    # Same word count, same paragraph count -- but b and c replaced by
+    # restatements of a. Both structural checks pass; the semantic one must not.
+    subbed = para.join([
+        a,
+        ("Consumers gain protection from predatory lending under regulation"
+         + " protection borrower safeguard lending" * 5 + "."),
+        ("Predatory lending harms borrowers so regulation protects consumers"
+         + " protection borrower safeguard lending" * 5 + ".")])
+    ok_s, reason_s, st_s = merge_guard(subbed, drafts, cfg, embed_fn)
+    struct_ok, _, _ = merge_guard(subbed, drafts, cfg)     # no embedder
+    assert struct_ok, "the structural guard is supposed to MISS this case"
+    assert not ok_s and reason_s.startswith("coverage"), (ok_s, reason_s, st_s)
+
+    # Dedupe: three copies of one draft are one distinct point, so a merge that
+    # keeps it must not be penalised for "dropping" the duplicates.
+    ok_d, _, st_d = merge_guard(a, [a, a, a], cfg, embed_fn)
+    assert ok_d and st_d["distinct_units"] == 1, st_d
+    print(f"  semantic  : substitution caught (retention "
+          f"{st_s['retained_units']}/{st_s['distinct_units']}) where the "
+          f"structural guard passes; dedupe collapses 3 copies -> 1 point")
 
 
 # ---------------------------------------------------------------------------

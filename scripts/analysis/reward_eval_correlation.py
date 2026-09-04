@@ -68,6 +68,77 @@ def resolve_anchor(prefix: str, index: list[tuple[str, int]]) -> int | None:
     return None
 
 
+def _medoid(texts: list[str], embed_fn) -> str:
+    """The most representative single text in a cluster.
+
+    coverage_reward takes ONE embed_text per target, so a cluster of k
+    perspectives has to collapse to one string. Joining them embeds to their
+    centroid-of-words, which is not a viewpoint anyone expressed; the medoid is
+    an actual participant's wording and is the closest to all the others.
+    """
+    import numpy as np
+
+    if len(texts) == 1:
+        return texts[0]
+    E = np.asarray(embed_fn(texts), dtype=float)
+    return texts[int((E @ E.T).mean(axis=1).argmax())]
+
+
+def cluster_positions(split: str, embed_fn, holdout: bool = False) -> dict:
+    """qid -> [Position], one per judge cluster, from participants' own words.
+
+    THE POINT. The reward scores coverage of GRAPH POSITIONS (~19.9/question);
+    the judge scores coverage of VIEWPOINT CLUSTERS (~5.65). Those are different
+    target sets, which is the leading explanation for concordance sitting below
+    chance -- the reward is not miscalibrated, it is measuring something else.
+    This builds the reward's targets from the clusters instead, so the two sides
+    are finally aimed at the same object.
+
+    Targets are HUMAN-WRITTEN. `cluster_kmeans` ships with OvertonBench and the
+    text is each participant's own free response, so this is not fitting a
+    judge-generated label -- the judge only rates.
+
+    ``holdout`` keeps every second participant per cluster, so the reward's
+    target text is drawn from a subset. Note this REDUCES overlap with what the
+    judge rates, it does not eliminate it: the judge draws its own seeded
+    ``max_users`` subset from all participants and nothing here constrains that
+    draw. Treat the no-holdout number as an upper bound and this one as the
+    honest-but-still-optimistic one; a clean split needs the judge to take the
+    complement, which is a change to judge_overtonbench.
+    """
+    from alignment.reward import Position
+    from evaluation.overton.judge_overtonbench import load_index
+
+    idx = load_index(split)
+    by_q: dict = defaultdict(lambda: defaultdict(list))
+    for (qid, _user), e in sorted(idx.items()):
+        if (e.get("perspective") or "").strip():
+            by_q[qid][e["cluster"]].append(e["perspective"].strip())
+
+    out, n_drop = {}, 0
+    for qid, clusters in by_q.items():
+        total = sum(len(v) for v in clusters.values()) or 1
+        pos = []
+        for cl, texts in sorted(clusters.items()):
+            use = texts[::2] if holdout else texts
+            if not use:
+                continue
+            # prevalence is the FULL cluster size even under holdout -- how
+            # widely a view is held is a property of the population, not of
+            # which half we sampled to describe it.
+            pos.append(Position(option=f"c{cl}", embed_text=_medoid(use, embed_fn),
+                                prevalence=len(texts) / total))
+        if len(pos) >= 2:
+            out[qid] = pos
+        else:
+            n_drop += 1
+    n_pos = sum(len(v) for v in out.values())
+    print(f"cluster targets: {len(out)} questions, {n_pos} clusters "
+          f"({n_pos / max(1, len(out)):.2f}/question), dropped {n_drop} with <2"
+          + ("  [holdout: every 2nd participant]" if holdout else ""))
+    return out
+
+
 def _concordance(pairs: list[tuple[float, float]]) -> tuple[float, int]:
     """Fraction of (judge_delta, reward_delta) pairs that agree in sign.
 
@@ -116,6 +187,19 @@ def main():
     ap.add_argument("--responses", default="overton_responses_v5.jsonl")
     ap.add_argument("--scores", default="overton_scores_v5.csv")
     ap.add_argument("--seed", type=int, default=42, help="graph split seed")
+    ap.add_argument("--targets", choices=["graph", "clusters"], default="graph",
+                    help="what the reward is scored against. 'graph' = "
+                         "positions_from_subtree (~19.9/question, what the reward "
+                         "has always used). 'clusters' = the judge's own "
+                         "cluster_kmeans groups via participants' free responses "
+                         "(~5.65/question) -- the redesign, testing whether the "
+                         "below-chance concordance is a target mismatch rather "
+                         "than a broken reward.")
+    ap.add_argument("--holdout", action="store_true",
+                    help="clusters only: build each cluster's target text from "
+                         "every 2nd participant, reducing (not eliminating) "
+                         "overlap with what the judge rates. See cluster_positions.")
+    ap.add_argument("--split", default="full", help="OvertonBench split for --targets clusters")
     ap.add_argument("--min_depth_words", default=None,
                     help="comma list of min_depth_words to sweep, e.g. 0,30,60,90,120. "
                          "All values are scored from ONE embedding pass (d only "
@@ -162,9 +246,14 @@ def main():
     for r in csv.DictReader(open(args.scores, encoding="utf-8")):
         cov[int(r["question_id"])][r["condition"]] = float(r["coverage"])
 
-    graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
-    index = build_anchor_index(graph)
     embed_fn = default_embed_fn(args.embedder)
+    cl_pos = {}
+    if args.targets == "clusters":
+        graph = index = None            # neither the graph nor anchors are needed
+        cl_pos = cluster_positions(args.split, embed_fn, args.holdout)
+    else:
+        graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
+        index = build_anchor_index(graph)
     cfg = RewardConfig()
     depths = ([int(d) for d in args.min_depth_words.split(",") if d.strip()]
               if args.min_depth_words else [cfg.min_depth_words])
@@ -192,24 +281,36 @@ def main():
         conds = [c for c in resp[qid] if c in cov.get(qid, {}) and c not in drop]
         if len(conds) < 2:
             continue
-        anchor_txt = parse_anchor_text(ctx.get(qid, ""))
-        anchor = resolve_anchor(anchor_txt, index) if anchor_txt else None
-        if anchor is None:
-            n_noanchor += 1
-            continue
-        positions = positions_from_subtree(graph, anchor)
-        if len(positions) < 2:
-            n_noanchor += 1
-            continue
+        if args.targets == "clusters":
+            positions = cl_pos.get(qid, [])
+            if len(positions) < 2:
+                n_noanchor += 1
+                continue
+            # The rewritten/fallback split is a property of the position-statement
+            # artifact, which cluster targets do not use -- participants wrote
+            # their own text. Flagged False so the slice stays well-defined and
+            # everything lands in pos_best_fb.
+            rewritten = [False] * len(positions)
+        else:
+            anchor_txt = parse_anchor_text(ctx.get(qid, ""))
+            anchor = resolve_anchor(anchor_txt, index) if anchor_txt else None
+            if anchor is None:
+                n_noanchor += 1
+                continue
+            positions = positions_from_subtree(graph, anchor)
+            if len(positions) < 2:
+                n_noanchor += 1
+                continue
 
-        # Which positions actually got a declarative statement? The artifact only
-        # covers ~47% of ATP pairs, so a flat cosine distribution could mean either
-        # "rewriting does not help" or "too few were rewritten to show". Comparing
-        # against the forced-fallback build separates those, and they need opposite
-        # responses (drop the idea vs run --backend llm on the tail).
-        fb = positions_from_subtree(graph, anchor, statements={})
-        fb_text = {p.option: p.embed_text for p in fb}
-        rewritten = [p.embed_text != fb_text.get(p.option) for p in positions]
+            # Which positions actually got a declarative statement? The artifact
+            # only covers ~47% of ATP pairs, so a flat cosine distribution could
+            # mean either "rewriting does not help" or "too few were rewritten to
+            # show". Comparing against the forced-fallback build separates those,
+            # and they need opposite responses (drop the idea vs run --backend llm
+            # on the tail).
+            fb = positions_from_subtree(graph, anchor, statements={})
+            fb_text = {p.option: p.embed_text for p in fb}
+            rewritten = [p.embed_text != fb_text.get(p.option) for p in positions]
 
         # embed the positions ONCE per question (identical for every condition),
         # and get both rewards from a single pass over each response's units
@@ -259,7 +360,8 @@ def main():
 
     n_q = len({r["question_id"] for r in out_rows})
     print(f"\nscored {len(out_rows)} responses over {n_q} questions "
-          f"({n_noanchor} skipped: no resolvable anchor)")
+          f"({n_noanchor} skipped: "
+          f"{'fewer than 2 clusters' if args.targets == 'clusters' else 'no resolvable anchor'})")
 
     # --- the numbers --------------------------------------------------------
     c1, n1 = _concordance(pairs_v1)
