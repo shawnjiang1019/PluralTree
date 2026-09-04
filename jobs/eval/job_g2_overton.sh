@@ -36,6 +36,12 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export PYTHONUNBUFFERED=1
+export TOKENIZERS_PARALLELISM=false
+# Without this the loader falls through to `load_dataset("jjssuh/subpop")` and
+# dies on OfflineModeIsEnabled: the HF copy is gated, and the cluster reads the
+# raw ATP release from disk instead. Every other job that builds the graph sets
+# it; job 2252726 failed for exactly this reason.
+export OPINIONQA_DIR="${OPINIONQA_DIR:-$HOME/projects/def-enaskt/shawnj/data/human_resp}"
 
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree || exit 1
 mkdir -p logs docs
