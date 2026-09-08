@@ -131,6 +131,32 @@ python -m evaluation.overton.judge_overtonbench --score "${OUT}" \
 
 echo ""
 echo "Done. Responses: ${OUT}  Scores: ${SCORES}  Clusters: ${CLUSTERS}"
+
+# CHECK=1 runs the manipulation check INSIDE the job and propagates its exit
+# code, which is what lets a smoke run gate the real ones through
+# `sbatch --dependency=afterok`. Without it the smoke exits 0 whenever the
+# pipeline merely COMPLETED -- and merge_v2_flat retrieving nothing, or
+# merge_v2_divrand drawing the same pairs as merge_v2, both complete cleanly
+# and produce a plausible score table. STRICT=1 additionally fails an INERT
+# ablation; leave it off at smoke scale, where a few questions can tie by
+# chance, and on for the real run, where a tie is fatal.
+if [ "${CHECK:-0}" = "1" ]; then
+    echo ""
+    echo "=== manipulation check (gates any dependent job) ==="
+    STRICT_ARG=""
+    [ "${STRICT:-0}" = "1" ] && STRICT_ARG="--strict"
+    python -u scripts/analysis/check_ablation_arms.py \
+        --responses "${OUT}" ${STRICT_ARG}
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        echo ""
+        echo "ARMS DID NOT ABLATE (exit ${rc}). Dependent jobs will not start."
+        echo "This is a result about the run, not a crash: fix the arm rather"
+        echo "than interpreting scores produced by it."
+        exit "${rc}"
+    fi
+fi
+
 echo ""
 echo "RUN THESE TWO, IN THIS ORDER, BEFORE READING THE SCORES:"
 echo ""

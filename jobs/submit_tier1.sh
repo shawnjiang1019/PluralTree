@@ -11,11 +11,17 @@
 # GPUs for hours, and one stage failing would take the rest with it. These are
 # five independent submissions.
 #
+#   [0]  smoke + check    4 GPU ~40m  3 questions, all arms, ASSERTS they ablate
 #   [1a] geometry c=0.5   4 GPU ~8h   hyperbolic: the reference arm
 #   [1b] geometry c=0     4 GPU ~8h   Euclidean: does curvature buy coverage?
 #   [2]  selection        4 GPU ~12h  max-W vs random sibling pairs, + flat
 #   [3]  issp gate        1 GPU ~2h   does a second graph resolve OvertonBench?
 #   [4]  scale 7B         1 GPU ~12h  does merge_v2's gain survive a small model?
+#
+# [1]-[4] are submitted with --dependency=afterok on [0], so nothing burns a
+# 4-GPU allocation until a 3-question run has proved the arms actually differ.
+# Slurm cancels dependents whose dependency fails, so a broken arm costs 40
+# minutes rather than 40 GPU-hours. SKIP="0" removes the gate.
 #
 # WHAT THIS ANSWERS. Nothing currently shows the hyperbolic embedding or the
 # divergence scout helps COVERAGE -- link-prediction MRR 0.456 validates the
@@ -65,6 +71,7 @@ queued () {
 }
 
 ALL_IDS=()
+DRY_N=0
 LAST_ID=""
 submit () {   # submit <job-name> <sbatch args...>
     local name="$1"; shift
@@ -74,7 +81,13 @@ submit () {   # submit <job-name> <sbatch args...>
         ALL_IDS+=("${id}"); LAST_ID="${id}"; return 0
     fi
     if [ "${DRY}" = "1" ]; then
-        echo "  DRY   ${name}"; printf '        sbatch %s\n' "$*"; LAST_ID=""; return 0
+        # A placeholder id, so a dry run still shows the --dependency chain.
+        # Without one LAST_ID stays empty, no DEP is built, and the dry run
+        # looks like the gate is missing when it is not.
+        DRY_N=$((DRY_N + 1)); LAST_ID="9000${DRY_N}"
+        echo "  DRY   ${name}  (id ${LAST_ID})"
+        printf '        sbatch %s\n' "$*"
+        return 0
     fi
     id=$(sbatch --parsable --job-name="${name}" --account="${ACCT}" \
                 --output="logs/${name}_%j.out" --error="logs/${name}_%j.err" \
@@ -84,18 +97,51 @@ submit () {   # submit <job-name> <sbatch args...>
 }
 
 # --- the shared text-feature cache -------------------------------------------
-# [1a], [2] and [4] all call load_or_compute_text_feat on the SAME file. If it
-# does not exist yet, three jobs would compute and write it concurrently and the
-# loser's partial write is what the others read. So when it is missing, [1a]
-# builds it and everything else waits on [1a]; when it is present, all four go
-# in parallel. afterany, not afterok: [1a] failing in its EVAL stage still
-# leaves a valid feats file, and blocking the other arms on that would be wrong.
+# [1a], [2] and [4] all call load_or_compute_text_feat on the SAME file. Three
+# jobs computing and writing it concurrently means the loser's partial write is
+# what the others read. Normally [0] resolves this for free -- everything waits
+# on the gate anyway, and the smoke builds the cache on its way through. The
+# fallback below only matters when [0] is skipped.
 DEP=""
 if [ -f "${FEATS}" ]; then
-    echo "${FEATS} present -- all arms submit in parallel"
+    echo "${FEATS} present -- no feats dependency needed"
 else
-    echo "${FEATS} MISSING -- [1a] builds it; [2]/[4] wait on it (avoids a"
-    echo "  concurrent-write race on the text-feature cache)"
+    echo "${FEATS} MISSING -- [0] builds it as a side effect; everything waits"
+    echo "  on [0] anyway, so there is no concurrent-write race on it"
+fi
+
+# --- [0] SMOKE: the gate everything else hangs off ---------------------------
+# A tiny end-to-end run of the FULL condition set, with the manipulation check
+# inside it (CHECK=1) so its exit code means "the arms actually ablated", not
+# merely "the pipeline completed". Every real job is submitted with
+# --dependency=afterok on it, so a broken arm cancels ~40 GPU-hours instead of
+# producing a plausible-looking table nobody can interpret.
+#
+# NOT --strict: at 3 questions a random draw can tie the argmax by chance, and
+# failing on that would be a false alarm. The real run turns STRICT on, where a
+# tie is fatal rather than unlucky.
+echo ""
+echo "=== [0] smoke + manipulation check (gates everything) ==========="
+SMOKE=""
+if skipped 0; then
+    echo "  SKIP (SKIP contains 0) -- real jobs will NOT be gated"
+else
+    # Save the REAL values: --export=ALL ships whatever this shell holds at
+    # submit time, so shrinking them for the smoke without restoring would
+    # silently run every real arm at 3 questions.
+    _nroll="${NROLL}"; _maxq="${MAXQ}"; _maxu="${MAXU}"
+    export TAU SEED
+    export MAXQ=3 MAXU=8 NROLL=1 CHECK=1 STRICT=0
+    export CONDS=baseline,merge_v2,merge_v2_divrand,merge_v2_flat
+    export OUT=overton_responses_smoke.jsonl SCORES=overton_scores_smoke.csv
+    submit tier1_smoke --time=02:00:00 --export=ALL \
+        jobs/eval/job_selection_ablation.sh
+    unset CONDS OUT SCORES CHECK STRICT
+    export MAXQ="${_maxq}" MAXU="${_maxu}"; NROLL="${_nroll}"
+    [ -n "${LAST_ID}" ] && DEP="--dependency=afterok:${LAST_ID}"
+    if [ -n "${DEP}" ]; then
+        echo "  every job below waits on this and is CANCELLED if it fails"
+    fi
 fi
 
 echo ""
@@ -111,7 +157,11 @@ if ! skipped 1; then
     _nroll="${NROLL}"
     export TAU SEED MAXQ MAXU
     export CURV=0.5 CONDS=baseline,merge_v2 NROLL=1
-    submit geom_c0p5 --export=ALL jobs/eval/job_geometry_ablation.sh
+    submit geom_c0p5 ${DEP} --export=ALL jobs/eval/job_geometry_ablation.sh
+    # Only when [0] was skipped does the feats race matter: something has to
+    # build the cache before the rest read it, and with no gate that is this
+    # job. afterany, not afterok -- geom_c0p5 failing in its EVAL stage still
+    # leaves a valid feats file, and blocking on that would be wrong.
     [ -z "${DEP}" ] && [ ! -f "${FEATS}" ] && [ -n "${LAST_ID}" ] \
         && DEP="--dependency=afterany:${LAST_ID}"
 
@@ -132,8 +182,12 @@ if ! skipped 2; then
     export TAU SEED MAXQ MAXU NROLL
     export CONDS=baseline,merge_v2,merge_v2_divrand,merge_v2_flat
     export OUT=overton_responses_sel.jsonl SCORES=overton_scores_sel.csv
+    # STRICT here, unlike the smoke: at full n a random draw tying the argmax
+    # is not chance, it means the ablation is inert and a tie between the arms
+    # would be uninterpretable. Fail loudly rather than write that table.
+    export CHECK=1 STRICT=1
     submit selection_ablation ${DEP} --export=ALL jobs/eval/job_selection_ablation.sh
-    unset CONDS OUT SCORES
+    unset CONDS OUT SCORES CHECK STRICT
 else
     echo "  SKIP (SKIP contains 2)"
 fi
