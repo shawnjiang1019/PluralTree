@@ -1,0 +1,577 @@
+DIRECTION — what to do with the raw ideas
+=========================================
+Refined from rawideas.txt. Written 2026-09-08.
+
+Read this first
+---------------
+There are 14 distinct ideas in rawideas.txt. Four are worth doing now, four are
+worth doing after those, three need a real question before they mean anything,
+and three are already answered by work that is finished.
+
+The single biggest hole in the project is not on the list in the form you wrote
+it. It is this: NOTHING CURRENTLY SHOWS THE HYPERBOLIC EMBEDDING HELPS THE THING
+WE CLAIM IT HELPS. Link prediction MRR 0.456 validates it as a KG model. No
+result validates it as a retrieval component for viewpoint coverage. Your
+"justify the tree structure" line is pointing at this, and it should be the
+first thing you do.
+
+
+TIER 1 — DO NOW
+===============
+
+1. Hyperbolic vs Euclidean vs flat, measured on COVERAGE
+-------------------------------------------------------
+Your line: "Rerun justification on the hyperbolic embedding for the newer merge"
+
+What it is
+  Run merge_v2 three times on the same graph and same questions, changing only
+  the embedding: hyperbolic (curvature 0.5), Euclidean (curvature 0), and a flat
+  lookup with no hierarchy at all.
+
+Why it matters most
+  Every number you have was produced with one embedding. If Euclidean scores the
+  same, the geometry is decoration and the paper's central claim collapses. If it
+  scores worse, you have the result the project has been missing since the start.
+  EXPERIMENTS.md A1 already lists this ablation — but only for link prediction,
+  never for coverage.
+
+Impact
+  Highest. This is the difference between "we built a system that works" and "we
+  showed hierarchical geometry helps pluralistic retrieval."
+
+HOW TO RUN
+  Two halves. The curvature half changes the SPACE the tree is embedded in; the
+  flat half removes the tree entirely.
+
+  Curvature — two runs of the same job, one per geometry:
+
+      sbatch jobs/eval/job_geometry_ablation.sh              # hyperbolic c=0.5
+      CURV=0 sbatch jobs/eval/job_geometry_ablation.sh       # Euclidean
+
+  The job trains embeddings at CURV, then evals baseline + merge_v2 on them. The
+  curvature is baked into the output filenames (c0p5 / c0) so the two arms
+  cannot overwrite each other — which is the most likely way this experiment
+  silently reports one number twice. Stage 1 is skipped if the embeddings
+  already exist, so a re-run only re-evals.
+
+  Flat — a condition, not a curvature, so it rides along with item 2's job:
+
+      CONDS=baseline,merge_v2,merge_v2_divrand,merge_v2_flat \
+          sbatch jobs/eval/job_selection_ablation.sh
+
+  Smoke either first: MAXQ=5 MAXU=10 EPOCHS=2 sbatch ...
+
+WHY THIS ANSWERS THE QUESTION
+  Everything except the geometry is held fixed — same graph, same questions,
+  same seeds, same conditions, same judge. So any coverage difference between
+  the c=0.5 and c=0 runs is caused by the curvature and nothing else. c=0 is a
+  genuine Euclidean arm rather than a special case: PoincareBall.c returns
+  |c| + 1e-15, so the exponential and log maps degrade to the identity with no
+  separate code path and no NaN.
+
+  merge_v2_flat then asks the blunter version: skip the hierarchy altogether,
+  rank opinion leaves by MiniLM similarity, pair them. It renders through the
+  same fork_context, carries the same fork count, and now applies the same tau
+  gate, so it abstains on the same questions merge_v2 abstains on. If merge_v2's
+  gain survives both, the tree and the geometry are not what produced it.
+
+  Read: merge_v2 at c=0.5 vs merge_v2 at c=0, and merge_v2 vs merge_v2_flat.
+  Baseline is in both runs only as a within-run reference.
+
+Warning
+  OpinionQA's topic layers are minted by k-means over MiniLM question
+  embeddings. So the hierarchy you would be testing is partly a product of an
+  embedding model. If hyperbolic wins there, a reviewer can call it circular.
+  This is why ISSP matters (item 3) — its topics are native.
+
+
+2. Does divergence selection do anything?
+-----------------------------------------
+Your line: "Justify our tree structure, our method merging"
+
+What it is
+  The scout picks the child pair with maximum Wasserstein divergence. Compare
+  against picking a RANDOM child pair from the SAME anchor.
+
+Why it matters
+  This is the narrowest possible test of the thing you actually built. It holds
+  the graph, the anchor and the content type fixed and varies only the scoring.
+  It is different from the existing random-fork control, which swaps to an
+  unrelated anchor and therefore tests content, not selection.
+
+Impact
+  High and cheap. If max-W does not beat random-sibling, the divergence scout is
+  decoration and you should know before writing it up.
+
+HOW TO RUN
+  One job, one generation pass, one judge pass — so every arm sees identical
+  questions and an identical judge:
+
+      sbatch jobs/eval/job_selection_ablation.sh
+
+  Add the hierarchy arm from item 1 in the same run, which is cheaper and puts
+  all three ablations on the same questions:
+
+      CONDS=baseline,merge_v2,merge_v2_divrand,merge_v2_flat \
+          sbatch jobs/eval/job_selection_ablation.sh
+
+  Then the manipulation check, which decides whether the run means anything:
+
+      python -c "
+      import json, statistics as st, collections
+      by = collections.defaultdict(list)
+      for r in map(json.loads, open('overton_responses_sel.jsonl')):
+          p = r.get('pair_select')
+          if p and p['mean_w'] is not None:
+              by[r['condition']].append((p['n_forks'], p['mean_w'], p['mean_relevance']))
+      for c, v in sorted(by.items()):
+          print(f'  {c:18} n_forks {st.mean(x[0] for x in v):5.2f}  '
+                f'mean_w {st.mean(x[1] for x in v):.4f}  '
+                f'rel {st.mean(x[2] for x in v):.4f}  (n={len(v)})')"
+
+  DO NOT read the scores before reading that. It must show merge_v2_divrand with
+  the SAME n_forks as merge_v2, a LOWER mean_w, and roughly UNCHANGED relevance.
+  If mean_w comes out equal, random selection picked the same pairs, the
+  ablation did nothing, and the arm is void — a tie would then be meaningless
+  rather than informative.
+
+  Note check_random_fork.py is the WRONG check here. It was written for
+  merge_v2_rand, which jumps to an unrelated anchor and must therefore be LESS
+  relevant. divrand keeps the anchor and swaps only the pair, so unchanged
+  relevance is the correct outcome, and that script would flag it as a failure.
+
+WHY THIS ANSWERS THE QUESTION
+  The graph, the anchors, the relevance gate, the rendering, the fork count and
+  the merge path are all identical between merge_v2 and merge_v2_divrand. The
+  ONLY difference is which child pairs survive: highest Wasserstein divergence,
+  or a deterministic uniform draw from the same candidate pool.
+
+  So this isolates the divergence scout by itself. If max-W does not beat a
+  random sibling pair, then the scoring function — the actual method — is
+  decoration, and merge_v2's gain comes from injecting subgroup contrasts at all
+  rather than from injecting the RIGHT ones.
+
+  This is a different question from the random-fork control, which swaps to an
+  unrelated anchor and therefore tests fork CONTENT. This tests SELECTION.
+
+Note
+  delta_regressor already records that divergence W correlates only +0.19 with
+  the injection delta, because the scout selects max-W forks so its variance is
+  gone by the time you observe it. That explains why W looks uninformative
+  after the fact. It does NOT tell you whether the selection helped. Nobody has
+  checked.
+
+
+3. A second survey-like dataset
+-------------------------------
+Your lines: "Get another survey data and run it on it to show generalization"
+            "Find another survey like dataset to embed"
+
+Status: IN PROGRESS. data/loaders/issp.py and data/loaders/graphs.py are
+written; --dataset issp works everywhere on this path.
+
+What it is
+  ISSP (International Social Survey Programme). 11 named topic modules —
+  religion, health, environment, work, family, leisure — via GESIS.
+
+Why ISSP specifically
+  Its topic hierarchy is NATIVE. OpinionQA has no topic labels so we invent them
+  by clustering embeddings. ISSP ships them. That removes the circularity in
+  item 1, and it is the reason to prefer ISSP over the alternatives.
+
+Impact
+  High, but conditional. See the gate below.
+
+HOW TO RUN
+  a. Download from GESIS (free account at login.gesis.org). Take Stata .dta,
+     NOT .sav -- pandas reads .dta labels natively and pyreadstat is not
+     installed on the cluster, which is offline. Rename so the topic is
+     readable, because the ZA number carries no topic and the native topic
+     level is the whole reason for using ISSP:
+
+         issp/religion_2018.dta, issp/environment_2020.dta, ...
+
+  b. Read the real columns before parsing anything:
+
+         python -m data.loaders.issp --inspect issp/religion_2018.dta
+
+     Paste that output. BACKGROUND and _ITEM_NAME get fixed against what is
+     actually in the file. This is the step ValuePrism skipped, and it cost a
+     failed cluster job.
+
+  c. Parse and sanity-check the record count:
+
+         ISSP_DIR=issp python -m data.loaders.issp --dir issp --out issp_records.jsonl
+
+  d. Embed. ISSP_DIR must point at the module directory or the loader exits:
+
+         ISSP_DIR=$PWD/issp DATASET=issp sbatch jobs/embed/job_embed_opinionqa.sh
+
+     Writes embeddings_issp.pt. feats_issp.pt is built on first use by
+     load_or_compute_text_feat.
+
+  e. THE GATE -- run this before generating anything. No questions file is
+     needed: --reference overton loads OvertonBench itself, so this asks
+     directly whether the ISSP graph resolves anchors for it.
+
+         SRC=none DATASET=issp EMB=embeddings_issp.pt \
+             ISSP_DIR=$PWD/issp sbatch jobs/eval/job_anchor_coverage.sh
+
+     Compare against the same gate on the ATP graph, which is the reference
+     point for "does this resolve well enough to test anything":
+
+         SRC=none DATASET=opinionqa EMB=embeddings_opinionqa.pt \
+             sbatch jobs/eval/job_anchor_coverage.sh
+
+  f. Only if (e) passes, the eval:
+
+         ISSP_DIR=$PWD/issp DATASET=issp EMB=embeddings_issp.pt \
+             FEATS=feats_issp.pt CONDS=baseline,merge_v2 \
+             OUT=overton_responses_issp.jsonl \
+             SCORES=overton_scores_issp.csv sbatch jobs/eval/job_overton_eval.sh
+
+     job_overton_eval.sh does not export ISSP_DIR itself, so pass it through.
+
+WHY THIS ANSWERS THE QUESTION
+  Step (f) holds the EVAL fixed (OvertonBench, same 60 questions, same judge)
+  and swaps only the graph. If merge_v2 still beats baseline with a completely
+  different survey behind it, the gain is not a property of Pew ATP.
+
+  ISSP is the right second graph for a reason beyond being different: its topic
+  level is NATIVE. OpinionQA has no topic labels, so cluster_questions invents
+  them with k-means over MiniLM embeddings -- meaning item 1 tests a hyperbolic
+  embedding on a hierarchy that an embedding model built. A reviewer can call
+  that circular. ISSP's 11 modules exist independently of any encoder, so
+  re-running item 1 on the ISSP graph removes the objection entirely.
+
+  Step (e) is a hard gate, not a formality. ISSP is religion, health,
+  environment, family. OvertonBench anchors resolved for ATP because both are US
+  political. If ISSP resolves for a small fraction of the questions, the scout
+  returns no forks on the rest, every arm silently collapses to baseline, and a
+  72B run produces a confident null that means nothing. Its political-adjacent
+  modules -- Role of Government, Social Inequality, Citizenship, National
+  Identity -- are why partial resolution is plausible. Measure it.
+
+Alternatives that need no account, if GESIS stalls
+  DICES-350   350 items, 123 raters, per-group cells 16-61. Best cells anywhere.
+  D3CODE      4,590 items, 4,309 raters, cells 11-15 on gender/age.
+  Wiki Detox  159k items, cells ~4, CC0.
+  All are plain CSV, no gating. But their items are social-media comments and
+  chatbot turns, so they will NOT resolve against OvertonBench. Use them as a
+  self-contained graph AND eval, not as a drop-in graph swap.
+
+
+4. More models
+--------------
+Your line: "Run on more LLMs"
+
+What it is
+  Run merge_v2 and baseline at 7B as well as 72B.
+
+Why it matters more than it looks
+  CAD found that injecting forks costs 0.394 -> 0.099 at 7B, versus 0.497 ->
+  0.393 at 72B. Over-anchoring is strongly size-dependent. That produces a sharp
+  prediction: if merge_v2's gain is mostly an anchoring workaround, it should
+  shrink or invert at 7B, where two of its three drafts collapse.
+
+Impact
+  High and cheap. Either answer is publishable. If merge_v2 still wins at 7B,
+  the merge is doing real work on bad inputs — a stronger claim than you
+  currently make. If it loses, the contribution is scale-contingent and you want
+  to know now rather than at review.
+
+HOW TO RUN
+      sbatch jobs/eval/job_scale_7b.sh
+      # smoke: MAXQ=5 MAXU=10 sbatch jobs/eval/job_scale_7b.sh
+
+  One GPU, TP=1, baseline + merge_v2. The 7B is resolved from a local directory
+  first ($HOME/.../Qwen2.5-7B-Instruct) because huggingface_hub's
+  snapshot_download is broken in this environment.
+
+  Then compare WITHIN this run only:
+
+      python scripts/analysis/plot_delta_ci.py --scores overton_scores_7b.csv
+
+WHY THIS ANSWERS THE QUESTION
+  CAD measured that injecting forks costs 0.3942 -> 0.0992 at 7B but only
+  0.497 -> 0.393 at 72B. Over-anchoring is far worse in the small model. Two of
+  merge_v2's three drafts ARE the injected condition, so at 7B it is merging one
+  good draft with two collapsed ones.
+
+  That gives a sharp prediction. If merge_v2's gain is largely an anchoring
+  workaround -- keeping one uninjected draft and letting the guard protect it --
+  it should shrink or invert at 7B. If merge_v2 still beats baseline there, the
+  merge is doing real work on bad inputs, which is a stronger claim than the one
+  currently made.
+
+  Either outcome is publishable, which is why it is cheap insurance: a
+  scale-contingent contribution is something to discover now rather than at
+  review.
+
+  READ IT ONLY AGAINST ITSELF. These numbers are not comparable to v10/v11/v12
+  on two counts -- a different generator (7B vs Qwen-72B-AWQ) and a different
+  judge (one GPU cannot host both, so stage 2 judges with the same 7B). The only
+  valid comparison is baseline vs merge_v2 inside this run.
+
+
+TIER 2 — DO AFTER TIER 1
+========================
+
+5. Multi-anchor forks
+---------------------
+Your lines: "Supply a group of forks from different questions"
+            "Retrieve a group of things"
+
+What it is
+  persona_merge currently uses forks[0] only — one anchor's spectrum. Everything
+  else retrieved is thrown away. Use subgroups drawn from SEVERAL anchors.
+
+Why it is worth doing
+  persona_merge already has the highest union gain (+0.0917 vs merge_v2's
+  +0.0389) using ONE anchor. Its drafts find clusters baseline misses. More
+  anchors means more genuinely different viewpoints to draft from.
+
+Impact
+  Medium-high. Directly extends the arm that is already finding the most.
+
+Plan
+  In _persona_merge_answer, replace pick_personas(forks[0], ...) with picks
+  spread across the top-k forks. Keep compute matched — same number of drafts,
+  drawn from more anchors, not more drafts.
+
+Caution
+  The merge is the bottleneck. Feeding it more diverse drafts without fixing the
+  compression may just lose more. Do item 6 first or run them together.
+
+
+6. Fix the merge, not the retrieval
+-----------------------------------
+Your line: "Justify our method merging"
+
+Status: partly written. merge_v2_sem exists with a semantic retention guard.
+
+What it is
+  The existing guard checks word count and paragraph count. Both are structural.
+  A merge that keeps three solid paragraphs while collapsing three viewpoints
+  into three restatements of the majority passes clean. The semantic guard
+  checks whether the drafts' distinct points survive.
+
+Why it matters
+  Two mechanically unrelated diversification sources — instruction variation
+  (merge_v2) and subgroup conditioning (persona_merge) — score the same. That
+  says the bottleneck is the merge, not the draft supply.
+
+Impact
+  Medium-high. It is the only item that tries to FIX the failure rather than
+  measure it.
+
+Plan
+  a. The guard is wired into merge_v2_sem only, which is the arm with the least
+     to save. Wire it into persona_merge too — that is where the loss was
+     measured.
+  b. Read the literature options before building more: submodular / budgeted max
+     coverage (Lin & Bilmes ACL 2011) turns the merge from generation into
+     optimization with a bound; MMR is the three-line version; LLM-Blender is
+     the closest prior art. Hierarchical pairwise merging beats N-at-once.
+
+First, free
+  Pull the merge_fallback rate out of the existing logs. It is the statistic
+  purpose-built to measure this and it has never been read.
+      grep -c "LOSSY" logs/overton_eval_*.out
+
+
+7. Reasoning traces, as an instrument
+-------------------------------------
+Your lines: "Explain reasoning trace usage in methodology"
+            "Try to find more ways to use reasoning traces"
+
+Current state
+  Traces are captured on every row. Exactly one script reads them
+  (delta_regressor, six features), and that script belongs to the routing line,
+  which is closed. So they are collected and unused.
+
+The reframe that makes them useful
+  Stop trying to PREDICT from traces — that is routing, and routing has five
+  independent nulls. Use them as an instrument to observe a mechanism you are
+  currently inferring from scores.
+
+Three concrete uses
+  a. Watch over-anchoring happen. t_pos_hit already counts graph positions named
+     inside <think>. Across the CAD arms it should rise with alpha while coverage
+     falls. That converts an inference into an observation.
+  b. Turn "does the model select usefully" into a measurable question. The trace
+     is the model STATING which positions it judged relevant, before writing.
+     Named-and-expressed is deliberate inclusion; named-and-dropped is deliberate
+     exclusion. Join against the judge's covered clusters.
+  c. Detect merge substitution. merge_v2's stored trace is the merge call's own
+     reasoning. It may say what it dropped.
+
+Plumbing, both one-liners
+  eval_cad.py hardcodes "think": "". Nothing is lost — raw is on the same row, so
+  extract_think recovers every trace with no regeneration.
+  info["drafts"] holds all drafts but is not in the trace key list, so only
+  draft_a/draft_b reach disk.
+
+Impact
+  Medium. Explanatory rather than performance-improving. Worth it because the
+  over-anchoring story is currently inferred, and reviewers ask.
+
+
+8. Trace-consistency as a reward
+--------------------------------
+Not in rawideas.txt directly, but it follows from your trace lines and it is the
+best idea in this document that you have not written down.
+
+What it is
+  PLURALISM_INSTRUCTION makes the model list the distinct positions it intends to
+  cover inside <think>, then answer. So the trace is a declared PLAN and the
+  answer is the EXECUTION. Reward the fraction of the plan that gets executed.
+
+      r = |expressed in answer AND planned in trace| / |planned in trace|
+
+Why this is unusually good
+  - It needs NO ground-truth targets. Both sides come from the model. That
+    matters enormously, because cluster targets exist only for OvertonBench's 60
+    questions while GRPO trains over all graph questions.
+  - It is self-normalizing against the obvious hack. Padding the plan raises the
+    denominator. Listing 10 and delivering 3 scores worse than listing 3 and
+    delivering 3.
+  - It targets a measured failure. `route` produced fine-looking reasoning and
+    answers scoring 0.072. Plan and execution came apart and nothing in the
+    current reward can see it.
+
+Impact
+  High if it works, and cheap to test before any training.
+
+Plan
+  Compute the trace-consistency score on the v11 responses already on disk, then
+  measure its within-question concordance against the judge. If a
+  ground-truth-free signal orders answers better than the graph-position reward
+  does (0.152, chance 0.500), that is a result on its own.
+
+Do not do this yet if
+  You are adding it ON TOP of the current outcome reward. That reward ranks below
+  chance, so you would have nothing to validate the trace term against. Get
+  cluster targets working first.
+
+
+TIER 3 — NEEDS A REAL QUESTION FIRST
+====================================
+
+9. "Content + structure complement" vs "structure good"
+-------------------------------------------------------
+This is the right instinct but it is not yet an experiment. Made concrete:
+
+  "structure good"        = the hyperbolic/Euclidean/flat ablation (item 1)
+  "content + structure"   = does retrieved fork CONTENT add anything beyond the
+                            variance of having drafts disagree (the matched
+                            random-fork control, currently invalid — the old
+                            merge_v2_rand ran merge v1 with 1 fork instead of
+                            4.85, three confounds)
+
+So this line resolves into items 1 and 2 plus the v13 control. It is not a
+separate piece of work. Cross it off once those land.
+
+
+10. Cross-question persona consistency
+--------------------------------------
+Your lines: "Answer multiple questions of one demographic related to one
+             demographic"
+            "How would this kind of person answer this kind of question given
+             some response to another similar question"
+
+What it is
+  Condition on a subgroup's answer to question A, then predict their answer to
+  question B.
+
+Honest assessment
+  This is a genuinely interesting problem and it is NOT the problem this project
+  measures. OvertonBench scores within-answer viewpoint coverage. This is
+  steerable pluralism plus cross-question consistency — a different construct
+  needing a different eval.
+
+Impact
+  Unknown, because there is no metric for it yet in this repo.
+
+If you want it
+  It is a new evaluation, not a new condition. Scope it separately. The data
+  supports it — subgroup distributions exist for every question — so the
+  measurement is buildable. But treat it as a second paper or a section, not a
+  next step.
+
+
+11. Agentic approach
+--------------------
+Too vague to act on. There is no stated problem it solves. Before spending
+anything here, write down the specific failure an agent loop would fix. If the
+answer is "the model does not know when to retrieve," that is routing, and
+routing is closed.
+
+
+DROP — ALREADY ANSWERED
+=======================
+
+12. Recursive self-confidence
+-----------------------------
+Your lines: "Recursive reasoning? -> read more on this"
+            "Takes original input, and prompt, result then asks how confident it
+             was about the result"
+
+This is model self-assessment, and it has been tested. The `route` condition asks
+the model to judge whether retrieved context is relevant. It scored 0.072 against
+baseline's 0.507. Routing overall has five independent nulls; oracle routing caps
+at +0.0415 and the best gate found was +0.006.
+
+There is one live distinction, already noted in delta_regressor: "route scored
+0.072" means the model's DECISION was bad, which is not the same as its reasoning
+carrying no signal. Item 7b is how you settle that. But a new confidence loop on
+top of the same judgment is the same experiment with more steps.
+
+Verdict: drop unless item 7b finds signal.
+
+
+13. Give it skills to refine the original prompt
+------------------------------------------------
+Self-refinement over the prompt is the `expand` condition's neighbourhood.
+`expand` scored 0.377 vs baseline 0.507. Prompt-level interventions that ask for
+more breadth reliably cost quality — G2's own paper reproduces this
+independently (Diverse Prompt: Distinct 4.02 -> 6.58, Quality 7.97 -> 4.73).
+
+Verdict: drop. The finding is that the prompt is the wrong channel. That is what
+CAD and G2 are for.
+
+
+14. Online learning
+-------------------
+No defined problem here. There is no stream, no feedback signal, and the offline
+reward already ranks below chance. Nothing to learn online from.
+
+Verdict: drop until there is a signal worth updating on.
+
+
+THE ORDER
+=========
+  1. Hyperbolic vs Euclidean vs flat, on coverage        <- start here
+  2. Max-W forks vs random sibling forks
+  4. merge_v2 + baseline at 7B
+  3. ISSP: inspect -> parse -> embed -> GATE -> eval
+  6. merge_fallback rate (free), then semantic guard on persona_merge
+  5. Multi-anchor persona forks
+  7. Trace features on the CAD arms
+  8. Trace-consistency score on v11, concordance vs judge
+
+Items 1, 2 and 4 are three generation runs and answer the questions a reviewer
+will ask first. Nothing else on this list matters if the geometry turns out not
+to help.
+
+
+ONE THING NOT IN rawideas.txt THAT SHOULD BE
+============================================
+There is still no quality measurement anywhere in this project. Every number is
+coverage, which rewards listing viewpoints regardless of how well they are
+argued. Coverage cannot tell "five viewpoints well synthesized" from "five drafts
+stapled together" — and concatenation is already the guard's fallback, so you can
+max the metric that way today without knowing whether the answer got better.
+
+A pairwise quality judge is the largest remaining hole. It is also a prerequisite
+for interpreting item 5 and item 6 in either direction.

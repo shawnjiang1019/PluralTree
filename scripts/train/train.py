@@ -108,7 +108,8 @@ def parse_args():
                    help="Path to append per-eval validation metrics (step, epoch, "
                         "MRR, Hits) for offline plotting (scripts/plot_metrics.py).")
     p.add_argument("--dataset",       type=str,   default="culturalbench",
-                   choices=["culturalbench", "wn18rr", "globalopinionqa", "grailqa", "opinionqa"],
+                   choices=["culturalbench", "wn18rr", "globalopinionqa", "grailqa",
+                            "opinionqa", "issp"],
                    help="Which dataset/loader to use.")
     p.add_argument("--data_dir",      type=str,   default="data/wn18rr",
                    help="Directory of WN18RR train/valid/test.txt (wn18rr only).")
@@ -177,6 +178,16 @@ def main():
     elif args.dataset == "opinionqa":
         from data.loaders.opinionqa import load_opinionqa
         graph = load_opinionqa(
+            split_seed=args.seed,
+            leakage_safe=not args.allow_leakage,
+        )
+        print(f"  leakage_safe = {not args.allow_leakage}")
+    elif args.dataset == "issp":
+        # Reads ISSP_DIR. Its topic level is NATIVE (11 shipped modules) rather
+        # than k-means over question embeddings, which is the point: it lets the
+        # curvature ablation run on a hierarchy no encoder built.
+        from data.loaders.issp import load_issp
+        graph = load_issp(
             split_seed=args.seed,
             leakage_safe=not args.allow_leakage,
         )

@@ -25,7 +25,7 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import torch
 from torch import Tensor
@@ -54,6 +54,78 @@ class ScoutConfig:
     min_keep: int = 2          # gate floor: never shrink a cloud below this
     top_k: int = 5             # forks returned
     top_pairs: int = 3         # transport pairs reported per fork
+    pair_select: str = "maxw"  # "maxw" | "random" -- which child pairs survive
+    #   The ONE knob of the selection ablation (merge_v2_divrand). "maxw" keeps
+    #   the highest rel^alpha * W pairs (the divergence scout); "random" keeps a
+    #   deterministic uniform sample of the SAME candidate pool, so the arms
+    #   differ only in which pairs are chosen -- not in the graph, the anchors,
+    #   the relevance gate, the rendering, or the fork COUNT (both truncate the
+    #   identical pool at top_k). merge_v2_rand's failure was exactly the
+    #   opposite: 1.00 forks/row vs merge_v2's 4.85, so volume moved with
+    #   content and the arm measured nothing.
+    pair_seed: int = 0         # seed folded into the per-(question, anchor) key
+
+
+def _rand_rank(question: str, fork: "ScoredFork", seed: int) -> float:
+    """Deterministic uniform in [0, 1) for one (question, anchor, pair).
+
+    Hashed, not drawn from an RNG stream: a stream's output depends on the order
+    in which pairs are enumerated, so a candidate-set change anywhere would
+    reshuffle every later pick. Python's ``hash`` is salted per process
+    (PYTHONHASHSEED), so blake2b -- runs must reproduce across processes.
+    """
+    import hashlib
+
+    key = f"{question}|{fork.anchor}|{fork.branch_a}|{fork.branch_b}|{seed}"
+    d = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(d, "big") / 2 ** 64
+
+
+def rank_key(question: str, cfg: ScoutConfig):
+    """The sort key that decides which forks survive -- the ablated component.
+
+    Both branches return a scalar the caller sorts descending and truncates at
+    ``top_k``, so the SELECTION path is byte-identical between arms and only the
+    ordering differs. Any other placement (sampling inside ``score_anchor``,
+    say) would change how many forks each anchor contributes and break the
+    volume match.
+    """
+    if cfg.pair_select == "random":
+        return lambda f: _rand_rank(question, f, cfg.pair_seed)
+    if cfg.pair_select != "maxw":
+        raise ValueError(f"unknown pair_select {cfg.pair_select!r}")
+    return lambda f: f.score
+
+
+def selection_stats(forks: list["ScoredFork"], mode: str,
+                    extra: dict | None = None) -> dict:
+    """What the pair-selection ablation actually did, per row.
+
+    The manipulation check for merge_v2_divrand, and it is NOT the one
+    check_random_fork.py runs: that script was written for merge_v2_rand, which
+    jumps to an UNRELATED anchor and must therefore be LESS relevant. divrand
+    keeps the anchor pool and swaps only which child pair wins, so relevance
+    should come out roughly UNCHANGED and the moving quantity is ``mean_w``:
+    maxw takes the argmax, so a random draw over the same pool must sit below
+    it. Equal mean_w means the ablation did nothing and the arm is void.
+
+    ``anchors`` (of the SELECTED forks) and ``anchor_pool`` (every anchor
+    examined) are both emitted because they answer different questions. The pool
+    is identical between arms by construction; the selected set is not -- maxw
+    concentrates on whichever anchor holds the widest pairs (measured on the
+    fixture: 1 anchor vs random's 3), and reading that difference as "different
+    anchors were searched" would be wrong.
+    """
+    # None, not NaN, for the undefined cases: these land in a JSONL row and
+    # json.dumps writes a bare `NaN`, which is not valid JSON and breaks any
+    # reader stricter than Python's own.
+    n = len(forks)
+    out = {"mode": mode, "n_forks": n,
+           "mean_w": (sum(f.w for f in forks) / n) if n else None,
+           "mean_relevance": (sum(f.relevance for f in forks) / n) if n else None,
+           "anchors": sorted({f.anchor for f in forks})}
+    out.update(extra or {})
+    return out
 
 
 @dataclass
@@ -70,6 +142,13 @@ class ScoredFork:
     nodes_b: list[int] = field(default_factory=list)
     top_pairs: list[tuple[int, int, float]] = field(default_factory=list)
     #                          ^ (node_a, node_b, gamma*C) — drivers of the split
+    spectrum: list[int] = field(default_factory=list)
+    #   Subgroup leaves for the full-distribution render, when they cannot be
+    #   read off the anchor's children. Empty for scout forks (answer.py derives
+    #   them from the hierarchy); populated by ``flat_forks``, whose whole point
+    #   is that there is no hierarchy to read. Without it merge_v2_flat's third
+    #   draft would silently fall back to the 2-pole block while merge_v2's
+    #   rendered the spectrum — a render confound on top of the one being tested.
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +318,21 @@ def scout(
     cfg: ScoutConfig | None = None,
     anchor_fn=None,
     q_emb: Tensor | None = None,
+    stats: dict | None = None,
 ) -> list[ScoredFork]:
     """One-shot pipeline: question -> top-k relevant AND divergent forks.
 
     ``anchor_fn(question, graph, rel, max_anchors) -> list[int]`` is the LLM
     entity-extractor hook; defaults to ``lexical_anchors``. Pass ``q_emb`` to
     skip loading MiniLM (e.g. batch evaluation).
+
+    ``cfg.pair_select="random"`` keeps the pipeline and swaps only the ranking
+    (the selection ablation) — see ``rank_key``.
+
+    ``stats``, if given, is filled with the anchor pool and the candidate-pair
+    count. Both are already computed here; recomputing them in the caller would
+    re-run anchor extraction per row, and leaving them out would make the
+    divrand manipulation check unanswerable from the responses file.
     """
     cfg = cfg or ScoutConfig()
     if q_emb is None:
@@ -255,10 +343,121 @@ def scout(
     forks: list[ScoredFork] = []
     for a in anchors:
         forks.extend(score_anchor(a, graph, h_all, rel, manifold, cfg))
-    forks.sort(key=lambda f: f.score, reverse=True)
+    if stats is not None:
+        stats.update(anchor_pool=list(anchors), n_candidates=len(forks),
+                     pool_mean_w=(sum(f.w for f in forks) / len(forks))
+                     if forks else None)
+    forks.sort(key=rank_key(question, cfg), reverse=True)
     forks = forks[: cfg.top_k]
     for f in forks:
         _fill_top_pairs(f, h_all, rel, manifold, cfg)
+    return forks
+
+
+# ---------------------------------------------------------------------------
+# Flat retrieval (hierarchy ablation)
+# ---------------------------------------------------------------------------
+def opinion_leaf_ids(graph) -> list[int]:
+    """Every opinion leaf in the graph, WITHOUT consulting the tree structure.
+
+    ``opinion_dist`` is a flat node->distribution map, so the first branch reads
+    no hierarchy at all. The childless-node fallback does touch
+    ``children_indices``, and that is the one unavoidable use in this condition:
+    it identifies which nodes ARE opinion leaves, never which nodes belong
+    together. Selection below ranks the resulting pool by question similarity
+    only -- no parent, no subtree, no descent.
+    """
+    dist = getattr(graph, "opinion_dist", None)
+    if dist:
+        return sorted(dist.keys())
+    kids = graph.children_indices
+    return [v for v, cs in enumerate(kids) if not cs]
+
+
+def flat_forks(
+    question: str,
+    graph,
+    h_all: Tensor,
+    text_feat: Tensor,
+    manifold,
+    cfg: ScoutConfig | None = None,
+    q_emb: Tensor | None = None,
+    stats: dict | None = None,
+) -> list[ScoredFork]:
+    """Pseudo-forks from a FLAT similarity search over opinion leaves.
+
+    The hierarchy ablation (merge_v2_flat): no anchor descent, no child
+    subtrees, no branch-level gate -- embed the question, rank every opinion
+    leaf by MiniLM cosine, and pair the top ones. If merge_v2's gain survives
+    this, the tree is not what produced it.
+
+    SHAPE PARITY IS THE EXPERIMENT, same lesson as the random-fork control. The
+    returned objects carry every field ``fork_context``/``fork_context_full``
+    read (anchor, two branches, ``top_pairs``, ``spectrum``), so the injected
+    text has merge_v2's structure and only its CONTENT SOURCE differs. Volume is
+    matched the same way: ``top_k`` forks of ``top_pairs`` driver lines each,
+    drawn from a pool of ``top_k * 2 * (1 + top_pairs)`` leaves.
+
+    ``w`` is the geodesic between the two paired leaves (a 1-vs-1 Wasserstein).
+    It only fills the rendered ``divergence=`` slot, and it is the geometry, not
+    the hierarchy, so computing it honestly keeps the ablation single-factor.
+
+    ``anchor`` is the top-ranked leaf of the pair: the header slot needs a node,
+    and naming the parent would be reading the tree. It renders one distribution
+    line where merge_v2 renders the survey-question node -- the only shape
+    difference, and it costs the flat block a few characters, not a structure.
+    """
+    cfg = cfg or ScoutConfig()
+    if q_emb is None:
+        q_emb = embed_question(question)
+    rel = node_relevance(q_emb, text_feat)
+
+    per_fork = 2 * (1 + cfg.top_pairs)               # 2 poles + 2 per driver line
+    leaves = opinion_leaf_ids(graph)
+    # THE SAME RELEVANCE GATE `scout` APPLIES, and it is not optional. scout
+    # gates branches at cfg.tau and returns [] when nothing clears it, so on a
+    # question the graph cannot reach, merge_v2 falls back to plain-only drafts.
+    # Ungated, flat would inject its top-40 leaves on that same question no
+    # matter how irrelevant, and the arms would then differ in WHICH QUESTIONS
+    # GET INJECTED rather than in hierarchy alone -- a confound between the
+    # thing under test and abstention. Same class of error as merge_v2_rand's
+    # volume mismatch, one level subtler.
+    order = sorted((v for v in leaves if float(rel[v]) >= cfg.tau),
+                   key=lambda v: float(rel[v]), reverse=True)
+    pool = order[: cfg.top_k * per_fork]
+    if len(pool) < 2:                                # nothing resolved -> abstain
+        if stats is not None:
+            stats.update(anchor_pool=[], n_candidates=len(pool), pool_mean_w=None)
+        return []
+
+    forks: list[ScoredFork] = []
+    for start in range(0, len(pool), per_fork):
+        chunk = pool[start:start + per_fork]
+        if len(chunk) < 2:
+            break                                    # a fork needs two positions
+        a, b = chunk[0], chunk[1]
+        idx = torch.tensor([a, b], dtype=torch.long)
+        w = float(wasserstein(h_all[torch.tensor([a], dtype=torch.long)],
+                              h_all[torch.tensor([b], dtype=torch.long)],
+                              manifold))
+        r = float(rel[idx].mean())
+        rest = chunk[2:]
+        drivers = [(rest[2 * i], rest[2 * i + 1], 0.0)
+                   for i in range(len(rest) // 2)][: cfg.top_pairs]
+        if not drivers:                              # thin pool: still render the
+            drivers = [(a, b, 0.0)]                  # pair, so the block is intact
+        forks.append(ScoredFork(
+            anchor=a, branch_a=a, branch_b=b, w=w, relevance=r,
+            score=max(r, 0.0) ** cfg.alpha * w,
+            nodes_a=[a] + [na for na, _, _ in drivers],
+            nodes_b=[b] + [nb for _, nb, _ in drivers],
+            top_pairs=drivers, spectrum=list(chunk)))
+        if len(forks) >= cfg.top_k:
+            break
+    # Same stats contract as ``scout`` so the caller stays retrieval-agnostic.
+    # There is no anchor pool here -- that absence IS the condition.
+    if stats is not None:
+        stats.update(anchor_pool=[], n_candidates=len(pool), pool_mean_w=None)
     return forks
 
 
@@ -480,6 +679,121 @@ def load_or_compute_text_feat(graph, dataset: str, path: str | None) -> Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Self-test (no endpoint, no MiniLM: q_emb and text_feat are supplied)
+# ---------------------------------------------------------------------------
+def _toy_graph(n_anchors: int = 2, n_kids: int = 4):
+    """Two anchors x n_kids opinion leaves -- enough pairs to exceed top_k.
+
+    The pool must be LARGER than top_k or the count assertion is vacuous: any
+    selection rule returns the whole pool when the pool is short, which is
+    exactly how a broken ablation would still look volume-matched.
+    """
+    import types
+
+    n = 1 + n_anchors + n_anchors * n_kids
+    kids: list[list[int]] = [[] for _ in range(n)]
+    kids[0] = list(range(1, n_anchors + 1))
+    leaves = []
+    nxt = n_anchors + 1
+    for a in kids[0]:
+        kids[a] = list(range(nxt, nxt + n_kids))
+        leaves.extend(kids[a])
+        nxt += n_kids
+
+    feat = torch.zeros(n, 4)
+    feat[:, 0] = 1.0
+    feat[:, 1] = torch.linspace(0.05, 0.5, n)     # distinct but all on-topic
+    torch.manual_seed(0)
+    g = types.SimpleNamespace(
+        children_indices=kids,
+        id_to_entity=[f"n{i}" for i in range(n)],
+        entity_text={i: f"node {i}" for i in range(n)},
+        opinion_texts={v: ["Q yes", "Q no"] for v in leaves},
+        opinion_dist={v: [0.5, 0.5] for v in leaves})
+    return g, torch.randn(n, 8) * 0.1, feat, torch.tensor([1.0, 0.0, 0.0, 0.0]), leaves
+
+
+def _selftest() -> None:
+    """The two ablations must differ from merge_v2 in ONE thing each.
+
+    Volume and reproducibility are asserted, not assumed: merge_v2_rand shipped
+    for four run versions producing 1.00 forks/row against merge_v2's 4.85, and
+    every comparison drawn from it was uninterpretable.
+    """
+    g, h, feat, q, leaves = _toy_graph()
+
+    def anchors(question, graph, rel, max_anchors):
+        return [1, 2]
+
+    q_text = "does the geometry help?"
+    base = ScoutConfig(top_k=5, top_pairs=3)
+    rnd = ScoutConfig(top_k=5, top_pairs=3, pair_select="random")
+
+    f_max = scout(q_text, g, h, feat, None, cfg=base, anchor_fn=anchors, q_emb=q)
+    f_rnd = scout(q_text, g, h, feat, None, cfg=rnd, anchor_fn=anchors, q_emb=q)
+    pool = score_anchor(1, g, h, node_relevance(q, feat), None, base) + \
+        score_anchor(2, g, h, node_relevance(q, feat), None, base)
+    assert len(pool) > base.top_k, len(pool)          # the count test must bite
+    assert len(f_max) == len(f_rnd) == base.top_k, (len(f_max), len(f_rnd))
+
+    key = lambda fs: [(f.anchor, f.branch_a, f.branch_b) for f in fs]
+    assert key(f_max) != key(f_rnd), "random selection is inert -- same pairs"
+    assert sorted(key(f_max)) != sorted(key(f_rnd)), "same SET, only reordered"
+    assert [f.score for f in f_max] == sorted((f.score for f in f_max),
+                                              reverse=True), "maxw path changed"
+
+    # Reproducibility: same seed -> same pairs, different seed -> different ones.
+    again = scout(q_text, g, h, feat, None, cfg=rnd, anchor_fn=anchors, q_emb=q)
+    assert key(again) == key(f_rnd), "random selection is not reproducible"
+    other = scout(q_text, g, h, feat, None, anchor_fn=anchors, q_emb=q,
+                  cfg=ScoutConfig(top_k=5, top_pairs=3, pair_select="random",
+                                  pair_seed=1))
+    assert key(other) != key(f_rnd), "pair_seed does not move the sample"
+    # Per QUESTION as well as per anchor -- a key that ignored the question would
+    # inject the identical fork set into every row of the arm.
+    other_q = scout("a different question", g, h, feat, None, cfg=rnd,
+                    anchor_fn=anchors, q_emb=q)
+    assert key(other_q) != key(f_rnd), "selection ignores the question"
+
+    try:
+        scout(q_text, g, h, feat, None, anchor_fn=anchors, q_emb=q,
+              cfg=ScoutConfig(pair_select="nope"))
+        raise AssertionError("unknown pair_select must fail loudly")
+    except ValueError:
+        pass
+
+    # Flat retrieval: volume-matched, hierarchy-free, renderable.
+    fcfg = ScoutConfig(top_k=2, top_pairs=1)
+    flat = flat_forks(q_text, g, h, feat, None, cfg=fcfg, q_emb=q)
+    assert len(flat) == fcfg.top_k, len(flat)
+    assert all(f.branch_a != f.branch_b for f in flat), "degenerate pair"
+    assert all(len(f.top_pairs) == fcfg.top_pairs for f in flat), "driver count"
+    assert all(f.spectrum for f in flat), "no spectrum -> full_dist would differ"
+    picked = [v for f in flat for v in f.spectrum]
+    assert len(set(picked)) == len(picked), "a leaf was injected twice"
+    rel = node_relevance(q, feat)
+    top = sorted(leaves, key=lambda v: float(rel[v]), reverse=True)[:len(picked)]
+    assert set(picked) == set(top), "flat retrieval is not similarity-ranked"
+    assert all(v in leaves for v in picked), "flat retrieval left the leaf set"
+
+    # The arms must ABSTAIN TOGETHER. scout gates branches at cfg.tau, so on an
+    # unreachable question merge_v2 falls back to plain-only drafts. An ungated
+    # flat would still inject its top-k leaves there, and the two arms would
+    # then differ in which questions got injected at all -- confounding the
+    # hierarchy test with abstention. This asserts the gate is really applied.
+    shut = replace(fcfg, tau=1.01)                   # above any cosine
+    assert scout("which fork helps?", g, h, feat, None, cfg=shut, q_emb=q) == []
+    assert flat_forks("which fork helps?", g, h, feat, None,
+                      cfg=shut, q_emb=q) == [], "flat ignored the relevance gate"
+
+    print("scout self-test OK")
+    print(f"  pair_select: maxw {key(f_max)} vs random {key(f_rnd)} "
+          f"-- {len(f_max)} forks either way from a pool of {len(pool)}")
+    print(f"  flat       : {len(flat)} forks, {fcfg.top_pairs} driver pair(s) "
+          f"each, {len(picked)} leaves by similarity alone (no descent)")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def _main():
@@ -490,14 +804,16 @@ def _main():
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     ap = argparse.ArgumentParser(description="One-shot relevant+divergent fork scout")
-    ap.add_argument("--embeddings", required=True, help=".pt of h_all on the ball")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the selection/hierarchy ablations offline")
+    ap.add_argument("--embeddings", help=".pt of h_all on the ball")
     ap.add_argument("--dataset", choices=["wn18rr", "culturalbench",
                                           "globalopinionqa", "grailqa", "opinionqa"],
                     default="globalopinionqa")
     ap.add_argument("--data_dir", default="data/wn18rr")
     ap.add_argument("--curvature", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--question", required=True)
+    ap.add_argument("--question", default=None)
     ap.add_argument("--text_feat", default=None,
                     help="cache .pt for MiniLM node features (computed if missing)")
     ap.add_argument("--anchors", default=None,
@@ -506,9 +822,20 @@ def _main():
     ap.add_argument("--alpha", type=float, default=1.0)
     ap.add_argument("--temp", type=float, default=0.1)
     ap.add_argument("--top", type=int, default=5)
+    ap.add_argument("--pair_select", choices=["maxw", "random"], default="maxw",
+                    help="random = the selection ablation (merge_v2_divrand)")
+    ap.add_argument("--flat", action="store_true",
+                    help="flat similarity retrieval, no hierarchy (merge_v2_flat)")
     ap.add_argument("--prompt", action="store_true",
                     help="also print the format_for_prompt injection block")
     args = ap.parse_args()
+
+    if args.selftest:
+        _selftest()
+        return
+    for req in ("embeddings", "question"):
+        if not getattr(args, req):
+            ap.error(f"--{req} is required (or pass --selftest)")
 
     from pluraltree.manifolds.poincare import PoincareBall
     if args.dataset == "wn18rr":
@@ -535,7 +862,7 @@ def _main():
     text_feat = load_or_compute_text_feat(graph, args.dataset, args.text_feat)
 
     cfg = ScoutConfig(tau=args.tau, alpha=args.alpha, temp=args.temp,
-                      top_k=args.top)
+                      top_k=args.top, pair_select=args.pair_select)
 
     anchor_fn = None
     if args.anchors:
@@ -549,8 +876,11 @@ def _main():
                 print(f"  (unresolved anchors: {missing})")
             return ids[:max_anchors]
 
-    forks = scout(args.question, graph, h_all, text_feat, manifold,
-                  cfg=cfg, anchor_fn=anchor_fn)
+    if args.flat:
+        forks = flat_forks(args.question, graph, h_all, text_feat, manifold, cfg=cfg)
+    else:
+        forks = scout(args.question, graph, h_all, text_feat, manifold,
+                      cfg=cfg, anchor_fn=anchor_fn)
 
     print(f"Q: {args.question}")
     if not forks:

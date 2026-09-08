@@ -24,6 +24,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from data.loaders.graphs import DATASETS, load_graph
+
 
 def load_questions(split: str = "full") -> list[tuple[int, str]]:
     """Unique (question_id, question) pairs, sorted by id."""
@@ -39,7 +41,7 @@ def load_questions(split: str = "full") -> list[tuple[int, str]]:
 def main():
     ap = argparse.ArgumentParser(description="OvertonBench answer generation")
     ap.add_argument("--embeddings", required=True, help=".pt of h_all on the ball")
-    ap.add_argument("--dataset", choices=["globalopinionqa", "opinionqa"],
+    ap.add_argument("--dataset", choices=list(DATASETS),
                     default="globalopinionqa")
     ap.add_argument("--curvature", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=0)
@@ -71,12 +73,7 @@ def main():
     if unknown:
         ap.error(f"unknown conditions {unknown}; choose from {sorted(CONDITIONS)}")
 
-    if args.dataset == "opinionqa":
-        from data.loaders.opinionqa import load_opinionqa
-        graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
-    else:
-        from data.loaders.globalopinionqa import load_globalopinionqa
-        graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+    graph = load_graph(args.dataset, split_seed=args.seed, leakage_safe=True)
     h_all = torch.load(args.embeddings, map_location="cpu")
     if not isinstance(h_all, torch.Tensor):
         h_all = h_all["h_all"]
@@ -131,9 +128,15 @@ def main():
                     # anchor has <3 opinion leaves, and such a row is a BASELINE
                     # row under the condition's name. Without it the v11 run could
                     # not say how many rows actually tested the condition.
+                    # pair_select carries the divrand manipulation check
+                    # (n_forks, mean_w, anchor_pool). It is emitted for EVERY
+                    # retrieved condition, so merge_v2 supplies its own maxw
+                    # reference and the check is computable from this file
+                    # alone -- without it the selection ablation cannot be
+                    # verified to have done anything.
                     for k in ("draft_a", "draft_b", "merge_fallback",
                               "merge_fail", "merge_stats", "labels",
-                              "random_fork", "n_personas"):
+                              "random_fork", "n_personas", "pair_select"):
                         if k in trace:
                             row[k] = trace[k]
                     # merge_v2_rand skips questions with no comparable unrelated

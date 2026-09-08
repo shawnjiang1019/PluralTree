@@ -44,6 +44,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from data.loaders.graphs import DATASETS, load_graph
 from evaluation.overton.eval_overtonbench import load_questions
 
 
@@ -65,7 +66,7 @@ def main():
     ap = argparse.ArgumentParser(description="OvertonBench under CAD")
     ap.add_argument("--embeddings", required=True)
     ap.add_argument("--model", required=True, help="LOCAL HF dir (needs logits)")
-    ap.add_argument("--dataset", choices=["globalopinionqa", "opinionqa"],
+    ap.add_argument("--dataset", choices=list(DATASETS),
                     default="opinionqa")
     ap.add_argument("--text_feat", default=None)
     ap.add_argument("--curvature", type=float, default=0.5)
@@ -99,12 +100,7 @@ def main():
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     parsed = [(a, *parse_arm(a)) for a in arms]
 
-    if args.dataset == "opinionqa":
-        from data.loaders.opinionqa import load_opinionqa
-        graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
-    else:
-        from data.loaders.globalopinionqa import load_globalopinionqa
-        graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+    graph = load_graph(args.dataset, split_seed=args.seed, leakage_safe=True)
     h_all = torch.load(args.embeddings, map_location="cpu")
     if not isinstance(h_all, torch.Tensor):
         h_all = h_all["h_all"]

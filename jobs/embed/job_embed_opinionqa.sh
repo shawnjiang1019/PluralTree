@@ -32,6 +32,8 @@ export HF_DATASETS_OFFLINE=1
 export PYTHONUNBUFFERED=1
 # raw-ATP OpinionQA (offline; no SubPOP gate) — see data/loaders/opinionqa.py
 export OPINIONQA_DIR="${OPINIONQA_DIR:-$HOME/projects/def-enaskt/shawnj/data/human_resp}"
+# load_issp reads this; without it DATASET=issp exits immediately.
+export ISSP_DIR="${ISSP_DIR:-$HOME/projects/def-enaskt/shawnj/data/issp}"
 
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 mkdir -p logs
@@ -41,10 +43,11 @@ LSTR="${LSTR:-0.1}"
 LDIV="${LDIV:-0.1}"        # sibling-separation floor (diversity-as-objective)
 DIVM="${DIVM:-1.0}"        # min geodesic distance between siblings
 EPOCHS="${EPOCHS:-12}"     # val MRR plateaus ~epoch 9 (docs/opinionqa_train_metrics.png)
-EMB="${EMB:-embeddings_opinionqa.pt}"
+DATASET="${DATASET:-opinionqa}"   # opinionqa | globalopinionqa | issp
+EMB="${EMB:-embeddings_${DATASET}.pt}"
 echo "CURV=${CURV}  LSTR=${LSTR}  LDIV=${LDIV}  DIVM=${DIVM}  EPOCHS=${EPOCHS}  EMB=${EMB}"
 
-python scripts/train/train.py --dataset opinionqa \
+python scripts/train/train.py --dataset "${DATASET}" \
     --curvature "${CURV}" --lambda_struct "${LSTR}" \
     --lambda_div "${LDIV}" --div_margin "${DIVM}" \
     --n_epochs "${EPOCHS}" \

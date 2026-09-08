@@ -30,6 +30,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from data.loaders.graphs import DATASETS, load_graph
+
 
 def load_texts(path: str, text_field: str) -> list[str]:
     """Questions from .jsonl / .csv / .txt. One question per record or line."""
@@ -110,7 +112,7 @@ def main():
     ap.add_argument("--reference", choices=["overton", "none"], default="overton",
                     help="also measure OvertonBench, so the new set has a "
                          "calibration point instead of an absolute number")
-    ap.add_argument("--dataset", choices=["globalopinionqa", "opinionqa"],
+    ap.add_argument("--dataset", choices=list(DATASETS),
                     default="opinionqa")
     ap.add_argument("--text_feat", default=None)
     ap.add_argument("--curvature", type=float, default=0.5)
@@ -129,12 +131,7 @@ def main():
     from retrieval.scout import (ScoutConfig, embed_question,
                                  load_or_compute_text_feat, scout)
 
-    if args.dataset == "opinionqa":
-        from data.loaders.opinionqa import load_opinionqa
-        graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
-    else:
-        from data.loaders.globalopinionqa import load_globalopinionqa
-        graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+    graph = load_graph(args.dataset, split_seed=args.seed, leakage_safe=True)
     h_all = torch.load(args.embeddings, map_location="cpu")
     if not isinstance(h_all, torch.Tensor):
         h_all = h_all["h_all"]

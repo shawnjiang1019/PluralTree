@@ -1,0 +1,26 @@
+Run on more LLMs
+Rerun justification on the hyperbolic embedding for the newer merge
+Show that either:
+Content + structure compliment
+Structure good 
+
+Get another survey data and run it on it to show generalization
+Find another survey like dataset to embed
+Explain reasoning trace usage in methodology
+Try to find more ways to use reasoning traces
+Recursive reasoning? → read more on this
+Takes original input, and prompt, result then asks how confident it was about the result.
+Give it skills to refine the original prompt.
+Think about agentic approach?
+
+
+1 shot persona method vs merging multiple rollouts of persona method
+Answer multiple questions of one demographic related to one demographic
+How would this kinda of person answer this kind of question given some response to another similar question
+Supply a group of forks from different questions.
+ 
+ Retrieve a group of things
+Online learning
+ 
+Justify our tree structure, our method merging, find other relevant.
+

@@ -54,42 +54,53 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from data.loaders.graphs import DATASETS, load_graph
 from evaluation.overton.eval_overtonbench import load_questions
 
 ARMS = ("g2_base", "g2", "g2_graph")
 
 
-def target_positions(forks, graph, n: int, min_prevalence: float = 0.05
-                     ) -> list[str]:
-    """Distinct graph positions across the forks' anchors, most prevalent first.
+def target_positions(forks, graph, n: int) -> list[str]:
+    """One SUBGROUP vantage point per answer, spread along the anchor's spectrum.
 
-    Answer i is aimed at target i, so the ordering decides what gets covered
-    early. Descending prevalence puts the common positions first -- which is what
-    the judge's clusters look like, since cluster size tracks how many
-    participants held the view -- and leaves the minority tail to the later
-    answers, the ones that have priors to diverge from and so get the strongest
-    contrast. Ascending would aim the weakest contrast at the rarest position.
+    NOT positions_from_subtree. That returns Position.embed_text, which is the
+    position-statement artifact when the builder produced one and the raw
+    "<question> <option>" string when it did not -- and coverage is only 40%
+    (n=260 rewritten vs n=384 fallback in the v12 reward run), because
+    _is_clean rejects every statement that is still interrogative. The 60% that
+    fall back arrive here as QUESTIONS:
+
+        "Do you think abortion should be legal in all or most cases"
+
+    A guide told to "articulate this specific position" cannot steer toward a
+    question. The reward tolerates the fallback (its rewritten-minus-fallback
+    cosine median is -0.124, so statements buy it nothing either way); a
+    steering prompt does not, because it needs a viewpoint to argue rather than
+    a string to match.
+
+    So reuse persona_merge's construction instead, which was built for exactly
+    this and is measured: pick_personas spreads subgroups pole-first along the
+    opinion axis, and persona_context renders one subgroup's own survey
+    distribution as a vantage point. That makes g2_graph the decode-time
+    analogue of persona_merge -- same target selection, different channel --
+    which is also the cleaner comparison to draw.
+
+    Returns [] when the anchor has no usable spectrum (<3 opinion leaves), the
+    same condition under which persona_merge falls back to plain-only.
     """
-    from alignment.reward import positions_from_subtree
+    from retrieval.answer import persona_context, pick_personas
 
-    seen: set[str] = set()
-    out = []
-    for f in forks or []:
-        for p in positions_from_subtree(graph, f.anchor, min_prevalence):
-            key = p.option.strip().lower()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            out.append(p)
-    out.sort(key=lambda p: -p.prevalence)
-    return [p.embed_text for p in out[:n]]
+    if not forks:
+        return []
+    leaves = pick_personas(forks[0], graph, n)
+    return [persona_context(graph, leaf, k) for k, leaf in enumerate(leaves, 1)]
 
 
 def main():
     ap = argparse.ArgumentParser(description="OvertonBench under G2 decoding")
     ap.add_argument("--embeddings", required=True)
     ap.add_argument("--model", required=True, help="LOCAL HF dir (needs logits)")
-    ap.add_argument("--dataset", choices=["globalopinionqa", "opinionqa"],
+    ap.add_argument("--dataset", choices=list(DATASETS),
                     default="opinionqa")
     ap.add_argument("--text_feat", default=None)
     ap.add_argument("--curvature", type=float, default=0.5)
@@ -130,12 +141,8 @@ def main():
     if unknown:
         ap.error(f"unknown arms {unknown}; choose from {list(ARMS)}")
 
-    if args.dataset == "opinionqa":
-        from data.loaders.opinionqa import load_opinionqa
-        graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
-    else:
-        from data.loaders.globalopinionqa import load_globalopinionqa
-        graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+        graph = load_graph(args.dataset, split_seed=args.seed,
+                           leakage_safe=True)
     h_all = torch.load(args.embeddings, map_location="cpu")
     if not isinstance(h_all, torch.Tensor):
         h_all = h_all["h_all"]

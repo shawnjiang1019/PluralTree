@@ -26,8 +26,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from retrieval.scout import (ScoredFork, ScoutConfig, describe_node,
-                            node_relevance, random_forks, scout)
+from data.loaders.graphs import DATASETS, load_graph
+from retrieval.scout import (ScoredFork, ScoutConfig, describe_node, flat_forks,
+                            node_relevance, random_forks, scout, selection_stats)
 
 # Condition -> ScoutConfig overrides. baseline = no retrieval at all;
 # div_only ablates the relevance guards (old pure-divergence scout).
@@ -55,6 +56,21 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #        isolates fork CONTENT from draft VARIANCE. See
     #        docs/random_fork_control.md -- if this ties merge_v2, the graph is a
     #        randomizer and the retrieval contribution does not exist.
+    "merge_v2_divrand": ScoutConfig(tau=0.25, alpha=1.0, pair_select="random"),
+    #        SELECTION ablation: merge_v2 with the Wasserstein fork choice
+    #        replaced by a uniform draw over the SAME candidate pairs (same
+    #        graph, anchors, gate, render, merge path). Nothing extrinsic
+    #        currently tests the divergence scout -- link-prediction MRR 0.456
+    #        validates the embedding as a KG model, not the fork choice as a
+    #        coverage mechanism. If this ties merge_v2, max-W selection is not
+    #        what the retrieval contributes. Volume- and path-matched by
+    #        construction (scout.rank_key), unlike merge_v2_rand's first version.
+    "merge_v2_flat": ScoutConfig(tau=0.25, alpha=1.0),  # HIERARCHY ablation:
+    #        no anchor, no descent, no child subtrees -- the most
+    #        question-similar opinion leaves, paired into pseudo-forks
+    #        (scout.flat_forks). Same fork count, same rendered block shape, same
+    #        merge path, so a merge_v2 win over this arm is the tree's
+    #        contribution and nothing else.
     "merge_v2_sem": ScoutConfig(tau=0.25, alpha=1.0),  # merge_v2 + the SEMANTIC
     #        retention guard. A separate condition, not a change to merge_v2:
     #        v10/v11/v12 were all scored under the structural-only guard, and
@@ -233,10 +249,17 @@ INSTRUCTION_BY_CONDITION: dict[str, str] = {
 # Conditions that make MULTIPLE generation calls (draft A, draft B, then merge)
 # instead of one. Handled by _merge_answer*(), not the single-call path.
 MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
-                                   "merge_v2_rand", "merge_v2_sem"}
+                                   "merge_v2_rand", "merge_v2_sem",
+                                   "merge_v2_divrand", "merge_v2_flat"}
 
 # Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
 RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
+
+# Conditions that skip the tree entirely and retrieve opinion leaves by
+# similarity (scout.flat_forks). The retrieval FUNCTION changes; everything
+# after it -- render, drafts, merge, guard -- is merge_v2's, so the arm isolates
+# the hierarchy rather than the pipeline.
+FLAT_RETRIEVAL_CONDITIONS: set[str] = {"merge_v2_flat"}
 
 
 @dataclass(frozen=True)
@@ -442,7 +465,14 @@ def spectrum_leaves(fork, graph, max_subgroups: int = 8) -> list[int]:
     Extracted from fork_context_full so persona selection picks its subgroups
     from the SAME ordering the distributional render shows, rather than
     re-deriving a second, silently-different axis.
+
+    A fork that carries its own ``spectrum`` (flat_forks, which has no anchor
+    children to read) uses it verbatim: otherwise merge_v2_flat's third draft
+    would fall back to the 2-pole block while merge_v2's rendered the full
+    spectrum, confounding the hierarchy test with the prompt format.
     """
+    if getattr(fork, "spectrum", None):
+        return list(fork.spectrum)[:max_subgroups]
     leaves = list(dict.fromkeys(
         c for c in graph.children_indices[fork.anchor]
         if _leaf_vec(graph, c) is not None))
@@ -1038,7 +1068,11 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
 
         {"raw": full generation, "think": extracted <think> span,
          "fork_context": the injected fork blocks ('' for baseline/no-forks),
-         "n_forks": how many forks were injected}
+         "n_forks": how many forks were injected,
+         "pair_select": the selection manipulation check (mode, n_forks, mean_w,
+             mean_relevance, anchors, anchor_pool, n_candidates, pool_mean_w) --
+             present for every retrieved condition, so merge_v2_divrand can be
+             checked against merge_v2's own maxw numbers}
 
     so retrieval -> triage -> answer is observable end to end.
     """
@@ -1046,9 +1080,22 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
 
     cfg = cfg if cfg is not None else CONDITIONS[condition]
     forks = None
+    sel_stats = None
     if cfg is not None:
-        forks = scout(question, graph, h_all, text_feat, manifold,
-                      cfg=cfg, q_emb=q_emb)
+        flat = condition in FLAT_RETRIEVAL_CONDITIONS
+        retrieve = flat_forks if flat else scout
+        pool: dict = {}
+        forks = retrieve(question, graph, h_all, text_feat, manifold,
+                         cfg=cfg, q_emb=q_emb, stats=pool)
+        # The divrand manipulation check, emitted for EVERY retrieved condition
+        # so merge_v2 supplies its own maxw reference: the comparison
+        # (mean_w_random < mean_w_maxw at matched n_forks and unchanged
+        # relevance) is then computable from the responses file alone, with no
+        # re-run. check_random_fork.py cannot serve here -- it asserts the
+        # forks are LESS RELEVANT, which is true of merge_v2_rand's unrelated
+        # anchor and false by construction of a same-anchor pair swap.
+        sel_stats = selection_stats(forks, "flat" if flat else cfg.pair_select,
+                                    pool)
         if not forks:
             print(f"warning: scout returned 0 forks (tau={cfg.tau}) — "
                   f"baseline prompt used for: {question[:60]}", file=sys.stderr)
@@ -1072,8 +1119,11 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
 
     def _pack(ans: str, raw: str):
         if with_trace:
-            return ans, {"raw": raw, "think": extract_think(raw),
-                         "fork_context": ctx, "n_forks": len(forks or [])}
+            trace = {"raw": raw, "think": extract_think(raw),
+                     "fork_context": ctx, "n_forks": len(forks or [])}
+            if sel_stats is not None:
+                trace["pair_select"] = sel_stats
+            return ans, trace
         return (ans, raw) if with_raw else ans
 
     if dry_run:
@@ -1084,14 +1134,18 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             merged, parts = _persona_merge_answer(
                 question, forks, graph, base_url, model,
                 merge_cfg or MergeConfig(), chat_fn)
-        elif condition in ("merge_v2", "merge_v2_rand", "merge_v2_sem"):
+        elif condition in ("merge_v2", "merge_v2_rand", "merge_v2_sem",
+                           "merge_v2_divrand", "merge_v2_flat"):
             # merge_v2_rand belongs HERE, not in the `else`. It fell through to
             # _merge_answer (merge v1: two drafts, no guard, no fallback) for
             # every run up to and including v12, so the "control" differed from
             # merge_v2 in the MERGE ALGORITHM as well as in fork content and
             # fork count. Three confounds, not one -- the v12 tie (0.5440 vs
             # 0.5309) and the inverted union gain (+0.0389 vs +0.0773) cannot be
-            # read as evidence about fork content.
+            # read as evidence about fork content. merge_v2_divrand and
+            # merge_v2_flat are listed for the same reason: an ablation that
+            # runs a different merge algorithm than its reference measures the
+            # merge, not the component it names.
             merged, parts = _merge_answer_v2(
                 question, forks, graph, base_url, model, full_dist,
                 merge_cfg or MergeConfig(), chat_fn,
@@ -1117,6 +1171,8 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
                     trace[k] = parts[k]
             if rand_stats is not None:
                 trace["random_fork"] = rand_stats
+            if sel_stats is not None:
+                trace["pair_select"] = sel_stats
             return merged, trace
         return (merged, parts["raw_merge"]) if with_raw else merged
     chat_fn = chat_fn or chat
@@ -1285,6 +1341,7 @@ def _selftest() -> None:
     _persona_selftest()
     _selftest_random_fork()
     _semantic_guard_selftest()
+    _ablation_selftest()
     print("merge_v2 self-test OK")
     print(f"  lossless  : {s_good['merged_words']}w/{s_good['merged_positions']}pos "
           f"vs longest draft {s_good['max_draft_words']}w/"
@@ -1293,6 +1350,106 @@ def _selftest() -> None:
           f"{s_short['merged_positions']}pos -> FALLBACK (short)")
     print(f"  collapsed : {s_wall['merged_words']}w/{s_wall['merged_positions']}pos "
           f"-> FALLBACK (positions; a length-only guard passes this)")
+
+
+def _ablation_selftest() -> None:
+    """merge_v2_divrand and merge_v2_flat must differ from merge_v2 in ONE thing.
+
+    Both are extrinsic tests of a component nothing else validates -- the fork
+    SELECTION and the HIERARCHY. An ablation that also moves fork count, block
+    shape, or the merge algorithm answers a different question than its name
+    claims, which is exactly how merge_v2_rand wasted v9-v12 (1.00 forks/row vs
+    4.85, and merge v1 instead of v2). So volume, render and dispatch are
+    asserted here, offline, rather than discovered in the scores.
+    """
+    from retrieval.scout import _toy_graph
+
+    g, h, feat, q, _leaves = _toy_graph(n_anchors=5, n_kids=8)  # 40 opinion leaves
+
+    def run(cond):
+        return answer("which fork helps?", cond, graph=g, h_all=h,
+                      text_feat=feat, manifold=None, q_emb=q, dry_run=True,
+                      with_trace=True)[1]
+
+    t_max, t_rnd, t_flat = run("merge_v2"), run("merge_v2_divrand"), run("merge_v2_flat")
+
+    # 1. VOLUME. Same fork count in all three arms; the divergence ablation also
+    #    draws from the same anchors, so only the choice among pairs moved.
+    assert t_max["n_forks"] == t_rnd["n_forks"] == CONDITIONS["merge_v2"].top_k, \
+        (t_max["n_forks"], t_rnd["n_forks"])
+    assert t_flat["n_forks"] == t_max["n_forks"], (t_flat["n_forks"], t_max["n_forks"])
+
+    # 2. NOT INERT. Different pairs, or the arm measures nothing.
+    assert t_rnd["fork_context"] != t_max["fork_context"], \
+        "divrand selected the same pairs as maxw"
+
+    # 2b. MANIPULATION CHECK, emitted per row so it is computable offline.
+    #     Same anchor POOL (the search is unchanged), strictly lower mean W (a
+    #     uniform draw cannot beat the argmax; equal means the ablation did
+    #     nothing), and relevance essentially unchanged -- the last is where
+    #     check_random_fork.py's "must be LESS relevant" assertion would be
+    #     false here, since the anchor is the same one.
+    s_max, s_rnd = t_max["pair_select"], t_rnd["pair_select"]
+    assert (s_max["mode"], s_rnd["mode"]) == ("maxw", "random"), (s_max, s_rnd)
+    assert s_max["anchor_pool"] == s_rnd["anchor_pool"], "anchor pool moved"
+    assert s_max["n_candidates"] == s_rnd["n_candidates"], "candidate pool moved"
+    assert s_rnd["mean_w"] < s_max["mean_w"], (s_rnd["mean_w"], s_max["mean_w"])
+    assert abs(s_rnd["mean_relevance"] - s_max["mean_relevance"]) < 0.05, \
+        (s_rnd["mean_relevance"], s_max["mean_relevance"])
+    # The SELECTED anchors may legitimately differ (maxw concentrates where the
+    # widest pairs are), so an analysis comparing those sets would be reading
+    # noise -- anchor_pool is the field that tests "same search".
+    assert t_flat["pair_select"]["mode"] == "flat", t_flat["pair_select"]
+    assert t_flat["pair_select"]["anchor_pool"] == [], "flat used anchors"
+
+    # 3. REPRODUCIBLE. Same question + same seed -> byte-identical injection.
+    assert run("merge_v2_divrand")["fork_context"] == t_rnd["fork_context"], \
+        "divrand is not reproducible"
+
+    # 4. RENDER. Flat forks must go through the unchanged renderer, in both
+    #    modes, at a comparable length -- a shorter block would confound the
+    #    hierarchy test with prompt volume.
+    f_flat = flat_forks("which fork helps?", g, h, feat, None,
+                        cfg=CONDITIONS["merge_v2_flat"], q_emb=q)
+    f_max = scout("which fork helps?", g, h, feat, None,
+                  cfg=CONDITIONS["merge_v2"], q_emb=q)
+    n_flat = len(forks_to_context(f_flat, g, False))
+    n_max = len(forks_to_context(f_max, g, False))
+    assert forks_to_context(f_flat, g, True), "full_dist render came back empty"
+    # Loose bound because the TOY graph flatters merge_v2: its branch nodes are
+    # internal (one short line each), while on opinionqa they are opinion leaves
+    # rendered as full distributions -- the same long lines flat emits. The
+    # measured gap here (~1.8x) is the fixture, not the condition.
+    assert 0.5 <= n_flat / n_max <= 2.0, (n_flat, n_max)
+    # full_dist must not silently degrade to the 2-pole block for flat forks
+    assert (forks_to_context(f_flat, g, True)
+            != forks_to_context(f_flat, g, False)), "flat spectrum ignored"
+
+    # 5. DISPATCH. Both must reach _merge_answer_v2 (MERGE_INSTRUCTION_V2 +
+    #    n_drafts drafts), not merge v1's two-draft, unguarded path.
+    cfg = MergeConfig(n_drafts=3)
+    for cond in ("merge_v2_divrand", "merge_v2_flat"):
+        assert cond in MULTI_PASS_CONDITIONS, cond
+        seen = []
+
+        def _chat(base_url, model, messages, **kw):
+            seen.append(messages[0]["content"])
+            return "<answer>" + ("word " * 200) + "</answer>"
+
+        out, trace = answer("which fork helps?", cond, graph=g, h_all=h,
+                            text_feat=feat, manifold=None, q_emb=q,
+                            with_trace=True, merge_cfg=cfg, chat_fn=_chat)
+        assert sum(1 for c in seen if c == MERGE_INSTRUCTION_V2) == 1, seen
+        assert not any(c == MERGE_INSTRUCTION for c in seen), f"{cond} ran merge v1"
+        assert len(seen) == cfg.n_drafts + 1, (cond, len(seen))
+        assert "merge_stats" in trace and out.strip(), (cond, trace.keys())
+
+    print(f"  ablations : divrand {t_rnd['n_forks']} forks = merge_v2's "
+          f"{t_max['n_forks']}, mean W {s_rnd['mean_w']:.3f} < {s_max['mean_w']:.3f} "
+          f"at rel {s_rnd['mean_relevance']:.3f} vs {s_max['mean_relevance']:.3f} "
+          f"over the same {s_max['n_candidates']} candidates; flat "
+          f"{t_flat['n_forks']} forks, {n_flat}c vs {n_max}c rendered; both -> "
+          f"_merge_answer_v2 ({cfg.n_drafts} drafts + 1 merge)")
 
 
 def _semantic_guard_selftest() -> None:
@@ -1371,7 +1528,7 @@ def _main():
                     help="exercise the merge_v2 guard with a stub endpoint")
     ap.add_argument("--condition", choices=sorted(CONDITIONS), default="scout")
     ap.add_argument("--embeddings", default=None, help=".pt of h_all on the ball")
-    ap.add_argument("--dataset", choices=["globalopinionqa", "opinionqa"],
+    ap.add_argument("--dataset", choices=list(DATASETS),
                     default="globalopinionqa")
     ap.add_argument("--curvature", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=0)
@@ -1421,12 +1578,8 @@ def _main():
         from pluraltree.manifolds.poincare import PoincareBall
         from retrieval.scout import load_or_compute_text_feat
 
-        if args.dataset == "opinionqa":
-            from data.loaders.opinionqa import load_opinionqa
-            graph = load_opinionqa(split_seed=args.seed, leakage_safe=True)
-        else:
-            from data.loaders.globalopinionqa import load_globalopinionqa
-            graph = load_globalopinionqa(split_seed=args.seed, leakage_safe=True)
+        graph = load_graph(args.dataset, split_seed=args.seed,
+                           leakage_safe=True)
         h_all = torch.load(args.embeddings, map_location="cpu")
         if not isinstance(h_all, torch.Tensor):
             h_all = h_all["h_all"]
