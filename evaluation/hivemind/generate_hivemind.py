@@ -68,13 +68,17 @@ def main():
     args = ap.parse_args()
 
     from data.loaders.infinity_chat import load_hivemind_queries
-    from retrieval.answer import CONDITIONS, chat, extract_answer
+    from retrieval.answer import (CONDITIONS, MULTI_PASS_CONDITIONS, answer,
+                                  chat, extract_answer)
 
     conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
     unknown = [c for c in conditions if c not in CONDITIONS]
     if unknown:
         ap.error(f"unknown conditions {unknown}; choose from {sorted(CONDITIONS)}")
     injected = [c for c in conditions if CONDITIONS[c] is not None]
+    multi_pass = [c for c in conditions if c in MULTI_PASS_CONDITIONS]
+    if multi_pass:
+        print(f"  multi-pass conditions (full pipeline per sample): {multi_pass}")
 
     graph = h_all = text_feat = manifold = None
     if injected:
@@ -119,8 +123,45 @@ def main():
             prompts = _build_prompts(question, conditions, graph, h_all,
                                      text_feat, manifold, args)
             for cond in conditions:
-                messages, is_inj = prompts[cond]
                 start = have.get((qid, cond), 0)
+
+                # --- multi-pass: the whole pipeline, once per SAMPLE ---------
+                # merge_v2 makes 3 draft calls + a merge call, so there is no
+                # single prompt to cache. n_forks comes off the trace: with 0
+                # forks a merge condition keeps only its uninjected draft and is
+                # byte-identical to baseline, and on INFINITY-CHAT that is 29% of
+                # queries (anchor_cov 2728265: 71/100 resolved). Those rows are
+                # baseline clones and MUST be excluded before comparing arms, the
+                # way persona_merge's 21 zero-persona rows had to be.
+                if cond in multi_pass:
+                    if args.dry_run:
+                        if start == 0:
+                            txt = answer(question, cond, graph=graph, h_all=h_all,
+                                         text_feat=text_feat, manifold=manifold,
+                                         dry_run=True)
+                            f.write(json.dumps({
+                                "query_id": qid, "category": category,
+                                "condition": cond, "sample_idx": -1,
+                                "response": txt, "raw": "", "n_forks": 0}) + "\n")
+                        continue
+                    for i in range(start, args.num_samples):
+                        resp, trace = answer(
+                            question, cond, graph=graph, h_all=h_all,
+                            text_feat=text_feat, manifold=manifold,
+                            base_url=args.base_url, model=args.model,
+                            with_trace=True)
+                        f.write(json.dumps({
+                            "query_id": qid, "category": category,
+                            "condition": cond, "sample_idx": i,
+                            "response": resp, "raw": trace.get("raw", ""),
+                            "n_forks": trace.get("n_forks", 0)}) + "\n")
+                        f.flush()
+                    print(f"  Q{qid} [{cond}] {args.num_samples} samples "
+                          f"(multi-pass)")
+                    continue
+
+                # --- single-pass: cached prompt, sampler varies --------------
+                messages, is_inj, n_forks = prompts[cond]
                 if args.dry_run:
                     if start == 0:
                         f.write(json.dumps({
@@ -128,7 +169,7 @@ def main():
                             "condition": cond, "sample_idx": -1,
                             "response": "\n\n".join(
                                 f"<{m['role']}>\n{m['content']}" for m in messages),
-                            "raw": ""}) + "\n")
+                            "raw": "", "n_forks": n_forks}) + "\n")
                     continue
                 cap = 4096 if is_inj else args.max_tokens
                 for i in range(start, args.num_samples):
@@ -138,21 +179,32 @@ def main():
                     resp = extract_answer(raw)[0] if is_inj else raw
                     f.write(json.dumps({
                         "query_id": qid, "category": category, "condition": cond,
-                        "sample_idx": i, "response": resp, "raw": raw}) + "\n")
+                        "sample_idx": i, "response": resp, "raw": raw,
+                        "n_forks": n_forks}) + "\n")
                     f.flush()
                 print(f"  Q{qid} [{cond}] {args.num_samples} samples")
 
 
 def _build_prompts(question, conditions, graph, h_all, text_feat, manifold, args):
-    """{condition: (messages, is_injected)} — forks computed once per query."""
-    from retrieval.answer import CONDITIONS, build_prompt
+    """{condition: (messages, is_injected, n_forks)} — forks computed once.
+
+    SINGLE-PASS CONDITIONS ONLY. A multi-pass condition (merge_v2 and friends)
+    makes several generation calls per sample and cannot reuse a cached prompt,
+    so it is dispatched through retrieval.answer.answer() in the loop instead.
+    Building a prompt for one here and sampling it once would silently produce
+    the SCOUT condition under merge_v2's name -- no drafts, no merge, no guard --
+    and the run would complete and yield a plausible diversity table.
+    """
+    from retrieval.answer import CONDITIONS, MULTI_PASS_CONDITIONS, build_prompt
     from retrieval.scout import ScoutConfig, scout
 
-    out: dict[str, tuple[list[dict], bool]] = {}
+    out: dict[str, tuple[list[dict], bool, int]] = {}
     for cond in conditions:
+        if cond in MULTI_PASS_CONDITIONS:
+            continue                                 # handled per-sample below
         base = CONDITIONS[cond]
         if base is None:                             # baseline: no retrieval
-            out[cond] = (build_prompt(question, None, graph), False)
+            out[cond] = (build_prompt(question, None, graph), False, 0)
             continue
         cfg = base
         if cond == "scout" and args.tau is not None:
@@ -161,7 +213,8 @@ def _build_prompts(question, conditions, graph, h_all, text_feat, manifold, args
         if not forks:
             print(f"  warning: 0 forks (tau={cfg.tau}) — baseline prompt for "
                   f"[{cond}]: {question[:60]}", file=sys.stderr)
-        out[cond] = (build_prompt(question, forks, graph), bool(forks))
+        out[cond] = (build_prompt(question, forks, graph), bool(forks),
+                     len(forks or []))
     return out
 
 

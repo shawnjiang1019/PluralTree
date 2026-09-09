@@ -61,11 +61,28 @@ TP="${TP:-4}"
 VLLM="${VLLM:-vllm}"
 echo "MODEL=${MODEL} CONDS=${CONDS} NS=${NS} NQ=${NQ} DATASET=${DATASET}"
 
-# baseline-only runs need no embeddings; pass them only for injected conditions.
+# Which conditions need retrieval is a property of retrieval.answer.CONDITIONS,
+# not of their names. The old glob matched only *scout*/*div_only*, so merge_v2 --
+# and every condition added since -- ran without --embeddings and generate_hivemind
+# rejected it at argparse ("conditions ['merge_v2'] need --embeddings"), which is
+# how job 2701636 died. Ask the source of truth instead, the same way the driver
+# does (`injected = [c for c in conditions if CONDITIONS[c] is not None]`).
 EMB_ARGS=""
-case "${CONDS}" in
-  *scout*|*div_only*) EMB_ARGS="--embeddings ${EMB} --text_feat ${FEATS} --dataset ${DATASET} --tau ${TAU}";;
-esac
+if python -c "
+import sys
+sys.path.insert(0, '.')
+from retrieval.answer import CONDITIONS
+cs = [c.strip() for c in '${CONDS}'.split(',') if c.strip()]
+unknown = [c for c in cs if c not in CONDITIONS]
+if unknown:
+    print('unknown conditions %s' % unknown, file=sys.stderr)
+    sys.exit(2)
+sys.exit(0 if any(CONDITIONS[c] is not None for c in cs) else 1)"; then
+    EMB_ARGS="--embeddings ${EMB} --text_feat ${FEATS} --dataset ${DATASET} --tau ${TAU}"
+    echo "injected conditions present -> passing ${EMB} / ${FEATS}"
+elif [ $? -eq 2 ]; then
+    echo "CONDS contains a condition retrieval.answer does not define"; exit 1
+fi
 
 "${VLLM}" serve "${MODEL}" --port "${PORT}" --tensor-parallel-size "${TP}" \
     --max-model-len 8192 > logs/vllm_${SLURM_JOB_ID}.log 2>&1 &
