@@ -834,6 +834,30 @@ def _merge_budget(prompt_text: str, cfg: MergeConfig) -> int:
     return max(512, min(cfg.merge_max_tokens, room))
 
 
+def _msgs_text(msgs) -> str:
+    return "\n".join(m.get("content", "") for m in msgs)
+
+
+def _draft_budget(msgs, want: int, cfg: MergeConfig) -> int:
+    """Completion tokens for a DRAFT call, or 0 when the prompt leaves no room.
+
+    The draft calls used a FIXED max_tokens (4096 injected / 2048 plain) while
+    only the merge call sized itself from its prompt. vLLM rejects
+    prompt + max_tokens > max_model_len with a bare HTTP 400, so a long fork
+    block killed the whole run: job 2652728 died on a 4097-token prompt asking
+    for 4096 output against an 8192 window. merge_v2_flat renders more subgroup
+    lines than merge_v2 and is what first pushed a prompt over, but the bug was
+    always there -- any question with a wide anchor could trigger it.
+
+    Returns 0 rather than a doomed request when the prompt alone leaves under
+    512 tokens: the caller SKIPS that draft and merges the rest, which is the
+    same choice made everywhere else here -- omit a row instead of writing a
+    bad one.
+    """
+    room = cfg.max_model_len - (len(_msgs_text(msgs)) // 4) - cfg.token_slack
+    return 0 if room < 512 else max(512, min(want, room))
+
+
 def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
                  cfg: MergeConfig = MergeConfig(), chat_fn=None,
                  labels: list[str] | None = None, embed_fn=None) -> tuple[str, dict]:
@@ -950,7 +974,14 @@ def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str
         msgs = [{"role": "system", "content": PERSONA_INSTRUCTION},
                 {"role": "user", "content": persona_context(graph, leaf, k)
                  + "\n\nQuestion: " + question}]
-        raw = chat_fn(base_url, model, msgs, temperature=0.7, max_tokens=2048)
+        # Sized against the prompt, same reason as _merge_answer_v2: a wide
+        # anchor's persona_context is long enough to 400 a fixed request.
+        budget = _draft_budget(msgs, 2048, cfg)
+        if budget == 0:
+            print(f"warning: persona{k} prompt leaves no room -- skipping it "
+                  f"for: {question[:60]}", file=sys.stderr)
+            continue
+        raw = chat_fn(base_url, model, msgs, temperature=0.7, max_tokens=budget)
         text, _ = extract_answer(raw)
         if text.strip():
             drafts.append(text.strip()); labels.append(f"persona{k}")
@@ -983,9 +1014,15 @@ def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
         msgs = build_prompt(question, forks if needs_forks else None, graph,
                             instruction, fd)
         # 2048 plain / 4096 injected: injected drafts also spend tokens on the
-        # <think> triage span (at 2048, ~58% lost their closing tag).
-        raw = chat_fn(base_url, model, msgs, temperature=0.7,
-                      max_tokens=4096 if needs_forks else 2048)
+        # <think> triage span (at 2048, ~58% lost their closing tag). Sized
+        # against the actual prompt -- a fixed value 400s on a long fork block.
+        budget = _draft_budget(msgs, 4096 if needs_forks else 2048, cfg)
+        if budget == 0:
+            print(f"warning: {label} draft prompt leaves no room "
+                  f"({len(_msgs_text(msgs)) // 4} tok est) -- skipping it for: "
+                  f"{question[:60]}", file=sys.stderr)
+            continue
+        raw = chat_fn(base_url, model, msgs, temperature=0.7, max_tokens=budget)
         # extract unconditionally: the plain draft has no tags to strip, but a
         # model that emits them anyway must not leak tag literals into the merge
         text, _ = extract_answer(raw)
