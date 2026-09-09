@@ -40,14 +40,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 _SITUATION = ("situation", "action", "scenario", "context", "prompt", "query")
 _TEXT = ("text", "value", "vrd_text", "statement", "title", "value_text")
-_VRD = ("vrd", "type", "category", "kind", "vrd_type")
+_VRD = ("vrd_type", "type", "category", "kind")
 _VALENCE = ("valence", "stance", "polarity", "support")
 _SID = ("situation_id", "sid", "id", "qid", "question_id")
+
+# VITAL (github.com/anudeex/VITAL, ACL 2025) ships ONE RECORD PER SITUATION with
+# the values packed as a parallel list, where ValuePrism proper is long-format
+# (one row per situation-value). Verified shape of
+# vital_overton_valuekaleidoscope.json: 1,649 records, every one keyed
+# {situation, vrd, explanation, input, output, id}, mean 7.25 values each.
+#
+# Use it over raw ValuePrism: same underlying ValueKaleidoscope situations, but
+# MIT-licensed in a plain GitHub repo rather than behind a HuggingFace gate, and
+# already filtered. Take ONLY the overton file -- vital_steerable_opinionqa.json
+# is Pew ATP and vital_distributional_globalopinionqa.json is Pew Global, i.e.
+# this project's own graph source. Evaluating on those is contamination, not
+# transfer.
+_LIST_VALUES = ("vrd", "values", "value_list", "vrds")
+_LIST_EXPL = ("explanation", "explanations", "rationale", "rationales")
+_PROMPT = ("input", "prompt_text", "instruction")
 
 # ValuePrism situations are DECLARATIVE ("Telling a white lie to spare feelings").
 # Both the scout (which embeds a question) and the generator (which answers one)
 # expect an interrogative, so the situation is wrapped. Keep this fixed across
-# the gate check and the eval or the two measure different strings.
+# the gate check and the eval or the two measure different strings. VITAL ships
+# its own `input` template and that one wins when present -- using theirs keeps
+# the generation register comparable to anything else published on VITAL.
 DEFAULT_TEMPLATE = ("Some people face this situation: {situation}\n"
                     "What considerations matter here, and how do people differ "
                     "on them?")
@@ -58,6 +76,46 @@ def _first(row: dict, names):
         if n in row and str(row[n]).strip() not in ("", "None", "nan"):
             return row[n]
     return None
+
+
+def expand_list_records(rows: list[dict]) -> list[dict]:
+    """VITAL's one-record-per-situation shape -> long format. Pass-through else.
+
+    The target text is the value label JOINED WITH ITS EXPLANATION, not the label
+    alone. "Public health" is two words; nothing downstream can match a two-word
+    string against an answer by cosine, and that is exactly why 53% of the
+    position-statement artifact -- bare "<question> <option>" strings -- bought
+    the reward nothing. The explanation sentence is what makes a value scorable.
+
+    The lists are parallel and same-length in the shipped file; a short or
+    missing explanation list degrades to the bare label rather than raising,
+    because one malformed record should not cost the other 1,648.
+    """
+    if not rows or not isinstance(_first(rows[0], _LIST_VALUES), list):
+        return rows                                   # already long-format
+    out = []
+    for i, r in enumerate(rows):
+        vals = _first(r, _LIST_VALUES) or []
+        expl = _first(r, _LIST_EXPL) or []
+        if not isinstance(expl, list):
+            expl = []
+        sid = _first(r, _SID)
+        for j, v in enumerate(vals):
+            label = str(v).strip()
+            if not label:
+                continue
+            why = str(expl[j]).strip() if j < len(expl) else ""
+            out.append({
+                "situation": _first(r, _SITUATION),
+                "situation_id": sid if sid is not None else i,
+                # what gets embedded and matched
+                "text": f"{label} — {why}" if why else label,
+                "label": label,
+                "vrd_type": "", "valence": "",
+                "prompt": _first(r, _PROMPT) or "",
+            })
+    print(f"  expanded {len(rows)} list-form records -> {len(out)} rows")
+    return out
 
 
 def _rows(path: str) -> list[dict]:
@@ -90,7 +148,7 @@ def load_situations(path: str, *, min_values: int = 2,
     of a one-element target is a coin flip and would only add noise, the same
     reason persona_merge's <3-leaf anchors had to be excluded.
     """
-    rows = _rows(path)
+    rows = expand_list_records(_rows(path))
     if not rows:
         raise ValueError(f"{path} is empty")
 
@@ -112,13 +170,16 @@ def load_situations(path: str, *, min_values: int = 2,
             continue
         rec = by_sit.setdefault(sit, {
             "situation_id": str(_first(r, _SID) or len(by_sit)),
-            "situation": sit, "values": [], "_seen": set()})
+            "situation": sit, "values": [], "_seen": set(),
+            # VITAL ships its own instruction; questions_only prefers it
+            "prompt": str(r.get("prompt") or "")})
         t = str(txt).strip()
         if t in rec["_seen"]:                  # the same value can repeat per row
             continue
         rec["_seen"].add(t)
         rec["values"].append({
             "text": t,
+            "label": str(r.get("label") or t),
             "vrd": str(_first(r, _VRD) or ""),
             "valence": str(_first(r, _VALENCE) or "")})
 
@@ -146,7 +207,12 @@ def questions_only(situations, out_path: str,
     seen, n = set(), 0
     with open(out_path, "w", encoding="utf-8") as f:
         for s in situations:
-            q = template.format(situation=s["situation"]).strip()
+            # Their template, when the file has one: VITAL items are
+            # 7-word action phrases, not questions, and using the shipped
+            # instruction keeps the generation register comparable to
+            # anything else published on that benchmark.
+            own = (s.get("prompt") or "").strip()
+            q = own or template.format(situation=s["situation"]).strip()
             if not q or q in seen:
                 continue
             seen.add(q)
@@ -203,7 +269,41 @@ def _selftest() -> None:
         assert "available keys" in str(e) and "bar" in str(e), str(e)
     else:
         raise AssertionError("an unknown schema must raise with its keys")
-    print("valueprism loader self-test OK (grouping, dedupe, floor, loud schema)")
+    # --- VITAL shape: one record per situation, values as a parallel list ---
+    v = os.path.join(d, "vital.json")
+    with open(v, "w", encoding="utf-8") as f:
+        json.dump([
+            {"situation": "Resisting vaccine mandates",
+             "vrd": ["Public health", "Individual liberty"],
+             "explanation": ["Mandates protect the wider population.",
+                             "People may object to compelled medical care."],
+             "input": "Please comment on the following situation: Resisting "
+                      "vaccine mandates",
+             "output": None, "id": 0},
+            {"situation": "Wear a helmet on a bicycle",
+             "vrd": ["Safety"], "explanation": ["Helmets reduce head injury."],
+             "input": "Please comment on the following situation: Wear a helmet",
+             "output": None, "id": 1},
+        ], f)
+
+    vs = load_situations(v, min_values=2)
+    assert len(vs) == 1, f"the 1-value situation must be dropped, got {len(vs)}"
+    texts = [x["text"] for x in vs[0]["values"]]
+    assert all(" — " in t for t in texts), \
+        f"target text must join label and explanation, got {texts}"
+    assert texts[0].startswith("Public health"), texts[0]
+    assert [x["label"] for x in vs[0]["values"]] == ["Public health",
+                                                     "Individual liberty"]
+
+    vq = questions_only(vs, os.path.join(d, "vq.jsonl"))
+    with open(vq, encoding="utf-8") as f:
+        got = [json.loads(l) for l in f]
+    assert got[0]["question"].startswith("Please comment on the following"), \
+        f"VITAL's own input template must win over DEFAULT_TEMPLATE: {got[0]}"
+    assert got[0]["n_values"] == 2
+
+    print("valueprism loader self-test OK (grouping, dedupe, floor, loud schema, "
+          "VITAL list-form + shipped prompt)")
 
 
 if __name__ == "__main__":
