@@ -31,6 +31,8 @@ export HF_DATASETS_OFFLINE=1
 export PYTHONUNBUFFERED=1
 # raw-ATP OpinionQA (offline; no SubPOP gate) — see data/loaders/opinionqa.py
 export OPINIONQA_DIR="${OPINIONQA_DIR:-$HOME/projects/def-enaskt/shawnj/data/human_resp}"
+# load_issp reads this; without it DATASET=issp exits immediately.
+export ISSP_DIR="${ISSP_DIR:-$HOME/projects/def-enaskt/shawnj/data/issp}"
 
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 mkdir -p logs

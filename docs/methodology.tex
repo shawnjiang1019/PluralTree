@@ -1,0 +1,349 @@
+% Methodology and problem formulation for PluralTree.
+% Standalone-compilable: pdflatex docs/methodology.tex
+% Numbers cited in remarks are from job logs as of 2026-09-13.
+
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+
+\newcommand{\ball}{\mathbb{B}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\simplex}{\Delta}
+\newcommand{\cov}{\mathrm{Cov}}
+\newcommand{\Wass}{\mathcal{W}}
+\newcommand{\rel}{\mathrm{rel}}
+\newcommand{\topk}{\operatorname{top}\text{-}k}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{PluralTree: Problem Formulation and Methodology}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+%==============================================================================
+\section{Problem formulation}
+%==============================================================================
+
+\subsection{Overton coverage}
+
+Let $x$ be a question on which a population holds several distinct viewpoints.
+Let $W(x) = \{w_1,\dots,w_{m}\}$ be the set of viewpoint clusters that real
+respondents to $x$ hold. A language model $M$ produces a single answer
+$y = M(x)$. We say $y$ \emph{covers} cluster $w$ when a majority of the people
+holding $w$ judge that $y$ represents their view.
+
+\begin{definition}[Overton coverage]
+\label{def:coverage}
+\[
+  \cov(y, x) \;=\; \frac{1}{|W(x)|}\sum_{w \in W(x)} \mathbf{1}\!\left[\,w \in R(y)\,\right],
+  \qquad
+  R(y) = \{\, w \in W(x) : \bar{\rho}_w(y) \ge 4 \,\},
+\]
+where $\bar{\rho}_w(y)$ is the mean 1--5 representation rating of $y$ by
+holders of $w$. The benchmark score is the mean of $\cov$ over questions.
+\end{definition}
+
+Coverage is \emph{unweighted} over clusters: a minority viewpoint counts the
+same as a majority one. This is what distinguishes the construct from
+distributional pluralism, which would weight by prevalence.
+
+\subsection{The single-answer constraint and its decomposition}
+
+The task requires \emph{one} answer. Any system producing $y$ must therefore
+(i) identify the viewpoints, (ii) get them into the generator, and (iii) fit
+them into one response. We name these stages and treat them separately
+throughout, because they fail separately:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+stage & object & diagnostic \\
+\midrule
+\textsc{retrieve} & a set of viewpoint contrasts $F(x)$ & union gain over a no-retrieval answer \\
+\textsc{deliver}  & a conditioning channel for $F(x)$ & coverage with vs.\ without $F(x)$ at fixed $M$ \\
+\textsc{compress} & one $y$ from several drafts & coverage of $y$ vs.\ union of its drafts \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A gain in the final score can originate at any stage; a null can be produced by
+any stage destroying what an earlier one supplied. Every experiment below is
+designed to vary one stage with the other two held fixed.
+
+%==============================================================================
+\section{The viewpoint graph}
+%==============================================================================
+
+\subsection{Structure}
+
+The graph is a rooted tree $T = (V, E)$ built from population survey data. Each
+survey question $q$ is a node; beneath it, one node per demographic
+\emph{axis} (age, party, religion, \dots); beneath each axis, one \emph{opinion
+leaf} $\ell$ per subgroup, carrying that subgroup's empirical answer
+distribution
+\[
+  p_\ell \in \simplex^{m_q - 1}, \qquad \textstyle\sum_o p_\ell(o) = 1,
+\]
+over the $m_q$ options of $q$. Questions are grouped under topic and subtopic
+nodes. In the primary graph (Pew American Trends Panel; 1{,}492 questions, 58
+subpopulations) the topic and subtopic layers are \emph{induced} by $k$-means
+over sentence embeddings of question text; they are not native to the survey.
+This matters for the geometry ablation (\S\ref{sec:ablations}).
+
+\subsection{Embedding}
+
+Every node $v \in V$ is embedded as $\phi(v) \in \ball^d_c$, the Poincar\'e ball
+of curvature $-c$, by a tree-recurrent encoder with gated injection of node
+text features. The embedding is trained on link prediction over the tree's
+edges and reported with structural-fidelity metrics: rank correlation of depth
+with radius, of tree distance with geodesic distance, ancestor-AUC, and a
+sibling-separation ratio. Setting $c = 0$ recovers Euclidean space with the
+same encoder; this is the geometry ablation.
+
+%==============================================================================
+\section{Retrieval: the divergence scout}
+%==============================================================================
+
+Given $x$, the scout returns a small set of \emph{forks}. A fork is a triple
+$(a, u, v)$: an anchor node $a$ and two of its children $u, v$ whose subtrees
+disagree.
+
+\paragraph{Relevance.} Let $e(x)$ be a sentence embedding of $x$ and $t(v)$ the
+same embedding of node $v$'s text. Define $\rel(v) = \cos(e(x), t(v))$.
+
+\paragraph{Anchors.} $A(x)$ is the set of the $n_a$ most relevant internal nodes
+after lexical matching on entities named in $x$.
+
+\paragraph{Gated point clouds.} For a child $u$ of an anchor, let
+$S(u) = \{\, \phi(z) : z \in \mathrm{subtree}(u),\ \rel(z) \ge \tau \,\}$,
+truncated to at most $n_s$ nodes, with a floor of $n_{\min}$ so that a branch
+is never emptied. Each point carries mass
+$\mu_u(z) \propto \exp(\rel(z)/T)$.
+
+\paragraph{Divergence.} For siblings $u, v$ under $a$,
+\[
+  \Wass(u, v) \;=\; \min_{\gamma \in \Pi(\mu_u, \mu_v)}
+  \sum_{z \in S(u)} \sum_{z' \in S(v)} \gamma(z, z')\, d_c\!\big(\phi(z), \phi(z')\big),
+\]
+the optimal-transport distance between the two subtrees' embedding clouds under
+the hyperbolic ground metric $d_c$. Under $c=0$, $d_c$ is Euclidean.
+
+\paragraph{Scoring and selection.} Each candidate pair is scored
+\[
+  s(u, v) \;=\; \max\!\big(\bar{\rel}(u,v),\, 0\big)^{\alpha} \cdot \Wass(u, v),
+  \qquad
+  \bar{\rel}(u,v) = \tfrac12\big(\overline{\rel}(S(u)) + \overline{\rel}(S(v))\big),
+\]
+and the scout returns $F(x) = \topk_{(u,v)} s(u,v)$ over all anchors. Defaults:
+$\tau = 0.25$, $\alpha = 1$, $k = 5$, $n_a = 4$, $n_s = 32$, $T = 0.1$.
+
+\begin{remark}
+Selection is the only place the divergence enters. Everything downstream sees
+$F(x)$ as a set of node triples. The selection ablation therefore replaces
+$s(u,v)$ by a deterministic hash-based uniform rank over the \emph{same}
+candidate pool, so that anchors, gating, fork count and rendering are byte-
+identical and only which pairs survive differs.
+\end{remark}
+
+%==============================================================================
+\section{Delivery: rendering and injection}
+%==============================================================================
+
+Each fork is rendered to text by a fixed function $\rho$: a header naming the
+anchor with its divergence and relevance, the two poles' option texts, and up
+to $n_p$ \emph{driver pairs} $(z, z')$ from the transport plan $\gamma$ with the
+largest $\gamma(z,z')\,d_c$. A \emph{full-spectrum} variant instead renders
+every opinion leaf under the anchor, ordered by projection onto the
+pole-to-pole axis $p_v - p_u$ in distribution space.
+
+The context $\rho(F(x))$ is placed in the prompt with an instruction $I$. The
+model generates a reasoning span, then an answer span; only the answer is
+scored. This is the delivery channel that the CAD experiment
+(\S\ref{sec:cad}) shows to be harmful.
+
+%==============================================================================
+\section{Compression: multi-draft merge}
+%==============================================================================
+
+\label{sec:merge}
+Let $\mathcal{D} = \{(I_i, \beta_i, \sigma_i)\}_{i=1}^{n_d}$ be draft
+specifications: an instruction, whether forks are injected, and whether the
+full-spectrum render is used. The default is
+\[
+  \mathcal{D} = \big\{(\text{plain}, 0, 0),\ (\text{scout}, 1, 0),\ (\text{distributional}, 1, 1)\big\}.
+\]
+Drafts are generated independently,
+\[
+  y_i = M\big(I_i,\ x,\ \beta_i \cdot \rho_{\sigma_i}(F(x))\big),
+\]
+and merged by a single further call
+$\hat y = M(I_{\mathrm{merge}}, x, \{y_i\})$ instructed to keep one paragraph per
+distinct position and drop nothing.
+
+\paragraph{Guard.} The merge is accepted only if it did not compress its
+inputs. With $|\cdot|_w$ word count and $\pi(\cdot)$ the number of paragraphs of
+at least $d_{\min}$ words,
+\[
+  |\hat y|_w \ge \lambda_\ell \max_i |y_i|_w,
+  \qquad
+  \pi(\hat y) \ge \lambda_\pi \max_i \pi(y_i),
+\]
+with $\lambda_\ell = \lambda_\pi = 1$. An optional \emph{semantic} check
+dedupes the drafts' deep units by embedding, then requires that a fraction
+$\ge \lambda_r$ of them have a unit of $\hat y$ within cosine $\theta_r$
+($\lambda_r = 0.8$, $\theta_r = 0.55$). On failure the drafts are concatenated
+under neutral headings, which is lossless in content by construction.
+
+\begin{remark}
+The concatenation fallback is lossless in \emph{text}, not in \emph{judged
+coverage}: the judge rates a response as a whole, and a good draft appended to
+two poor ones is rated as a mostly-poor response. This distinction is what the
+7B scale result exposed.
+\end{remark}
+
+\paragraph{Variants.} \textsc{persona\_merge} keeps $n_d$ and the single merge
+call but conditions drafts 2..$n_d$ on individual subgroup vantage points
+$\ell$ chosen by spreading along the pole-to-pole axis (poles first, then
+widest gap), each told to commit to that view. \textsc{merge\_v2\_rand}
+replaces $F(x)$ with structurally matched forks from an unrelated anchor
+(depth-matched, rendered-length-matched, one per real fork).
+
+%==============================================================================
+\section{Decoding-level interventions}
+%==============================================================================
+
+\label{sec:cad}
+\paragraph{Context-aware decoding.} With $\ell_{\mathrm{ctx}}$ the next-token
+logits under the fork-injected prompt and $\ell_{\emptyset}$ under the same
+instruction with the fork block removed,
+\[
+  \ell_{\mathrm{cad}}(\alpha) \;=\; (1+\alpha)\,\ell_{\mathrm{ctx}} - \alpha\,\ell_{\emptyset}
+  \;=\; \ell_{\emptyset} + (1+\alpha)\,(\ell_{\mathrm{ctx}} - \ell_{\emptyset}).
+\]
+$\alpha$ scales the context's contribution: $\alpha > 0$ amplifies,
+$\alpha \in (-1, 0)$ interpolates toward the no-context model, $\alpha = -1$
+recovers it exactly. In probability space this is the geometric blend
+$p \propto p_{\mathrm{ctx}}^{\,1+\alpha}\, p_{\emptyset}^{-\alpha}$.
+
+\paragraph{Graph-guided G2.} Three streams decode in lockstep: a base stream
+$z$ seeing only $x$, and two guide streams seeing prior answers, one told to
+diverge and one to replicate. With $H$ the entropy of $\mathrm{softmax}(z)$,
+\[
+  \ell = z + \alpha_t\,(z^{+} - z^{-}), \qquad
+  \alpha_t = \theta\cdot \mathbf{1}[H(z) \ge \beta].
+\]
+The graph variant replaces the generic ``diverge'' instruction with a named
+subgroup vantage point from $F(x)$. The forks never enter the base stream; they
+contribute a direction, not text.
+
+%==============================================================================
+\section{Ablations and controls}
+%==============================================================================
+
+\label{sec:ablations}
+Each ablation changes exactly one term of the pipeline above.
+
+\begin{center}\small
+\begin{tabular}{@{}llp{4.6cm}p{4.2cm}@{}}
+\toprule
+name & stage & what varies & what is held fixed \\
+\midrule
+geometry $c \in \{0.5, 0\}$ & retrieve & ground metric $d_c$, encoder curvature & training config, seed, $\mathcal{D}$, judge \\
+\textsc{divrand} & retrieve & rank key $s \to$ uniform hash & anchors, gate, $k$, $\rho$, merge \\
+\textsc{flat} & retrieve & no tree: leaves ranked by $\rel$ alone, gated at $\tau$ & $k$, driver count, $\rho$, merge \\
+\textsc{rand} & retrieve & fork \emph{content} (unrelated anchor) & fork count, depth, length, merge \\
+CAD $\alpha$ & deliver & context influence & prompt, sampler, RNG stream \\
+scale $7$B vs $72$B & deliver & generator & questions, $\mathcal{D}$ \\
+\textsc{sem} guard & compress & semantic check on/off & drafts, structural guard \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Manipulation checks.} An ablation whose arms do not actually differ
+yields a plausible table that means nothing. Every retrieved condition therefore
+records per row its selection mode, fork count, mean $\Wass$ over selected
+forks, mean relevance, and the anchor pool examined. \textsc{divrand} is valid
+only if its fork count equals the reference's and its mean $\Wass$ is strictly
+lower (the reference takes the argmax). \textsc{rand} is valid only if fork
+counts match and relevance is lower. \textsc{flat} is valid only if it abstains
+on the same questions the reference abstains on. These are asserted by a job
+that gates every full run.
+
+%==============================================================================
+\section{Evaluation protocol}
+%==============================================================================
+
+\paragraph{Score.} OvertonScore as in Definition~\ref{def:coverage}, with an LLM
+judge predicting each participant's rating; $\bar\rho_w$ is the mean predicted
+rating over the participants in $w$. The judge is validated against held-out
+human ratings for \emph{ranking} reference systems; its per-cluster agreement
+is not established, which bounds every within-question comparison below.
+
+\paragraph{Paired comparison.} For conditions $c_1, c_2$ on shared questions
+$Q$, the estimand is
+\[
+  \bar\delta = \frac{1}{|Q|}\sum_{x \in Q}
+  \big[\cov(y_{c_1}(x), x) - \cov(y_{c_2}(x), x)\big],
+\]
+with a 95\% interval and two-sided $p$ from a 10{,}000-draw bootstrap over
+\emph{questions}. Because resampling is
+over questions, additional rollouts per question reduce within-question noise
+only; between-question heterogeneity sets the floor on interval width.
+
+\paragraph{Difference of differences.} For an ablation with arms $g_1, g_2$,
+$\Delta\Delta = \bar\delta_{g_1} - \bar\delta_{g_2}$ bootstrapped over the same
+questions. Two arms that are individually significant and non-significant
+against baseline have \emph{not} thereby been shown to differ.
+
+\paragraph{Union, oracle, gain.} With $R_c(x)$ the covered set under condition
+$c$:
+\begin{align*}
+  \mathrm{union}(x)  &= \Big|\textstyle\bigcup_c R_c(x)\Big| \big/ |W(x)|, \
+  \mathrm{oracle}(x) &= \max_c |R_c(x)| \big/ |W(x)|, \
+  \mathrm{gain}      &= \overline{\mathrm{union}} - \max_c\, \overline{|R_c|/|W|}.
+\end{align*}
+Union $\ge$ oracle $\ge$ best single, by construction. Gain measures what an arm
+\emph{adds} to another, not how it scores; two arms can be equal alone and
+differ several-fold in gain. It is a ceiling on any merge, not a score.
+
+\paragraph{Noise floor.} The baseline condition uses no retrieval and cannot
+depend on any retrieval-side change. Its spread across otherwise identical runs
+is therefore a direct estimate of run-to-run noise, and any delta of that size
+is not distinguishable from zero.
+
+%==============================================================================
+\section{What is and is not established}
+%==============================================================================
+
+For calibration of the claims above (numbers from the September 2026 runs):
+
+\begin{itemize}
+  \item \textsc{merge\_v2} $>$ baseline replicates: $+0.039$, $+0.050$
+    ($p{=}0.014$), $+0.048$ ($p{=}0.024$) across independent generations at 72B.
+  \item CAD at 7B is monotone in $\alpha$ across five values
+    ($0.352, 0.327, 0.099, 0.047, 0.042$ for $\alpha = -0.5..{+}0.5$; no-forks
+    $0.394$): the delivery channel is harmful, and its harm is tunable.
+  \item Hyperbolic vs.\ Euclidean: the hyperbolic encoder fits the tree markedly
+    better (tree-distance $\rho$ $0.64$ vs $0.29$; sibling ratio $0.65$ vs
+    $0.08$) and yields no coverage gain ($+0.014$, $p{=}0.62$) where Euclidean
+    does ($+0.071$, $p{=}0.014$); $\Delta\Delta = +0.057$, $p{=}0.094$. No
+    evidence the geometry contributes; not established that it hurts.
+  \item At 7B, \textsc{merge\_v2} falls $0.17$--$0.26$ below baseline; the merge
+    retains its drafts' content (median retention $1.0$), so the loss is in
+    draft quality, not compression.
+  \item Divergence selection (\textsc{divrand}) and hierarchy (\textsc{flat})
+    are untested at time of writing; the content control (\textsc{rand}) was
+    confounded in every prior run and is being rerun.
+  \item Reward--judge concordance within question is $0.15$ against chance
+    $0.5$; the reward scores survey positions, the judge scores participant
+    clusters, and no threshold reconciles them.
+\end{itemize}
+
+\end{document}

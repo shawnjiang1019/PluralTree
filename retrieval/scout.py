@@ -666,8 +666,22 @@ def load_or_compute_text_feat(graph, dataset: str, path: str | None) -> Tensor:
     import os
 
     if path and os.path.exists(path):
-        return torch.load(path, map_location="cpu")
-    if dataset in ("globalopinionqa", "opinionqa"):
+        feat = torch.load(path, map_location="cpu")
+        # A cached tensor from a DIFFERENT graph loads without complaint and
+        # silently misaligns every relevance score -- no crash, just wrong
+        # answers. feats_goqa.pt is the eval job's default, so pointing an issp
+        # run at it is one forgotten variable away.
+        n = len(getattr(graph, "id_to_entity", []))
+        if n and feat.shape[0] != n:
+            raise SystemExit(
+                f"{path} has {feat.shape[0]} rows but the {dataset} graph has "
+                f"{n} nodes -- this cache belongs to a different graph. Pass a "
+                f"dataset-specific --text_feat (e.g. feats_{dataset}.pt).")
+        return feat
+    # issp builds an OpinionQAGraph via opinionqa._build_graph, so it takes
+    # the same feature builder. Without it, dataset="issp" fell through to
+    # culturalbench's builder, which expects a different graph shape.
+    if dataset in ("globalopinionqa", "opinionqa", "issp"):
         from data.loaders.globalopinionqa import compute_features
         feat = compute_features(graph).cpu()
     else:

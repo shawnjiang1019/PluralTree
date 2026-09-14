@@ -40,6 +40,8 @@ export TOKENIZERS_PARALLELISM=false
 # Without this load_opinionqa falls through to the gated Hub copy and dies on
 # OfflineModeIsEnabled -- how job 2252726 failed.
 export OPINIONQA_DIR="${OPINIONQA_DIR:-$HOME/projects/def-enaskt/shawnj/data/human_resp}"
+# load_issp reads this; without it DATASET=issp exits immediately.
+export ISSP_DIR="${ISSP_DIR:-$HOME/projects/def-enaskt/shawnj/data/issp}"
 
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree || exit 1
 mkdir -p logs docs
@@ -52,7 +54,8 @@ EMB="${EMB:-embeddings_opinionqa.pt}"
 DATASET="${DATASET:-opinionqa}"
 TAU="${TAU:-0.25}"
 SEED="${SEED:-0}"
-QUESTIONS="${QUESTIONS:-${SRC}_questions.jsonl}"
+if [ "${SRC}" = "none" ]; then QUESTIONS="${QUESTIONS:-}"
+else QUESTIONS="${QUESTIONS:-${SRC}_questions.jsonl}"; fi
 OUT="${OUT:-docs/anchor_cov_${SRC}.csv}"
 
 echo "SRC=${SRC} RAW=${RAW} QUESTIONS=${QUESTIONS} MAXQ=${MAXQ}"
@@ -80,14 +83,24 @@ if [ "${SRC}" != "none" ]; then
     esac
 fi
 
-[ -f "${QUESTIONS}" ] || { echo "MISSING ${QUESTIONS}"; exit 1; }
-echo "questions: $(grep -c . "${QUESTIONS}")"
+# QUESTIONS is OPTIONAL. anchor_coverage's --reference overton loads
+# OvertonBench itself, so "does THIS graph resolve OvertonBench" needs no
+# question file at all -- which is exactly the gate for a SWAPPED GRAPH
+# (DATASET=issp). Only a NEW question set needs one.
+QARG=""
+if [ -n "${QUESTIONS}" ] && [ "${QUESTIONS}" != "none" ]; then
+    [ -f "${QUESTIONS}" ] || { echo "MISSING ${QUESTIONS}"; exit 1; }
+    echo "questions: $(grep -c . "${QUESTIONS}")"
+    QARG="--questions ${QUESTIONS}"
+else
+    echo "no --questions: reference-only gate (does ${DATASET} reach OvertonBench?)"
+fi
 
 # --- stage 2: does the graph resolve anchors for them? ----------------------
 echo ""
 echo "=== stage 2: anchor resolution vs the OvertonBench reference ==="
 python -u scripts/analysis/anchor_coverage.py \
-    --questions "${QUESTIONS}" --embeddings "${EMB}" \
+    ${QARG} --embeddings "${EMB}" \
     --dataset "${DATASET}" --tau "${TAU}" --seed "${SEED}" \
     --max_questions "${MAXQ}" --reference overton --out "${OUT}" \
     || { echo "ANCHOR COVERAGE FAILED"; exit 1; }
