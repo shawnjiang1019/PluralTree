@@ -37,7 +37,10 @@ export ISSP_DIR="${ISSP_DIR:-$HOME/projects/def-enaskt/shawnj/data/issp}"
 cd /home/shawnj/projects/def-enaskt/shawnj/PluralTree
 mkdir -p logs
 
-MODEL="${MODEL:-Qwen/Qwen2.5-72B-Instruct}"
+# AWQ, matching every other 72B job and the v10/v11/v12 references. bf16 72B is
+# ~145GB of weights: on 4x40GB it loads with ~0.02 GiB left and vLLM refuses to
+# start (no KV cache for one 8192-token request).
+MODEL="${MODEL:-Qwen/Qwen2.5-72B-Instruct-AWQ}"
 TAU="${TAU:-0.1}"                # scout relevance gate (GOQA cross-domain ~0.1; on-domain opinionqa: 0.25)
 SEED="${SEED:-42}"               # MUST match the embed job's train.py --seed (default 42):
                                  # opinionqa node ids depend on the clustering seed
