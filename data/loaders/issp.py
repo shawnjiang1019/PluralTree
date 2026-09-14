@@ -92,17 +92,43 @@ def read_table(path: str):
             df = rd.read()
             var_labels = dict(rd.variable_labels())
             val_labels = {k: dict(v) for k, v in rd.value_labels().items()}
-        # Stata keeps value-label SETS, named separately from the columns that
-        # use them; map set -> column so callers can key by column.
-        with pd.io.stata.StataReader(path, convert_categoricals=False) as rd:
-            fmt = getattr(rd, "lbllist", None) or []
-            cols = list(df.columns)
+            # read INSIDE the context: the attribute survives close, but relying
+            # on that is one pandas release away from breaking silently.
+            _setnames = list(getattr(rd, "_lbllist", None)
+                             or getattr(rd, "lbllist", None) or [])
+        # Stata keeps value-label SETS named INDEPENDENTLY of the columns using
+        # them -- a real GESIS file shares one set (say AGREE5) across dozens of
+        # items. pandas exposes the per-variable set names as the PRIVATE
+        # `_lbllist`; reading the public-looking `lbllist` silently yields
+        # nothing, every column falls through to the name-match branch, and the
+        # parser then skips every item for having no options. The selftest did
+        # not catch this because `to_stata` happens to name each set after its
+        # column, so the name-match branch worked there.
+        cols = list(df.columns)
+        setnames = _setnames
         by_col = {}
-        for col, setname in zip(cols, list(fmt) + [""] * len(cols)):
+        for col, setname in zip(cols, setnames + [""] * len(cols)):
             if setname and setname in val_labels:
                 by_col[col] = val_labels[setname]
             elif col in val_labels:
                 by_col[col] = val_labels[col]
+
+        # Last resort: recover {code: label} by pairing a numeric read with a
+        # categorical one. Costs a second pass over the file, so it runs only
+        # when the mapping above produced nothing at all.
+        if not by_col and val_labels:
+            cat = pd.read_stata(path, convert_categoricals=True)
+            for col in cols:
+                if col not in cat.columns:
+                    continue
+                pairs = {}
+                for code, lab in zip(df[col], cat[col]):
+                    if pd.notna(code) and isinstance(lab, str):
+                        pairs.setdefault(code, lab)
+                if pairs and any(str(v) != str(k) for k, v in pairs.items()):
+                    by_col[col] = pairs
+            print(f"  note: recovered value labels for {len(by_col)} columns via "
+                  f"a categorical re-read ({path})")
         return df, var_labels, by_col
     if ext == ".sav":
         try:
