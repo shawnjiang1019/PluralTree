@@ -26,7 +26,7 @@
 # look hung. That is the whole reason this file exists.
 #
 # Knobs: SRC (valueprism|wildscope|none), RAW, QUESTIONS, MAXQ, EMB, DATASET,
-#        TAU, SEED, MINVALS.
+#        TAU, SEED, MINVALS, GATE (exit 2 below this resolution rate).
 
 module load python/3.11 gcc cuda/13.2 arrow/24.0.0
 source ~/pluraltree-env/bin/activate
@@ -54,6 +54,11 @@ EMB="${EMB:-embeddings_opinionqa.pt}"
 DATASET="${DATASET:-opinionqa}"
 TAU="${TAU:-0.25}"
 SEED="${SEED:-0}"
+# Exit 2 below this resolution rate, so a dependent eval submitted with
+# --dependency=afterok is genuinely GATED rather than merely sequenced: without
+# it this job exits 0 on any result and the eval fires even when the graph
+# reaches nothing. 0 disables; 0.60 is anchor_coverage.py's NOT-USABLE boundary.
+GATE="${GATE:-0}"
 if [ "${SRC}" = "none" ]; then QUESTIONS="${QUESTIONS:-}"
 else QUESTIONS="${QUESTIONS:-${SRC}_questions.jsonl}"; fi
 OUT="${OUT:-docs/anchor_cov_${SRC}.csv}"
@@ -99,11 +104,25 @@ fi
 # --- stage 2: does the graph resolve anchors for them? ----------------------
 echo ""
 echo "=== stage 2: anchor resolution vs the OvertonBench reference ==="
+set +e
 python -u scripts/analysis/anchor_coverage.py \
     ${QARG} --embeddings "${EMB}" \
     --dataset "${DATASET}" --tau "${TAU}" --seed "${SEED}" \
     --max_questions "${MAXQ}" --reference overton --out "${OUT}" \
-    || { echo "ANCHOR COVERAGE FAILED"; exit 1; }
+    --gate "${GATE}"
+rc=$?
+set -e
+# Distinguish the two non-zero cases. `|| exit 1` would collapse them, and a
+# GATE result reported as "FAILED" reads like a crash. Either way a dependent
+# job submitted with --dependency=afterok will not start, which is the point.
+if [ "${rc}" -eq 2 ]; then
+    echo ""
+    echo "GATE NOT MET (exit 2) -- this is a RESULT, not a crash. The graph does"
+    echo "not reach this question set well enough to test anything on it."
+    exit 2
+elif [ "${rc}" -ne 0 ]; then
+    echo "ANCHOR COVERAGE CRASHED (rc=${rc}) -- see .err"; exit 1
+fi
 
 echo ""
 echo "Done -> ${OUT}"

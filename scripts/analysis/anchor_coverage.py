@@ -120,6 +120,14 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max_questions", type=int, default=0)
     ap.add_argument("--out", default=None, help="csv of the summary rows")
+    ap.add_argument("--gate", type=float, default=0.0,
+                    help="exit 2 when the measured resolution rate falls below "
+                         "this. 0 disables. Lets a downstream eval hang off "
+                         "`sbatch --dependency=afterok` and actually be GATED: "
+                         "without it the job exits 0 on any result, so the "
+                         "dependent run fires even when the graph reaches "
+                         "nothing and every arm collapses to baseline. 0.60 is "
+                         "this script's own NOT-USABLE boundary.")
     args = ap.parse_args()
 
     if not args.questions and args.reference == "none":
@@ -193,6 +201,21 @@ def main():
             w.writerows(rows)
         print(f"\nwrote {args.out}")
 
+    # rows[-1] is the NEW set when a reference was measured, and the single
+    # measured set in reference-only mode (DATASET=issp with no --questions),
+    # which is the mode a swapped graph is gated in.
+    if args.gate and rows:
+        rate = rows[-1]["rate"]
+        if rate < args.gate:
+            print(f"\nGATE FAILED: {rows[-1]['name']} resolved {rate:.1%} "
+                  f"< {args.gate:.1%}. Dependent jobs will not start -- with "
+                  f"this little resolution the scout returns no forks on most "
+                  f"questions, every injected arm collapses to baseline, and "
+                  f"the run would produce a confident null that means nothing.")
+            return 2
+        print(f"\nGATE PASSED: {rate:.1%} >= {args.gate:.1%}.")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
