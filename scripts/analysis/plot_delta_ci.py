@@ -11,10 +11,12 @@ whole finding, so zero is the only reference line drawn heavily.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import statistics as st
 import sys
+from collections import defaultdict
 
 import matplotlib
 matplotlib.use("Agg")
@@ -45,20 +47,46 @@ def main():
     ap.add_argument("--baseline", default="baseline")
     ap.add_argument("--tol", type=float, default=0.027, help="measured noise floor")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--responses", default=None,
+                    help="responses JSONL; with it, each condition is also split "
+                         "into questions where it retrieved forks (n_forks>0 in "
+                         "any rollout) and questions where it did not. On a graph "
+                         "that resolves only part of the benchmark (ISSP: 32/60) "
+                         "the pooled delta is diluted by arms that ran as baseline.")
     args = ap.parse_args()
 
     cov = load_coverage(args.scores)
     conds = [c.strip() for c in args.conditions.split(",") if c.strip()]
+
+    resolved = None
+    if args.responses:
+        resolved = defaultdict(set)      # condition -> qids with forks
+        with open(args.responses, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    r = json.loads(line)
+                    if int(r.get("n_forks", 0)) > 0:
+                        resolved[r["condition"]].add(int(r["question_id"]))
+
     rows = []
     for c in conds:
-        d = [q[c] - q[args.baseline] for q in cov.values()
-             if args.baseline in q and c in q]
-        if len(d) < 4:
-            print(f"  [skip] {c}: only {len(d)} questions")
-            continue
-        m, lo, hi, p = boot_ci(d)
-        rows.append((c, m, lo, hi, p, len(d)))
-        print(f"  {c:<12} n={len(d)}  mean={m:+.4f}  CI[{lo:+.4f},{hi:+.4f}]  p={p:.4f}")
+        paired = {qid: q[c] - q[args.baseline] for qid, q in cov.items()
+                  if args.baseline in q and c in q}
+        subsets = [(c, list(paired.values()))]
+        if resolved is not None:
+            subsets += [(f"{c} resolved", [d for qid, d in paired.items() if qid in resolved[c]]),
+                        (f"{c} unresolved", [d for qid, d in paired.items() if qid not in resolved[c]])]
+        for label, d in subsets:
+            if len(d) < 4:
+                print(f"  [skip] {label}: only {len(d)} questions")
+                continue
+            m, lo, hi, p = boot_ci(d)
+            rows.append((label, m, lo, hi, p, len(d)))
+            print(f"  {label:<22} n={len(d)}  mean={m:+.4f}  CI[{lo:+.4f},{hi:+.4f}]  p={p:.4f}")
+    if resolved is not None:
+        print("  unresolved rows ran without forks, so their delta is baseline-vs-"
+              "baseline drift: it should sit inside the noise floor. If it does not, "
+              "the arm differs from baseline for a reason other than retrieval.")
     if not rows:
         ap.error("nothing to plot")
 
