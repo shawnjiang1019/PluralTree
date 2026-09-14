@@ -67,7 +67,47 @@ WEIGHT = ("WEIGHT", "weight", "WGT", "V5")
 _MISSING_LABEL = re.compile(
     r"^\s*(no answer|don'?t know|dk|na\b|nap\b|not applicable|refused|"
     r"can'?t choose|cannot choose|no opinion|not available|missing|"
-    r"other countries|nav\b)", re.IGNORECASE)
+    r"other countries|nav\b|"
+    # Coding artifacts, not viewpoints. ISSP's PARTY_LR carries these beside
+    # real left-right placements; keeping them would make "Invalid ballot" a
+    # subgroup whose opinion distribution the scout could pick as a fork pole.
+    r"invalid ballot|insufficient information|not classifiable|"
+    r"unclassified|no(?:ne)? recorded)", re.IGNORECASE)
+
+# RAW NUMERIC AXES MUST BE BINNED. ISSP ships AGE as age IN YEARS, so an
+# unbinned axis yields ~69 single-year "subgroups" -- with 48,720 respondents
+# every single year clears min_group, so they all survive and swamp every other
+# axis (sex has 2, employment 3). The scout would then score forks almost
+# entirely between one-year age slices. These bands are the standard survey cut
+# and match the granularity of OpinionQA's own age axis.
+AXIS_BINS: dict[str, list[tuple[float, float, str]]] = {
+    "age": [(0, 29, "18-29"), (30, 44, "30-44"),
+            (45, 59, "45-59"), (60, 1e9, "60+")],
+}
+
+
+def bin_group(axis: str, label) -> str:
+    """Band a numeric group label; pass anything already categorical through.
+
+    Also prefixes a bare-numeral label with its axis -- TOPBOT's self-placement
+    ladder comes through as "02".."10", and the group name is what describe_node
+    renders into the injected fork block, where "02" names nothing to a reader.
+    """
+    text = str(label).strip()
+    spec = AXIS_BINS.get(axis)
+    if spec:
+        try:
+            v = float(text)
+        except ValueError:
+            return text                      # already a band
+        for lo, hi, name in spec:
+            if lo <= v <= hi:
+                return name
+        return text
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return f"{axis} {text}"
+    return text
+
 
 # Substantive ISSP items are Vnn / Qnn. Background, admin and technical
 # variables are excluded by name so they never become graph questions.
@@ -251,8 +291,12 @@ def parse_issp_file(path: str, topic: str, year: str, *, min_group: int = 100,
 
         for axis, gcol in found.items():
             glabels = val_labels.get(gcol, {})
-            for gcode, gdf in df.groupby(df[gcol], dropna=True):
-                gname = str(glabels.get(gcode, gcode)).strip()
+            # Label and bin FIRST, then group by the final display name. Group
+            # by raw code and the bands could never merge -- 18 and 19 would
+            # stay separate cells that both happen to be called "18-29".
+            gser = df[gcol].map(lambda c: bin_group(axis, glabels.get(c, c)))
+            for gname, gdf in df.groupby(gser, dropna=True):
+                gname = str(gname).strip()
                 if _MISSING_LABEL.match(gname):
                     continue
                 sel = col.loc[gdf.index]
