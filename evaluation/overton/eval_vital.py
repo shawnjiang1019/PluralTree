@@ -127,11 +127,18 @@ def main():
                                          base_url=args.base_url, model=args.model,
                                          cfg=cfg, q_emb=q_emb, dry_run=args.dry_run,
                                          with_trace=True)
-                    f.write(json.dumps({
-                        "question_id": qid, "question": question,
-                        "condition": name, "rollout": rollout,
-                        "response": resp, "n_forks": trace.get("n_forks", 0),
-                    }) + "\n")
+                    # think/fork_context/drafts ride along for the trace
+                    # analyses (scripts/analysis/trace_execution.py); VITAL has
+                    # no judge, so these are the only window into WHY an arm
+                    # scored what it did.
+                    row = {"question_id": qid, "question": question,
+                           "condition": name, "rollout": rollout,
+                           "response": resp, "n_forks": trace.get("n_forks", 0),
+                           "think": trace.get("think", ""),
+                           "fork_context": trace.get("fork_context", "")}
+                    if "draft_traces" in trace:
+                        row["draft_traces"] = trace["draft_traces"]
+                    f.write(json.dumps(row) + "\n")
                     f.flush()
             print(f"  {qid}  {len(conditions)} conditions x {args.n_rollouts} rollouts")
 

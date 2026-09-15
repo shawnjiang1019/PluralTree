@@ -1017,7 +1017,7 @@ def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
     if not forks:                       # nothing retrieved -> only the plain draft
         specs = [s for s in specs if not s[1]]
 
-    drafts, labels = [], []
+    drafts, labels, drafts_meta = [], [], []
     for label, needs_forks, instruction, spec_full in specs:
         fd = spec_full or (full_dist and needs_forks)
         msgs = build_prompt(question, forks if needs_forks else None, graph,
@@ -1038,12 +1038,23 @@ def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
         if text.strip():
             drafts.append(text.strip())
             labels.append(label)
+            # Per-draft record: draft_a/draft_b keep only the first TWO of three
+            # drafts and no draft ever kept its own <think>, so "which draft
+            # carried the viewpoint the merge dropped, and did the draft plan to
+            # say it" was unanswerable from a responses file. Text + think only;
+            # raw is their concatenation.
+            drafts_meta.append({"label": label, "text": text.strip(),
+                                "think": extract_think(raw),
+                                "words": len(text.split())})
 
     merged, info = merge_drafts(question, drafts, base_url, model, cfg=cfg,
                                 chat_fn=chat_fn, labels=labels, embed_fn=embed_fn)
     # draft_a/draft_b keep the v1 trace schema so eval/analysis reads both alike
     parts = {"draft_a": drafts[0] if drafts else "",
-             "draft_b": drafts[1] if len(drafts) > 1 else "", **info}
+             "draft_b": drafts[1] if len(drafts) > 1 else "",
+             # NOT "drafts": merge_drafts already returns info["drafts"] (the
+             # kept draft TEXTS) and **info would overwrite this.
+             "draft_traces": drafts_meta, **info}
     return merged, parts
 
 
@@ -1212,7 +1223,7 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             # union gain toward zero. Without the field the v11 run could not say
             # how many rows actually tested the condition.
             for k in ("merge_fallback", "merge_fail", "merge_stats", "labels",
-                      "n_personas"):
+                      "draft_traces", "n_personas"):
                 if k in parts:
                     trace[k] = parts[k]
             if rand_stats is not None:

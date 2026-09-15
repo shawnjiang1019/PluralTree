@@ -134,7 +134,7 @@ def main():
                     # reference and the check is computable from this file
                     # alone -- without it the selection ablation cannot be
                     # verified to have done anything.
-                    for k in ("draft_a", "draft_b", "merge_fallback",
+                    for k in ("draft_a", "draft_b", "draft_traces", "merge_fallback",
                               "merge_fail", "merge_stats", "labels",
                               "random_fork", "n_personas", "pair_select"):
                         if k in trace:
