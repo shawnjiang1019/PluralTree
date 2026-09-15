@@ -18,10 +18,6 @@ import statistics as st
 import sys
 from collections import defaultdict
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from scripts.analysis.delta_regressor import load_coverage
@@ -89,6 +85,16 @@ def main():
               "the arm differs from baseline for a reason other than retrieval.")
     if not rows:
         ap.error("nothing to plot")
+
+    # The numbers above are the result; the figure is optional. Imported here so
+    # an env without matplotlib still prints them.
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("  matplotlib not installed -- skipping the figure")
+        return
 
     fig, ax = plt.subplots(figsize=(8.4, 1.05 * len(rows) + 2.4), facecolor=SURFACE)
     ax.set_facecolor(SURFACE)
