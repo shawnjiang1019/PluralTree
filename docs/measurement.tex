@@ -1,0 +1,359 @@
+% Formal notes on measurement, validity and identification for PluralTree.
+% Complements docs/methodology.tex (what the method is) and docs/grpo_method.tex
+% (the RL objective). This file is about what the NUMBERS mean.
+% Standalone: pdflatex docs/measurement.tex
+
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}          % small-caps italic, used inside theorem text
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\newtheorem{proposition}{Proposition}
+% Upright body for definitions and remarks: conventional, and it avoids
+% requesting small-caps-italic, which no standard font shape provides.
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\newcommand{\cov}{\mathrm{cov}}
+\newcommand{\ret}{\mathrm{ret}}
+\newcommand{\usg}{\mathrm{usg}}
+\newcommand{\Wass}{\mathcal{W}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\1}{\mathbf{1}}
+
+\title{PluralTree: Measurement, Validity and Identification}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+Companion to \texttt{methodology.tex}. That document defines the method; this one
+defines what its measurements identify, and states the conditions under which a
+reported number means what it appears to mean. Each section exists because the
+corresponding confusion actually occurred and cost a run.
+
+%==============================================================================
+\section{Notation}
+%==============================================================================
+
+$Q$ is a set of questions. For $x \in Q$, $W(x)$ is its set of human viewpoint
+clusters and $F(x)$ the forks the scout retrieves. A condition $c$ maps $x$ to an
+answer $y_c(x)$, stochastically. $R_c(x) \subseteq W(x)$ is the set of clusters
+the judge marks covered by $y_c(x)$, and
+\[
+  \cov_c(x) \;=\; |R_c(x)| \,/\, |W(x)|.
+\]
+Conditions come in two families: the \emph{control} $C$ (typically
+\textsc{baseline}, no retrieval) and \emph{treatments} $T$ that consume $F(x)$.
+
+%==============================================================================
+\section{Three measurement operators, and why they are not interchangeable}
+%==============================================================================
+
+Three quantities in this project all read as ``did the content get through'' and
+measure different things. Conflating them produced two wrong conclusions.
+
+\begin{definition}[Coverage]
+$\cov_c(x)$ above: a \emph{judge} decides, per cluster, whether the holders of
+that viewpoint would say the answer represented them. Threshold on a predicted
+1--5 rating.
+\end{definition}
+
+\begin{definition}[Usage]
+For injected positions $p \in P(x)$ and answer units $u \in U(y)$,
+\[
+  \usg_\theta(y, x) \;=\; \frac{1}{|P(x)|}
+  \sum_{p \in P(x)} \1\!\left[\max_{u \in U(y)} \cos(e(p), e(u)) \ge \theta\right].
+\]
+A \emph{surface} measure: did text resembling $p$ appear. It is correlational ---
+the model may have produced that unit regardless --- and has no chance floor
+unless one is computed by permuting $x$ against $y$ from other questions.
+\end{definition}
+
+\begin{definition}[Retention]
+For drafts $\{y_i\}$ with deduplicated deep units $D$, and merged answer
+$\hat y$,
+\[
+  \ret_\theta(\hat y, \{y_i\}) \;=\; \frac{1}{|D|}
+  \sum_{d \in D} \1\!\left[\max_{u \in U(\hat y)} \cos(e(d), e(u)) \ge \theta\right].
+\]
+Measures whether \emph{compression} destroyed content, not whether the content
+was ever correct or scored.
+\end{definition}
+
+\begin{remark}[The dissociation is empirical, not hypothetical]
+Measured: $\usg_{0.35} \approx 0.61$ with no coverage gain; $\ret_{0.55}$ median
+$1.00$ while $\cov$ fell far below control. Surface presence, faithful
+preservation, and scored coverage move independently. A claim about one
+transfers to another only with an argument, never by default.
+\end{remark}
+
+\begin{remark}[Losslessness is not judge-invariant]
+Concatenating drafts is lossless in text: $\ret = 1$ by construction. It is not
+lossless in coverage, because the judge scores a response \emph{as a whole} --- a
+good draft appended to two poor ones is rated as a mostly-poor response. So
+$\ret(\hat y) = 1 \;\not\Rightarrow\; \cov(\hat y) \ge \max_i \cov(y_i)$.
+\end{remark}
+
+%==============================================================================
+\section{Abstention and attenuation}
+%==============================================================================
+
+When the scout resolves no anchor, $F(x) = \emptyset$ and the multi-draft
+condition keeps only its uninjected draft, so $T$ reduces \emph{exactly} to $C$
+in construction. Let $Q = Q_r \cup Q_a$ split $Q$ into resolved and abstained,
+with abstention rate $\pi = |Q_a| / |Q|$.
+
+\begin{proposition}[Attenuation]
+\label{prop:atten}
+If $\E[\cov_T(x) - \cov_C(x)] = 0$ for all $x \in Q_a$, then
+\[
+  \E\big[\hat\delta_{\text{pooled}}\big] \;=\; (1 - \pi)\, \delta_r,
+  \qquad
+  \delta_r \;=\; \E_{x \in Q_r}\!\left[\cov_T(x) - \cov_C(x)\right].
+\]
+\end{proposition}
+
+\begin{proof}
+$\hat\delta_{\text{pooled}} = |Q|^{-1}\sum_{x \in Q}(\cov_T - \cov_C)$. The
+$Q_a$ terms have zero mean, leaving $|Q_r|/|Q| \cdot \delta_r$.
+\end{proof}
+
+\begin{remark}[Power loss is milder than attenuation suggests]
+Pooling attenuates the numerator by $(1-\pi)$ but also adds $|Q_a|$
+observations. If the per-question variance is comparable on both subsets
+($\sigma_a \approx \sigma_r = \sigma$), then
+$\mathrm{SE}_{\text{pooled}} \approx \sigma/\sqrt{|Q|}$ against
+$\mathrm{SE}_r = \sigma/\sqrt{|Q_r|}$, so
+\[
+  \frac{t_{\text{pooled}}}{t_r}
+  \;=\; (1-\pi)\,\frac{\mathrm{SE}_r}{\mathrm{SE}_{\text{pooled}}}
+  \;=\; (1-\pi)\cdot\frac{1}{\sqrt{1-\pi}} \;=\; \sqrt{1-\pi}.
+\]
+At $\pi = 0.29$ (INFINITY-CHAT): the effect estimate shrinks $29\%$ but the
+$t$-statistic only $16\%$. Pooling is therefore \emph{biased} rather than merely
+underpowered --- the reported effect size is wrong, not just noisy.
+\end{remark}
+
+\noindent
+\textbf{Consequence.} Any condition that can abstain must record whether it did,
+per row, and the resolved subset must be reported separately. Measured
+abstention rates: \textsc{persona\_merge} $21/180$; \textsc{merge\_v2} on
+INFINITY-CHAT $29/100$.
+
+%==============================================================================
+\section{Ablation validity}
+%==============================================================================
+
+An ablation compares $T$ against $T'$ differing in one component. If the
+component did not actually differ, the run produces a complete result table that
+means nothing: a tie is then \emph{uninformative} rather than evidence of no
+effect. Validity conditions are therefore preconditions on the run, checked
+before its scores are read.
+
+Let $n_c(x) = |F_c(x)|$ and $\bar\Wass_c(x)$ the mean divergence of selected
+forks.
+
+\begin{definition}[Valid selection ablation]
+\textsc{divrand} replaces the rank key $s(u,v)$ by a deterministic uniform draw
+over the \emph{same} candidate pool. It is valid iff, over $Q$,
+\[
+  \text{(i) } \E[n_{T'}] = \E[n_{T}],
+  \qquad
+  \text{(ii) } \E[\bar\Wass_{T'}] < \E[\bar\Wass_{T}],
+  \qquad
+  \text{(iii) } \E[\bar{\mathrm{rel}}_{T'}] \approx \E[\bar{\mathrm{rel}}_{T}].
+\]
+\end{definition}
+
+(i) is structural: both modes rank one pool and truncate at $k$, so counts cannot
+diverge. (ii) is forced --- $T$ takes the argmax, so a uniform draw over the same
+pool must sit below it; equality means the draw selected the same pairs and the
+ablation is inert. (iii) distinguishes this from the \emph{content} control,
+whose whole purpose is to be \emph{less} relevant; applying that control's check
+here would flag correct behaviour as failure.
+
+\begin{definition}[Valid hierarchy ablation]
+\textsc{flat} retrieves by similarity over opinion leaves with no descent. It is
+valid iff it abstains on the same questions: $F_{T'}(x) = \emptyset \iff
+F_T(x) = \emptyset$, enforced by applying the identical relevance gate $\tau$.
+Without it the arms differ in \emph{which questions get injected at all}, and
+Proposition~\ref{prop:atten} applies asymmetrically --- confounding the
+hierarchy test with abstention.
+\end{definition}
+
+\begin{definition}[Valid content control]
+\textsc{rand} substitutes structurally matched forks from an unrelated anchor. It
+is valid iff $\E[n_{T'}] = \E[n_T]$, rendered lengths match, and relevance is
+\emph{lower}.
+\end{definition}
+
+\begin{remark}[This is not hypothetical either]
+A content control violated all three conditions for three consecutive runs
+($1.00$ forks against $4.85$, and a dispatch gap routing it to a different merge
+algorithm). Its reported tie was read as evidence about fork content; it was
+evidence about nothing.
+\end{remark}
+
+%==============================================================================
+\section{Identification: which contrast measures which stage}
+%==============================================================================
+
+The pipeline factors into \textsc{retrieve} $\to$ \textsc{deliver} $\to$
+\textsc{compress}. A change in $\cov$ can originate in any of them, and a null in
+one stage can be produced by a later stage destroying what an earlier stage
+supplied. Each contrast below holds two stages fixed.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+contrast & identifies & holds fixed \\
+\midrule
+$T_{c=0.5}$ vs.\ $T_{c=0}$ & embedding geometry & graph, content, delivery, merge \\
+$T$ vs.\ \textsc{divrand} & fork \emph{selection} & graph, anchors, volume, merge \\
+$T$ vs.\ \textsc{flat} & \emph{hierarchy} & volume, rendering, gate, merge \\
+$T$ vs.\ \textsc{rand} & fork \emph{content} & volume, structure, merge \\
+$\alpha$ sweep (CAD) & delivery channel strength & prompt, sampler, RNG \\
+$7$B vs.\ $72$B & generator capacity & questions, drafts, retrieval \\
+$\ret$, guard on/off & compression fidelity & drafts \\
+graph swap (ATP/ISSP) & corpus & eval, judge, questions, conditions \\
+task swap (Overton/VITAL) & construct + scorer & graph, embeddings, conditions \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{remark}[Graph swap and task swap are orthogonal]
+Changing the retrieval corpus while holding the eval fixed, and changing the eval
+while holding the corpus fixed, answer different questions. Neither is ``more
+data'' for the other: a replication of a conclusion on a different construct with
+a different scorer does not tighten the original confidence interval.
+\end{remark}
+
+%==============================================================================
+\section{The noise floor from an invariant condition}
+%==============================================================================
+
+\textsc{baseline} uses no retrieval. It is therefore \emph{invariant} to every
+retrieval-side manipulation: embedding curvature, selection rule, hierarchy, fork
+content. Any difference in $\overline{\cov}_C$ between two arms of such an
+ablation is pure run-to-run noise, and supplies a free scale against which the
+treatment delta is read.
+
+\begin{proposition}[Noise floor]
+For arms $g_1, g_2$ differing only in a retrieval-side component,
+$\E[\overline{\cov}_C^{(g_1)} - \overline{\cov}_C^{(g_2)}] = 0$, so
+$|\overline{\cov}_C^{(g_1)} - \overline{\cov}_C^{(g_2)}|$ estimates the
+sampling scale of a single arm's mean.
+\end{proposition}
+
+\noindent
+Measured, each a single draw of the drift and therefore itself noisy:
+$|0.5089 - 0.4951| = 0.0138$ at 72B with one rollout per question;
+$|0.5024 - 0.5039| = 0.0015$ for the same two arms at three rollouts; and
+$|0.4277 - 0.3913| = 0.0364$ at 7B with one rollout. The floor depends on
+generator and rollout count, so it must be read from the run in question rather
+than quoted as one project-wide number. A treatment delta of the same magnitude
+as its own run's baseline drift is not distinguishable from zero regardless of
+its nominal $p$-value.
+
+%==============================================================================
+\section{Inference}
+%==============================================================================
+
+\paragraph{Paired bootstrap over questions.} For conditions $c_1, c_2$ on shared
+$Q$,
+\[
+  \hat\delta = \frac{1}{|Q|}\sum_{x \in Q}\big[\cov_{c_1}(x) - \cov_{c_2}(x)\big],
+\]
+with interval and two-sided $p$ from $10^4$ resamples \emph{of questions}. Since
+resampling is over questions, between-question heterogeneity sets the floor on
+interval width: additional rollouts per question reduce only the within-question
+component, and cannot resolve an effect that question heterogeneity obscures.
+This is why $n = 60$, not rollout count, is the binding constraint.
+
+\paragraph{Difference of differences.} For arms $g_1, g_2$,
+$\widehat{\Delta\Delta} = \hat\delta_{g_1} - \hat\delta_{g_2}$, bootstrapped
+paired over the same $Q$.
+
+\begin{remark}[The overlap fallacy]
+$\hat\delta_{g_1}$ significant and $\hat\delta_{g_2}$ not does \emph{not}
+establish $\delta_{g_1} \ne \delta_{g_2}$. The geometry ablation at one rollout
+gave $+0.0136$ ($p = 0.62$) against $+0.0707$ ($p = 0.014$) --- an apparently
+decisive contrast whose difference of differences was $p = 0.094$. At three
+rollouts the same arms gave $+0.0402$ and $+0.0453$, with
+$\widehat{\Delta\Delta} = +0.0051$, $95\%$ CI $[-0.0402, +0.0573]$, $p = 0.88$:
+a well-powered null. The one-rollout picture was an artifact of within-question
+noise, in the direction that looked like a finding.
+\end{remark}
+
+%==============================================================================
+\section{Union, oracle and gain}
+%==============================================================================
+
+With $R_c(x)$ the covered set:
+\begin{align*}
+  \mathrm{union}(x)  &= \Big|\textstyle\bigcup_{c \in S} R_c(x)\Big| \big/ |W(x)|, \\
+  \mathrm{oracle}(x) &= \max_{c \in S} |R_c(x)| \big/ |W(x)|, \\
+  \mathrm{gain}      &= \overline{\mathrm{union}} - \max_{c \in S} \overline{\cov_c}.
+\end{align*}
+
+$\mathrm{union} \ge \mathrm{oracle} \ge \max_c \overline{\cov_c}$ holds by
+construction: adding an answer cannot remove a covered cluster, and a union is at
+least as large as the better single set. Note $\mathrm{oracle}$ is a mean of
+per-question maxima while $\max_c \overline{\cov_c}$ is a maximum of means, so
+that inequality is arithmetic, not empirical.
+
+\begin{remark}[Gain measures difference, not quality]
+Gain is unrealised headroom, and is interpretable only jointly with the level:
+high level with low gain is the target; high level with high gain is good content
+under lossy compression; low level with high gain finds distinct viewpoints and
+delivers few. Critically, \emph{low gain has two opposite causes} --- an arm that
+already delivers everything it finds, and an arm that finds nothing new --- which
+gain alone cannot separate. Arms equal in $\overline{\cov}$ to within $0.006$
+have differed by $2.4\times$ in gain.
+\end{remark}
+
+%==============================================================================
+\section{Scorer validity}
+%==============================================================================
+
+A scorer used for \emph{relative} comparison need not be unbiased, only
+\emph{consistently} biased across the arms compared. This licenses far less than
+it appears to.
+
+\begin{definition}[Admissible comparison]
+A contrast $c_1$ vs.\ $c_2$ under scorer $S$ is admissible if $S$'s bias is
+constant in every respect on which $c_1$ and $c_2$ differ.
+\end{definition}
+
+\noindent
+Length is the binding case. If $S$ is length-sensitive --- documented for
+NLI-style coverage scorers, and unmeasured for the embedding-match reward ---
+then any contrast whose arms differ systematically in answer length is
+inadmissible. Injected answers run roughly $5\times$ baseline's length, so
+$\textsc{baseline}$ vs.\ a merge condition is inadmissible without a length
+control, while merge-vs-merge contrasts (geometry, selection, hierarchy) are
+admissible, having matched length distributions by construction.
+
+\begin{remark}[Validation level must match use level --- and must be this judge's]
+Two separate gaps. First, a judge validated for \emph{ranking systems} is not
+thereby validated for \emph{per-question} agreement, and every within-question
+comparison in this project operates below the ranking level. Second, and more
+basic: the benchmark's reported $\rho = 0.88$ (rank correlation over 8 reference
+models) is the \emph{benchmark authors'} judge. Reproduced with this project's
+judge, aggregate agreement is $\rho = 0.167$ ($0.357$ in an earlier run with too
+few participants per question) and within-participant $\rho = 0.059$. Whether
+that is poor depends on the human split-half ceiling at the same level, which has
+not been measured --- ``$0.167$ against $0.88$'' can look conclusive when the
+achievable ceiling sits far below $0.88$. Until the ceiling is known the judge is
+unvalidated at every level, and its unmeasured reliability bounds any concordance
+a reward can reach against it.
+\end{remark}
+
+\end{document}

@@ -1,6 +1,6 @@
 % Methodology and problem formulation for PluralTree.
 % Standalone-compilable: pdflatex docs/methodology.tex
-% Numbers cited in remarks are from job logs as of 2026-09-13.
+% Numbers cited in remarks are from job logs as of 2026-09-14.
 
 \documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
@@ -260,7 +260,7 @@ geometry $c \in \{0.5, 0\}$ & retrieve & ground metric $d_c$, encoder curvature 
 \textsc{flat} & retrieve & no tree: leaves ranked by $\rel$ alone, gated at $\tau$ & $k$, driver count, $\rho$, merge \\
 \textsc{rand} & retrieve & fork \emph{content} (unrelated anchor) & fork count, depth, length, merge \\
 CAD $\alpha$ & deliver & context influence & prompt, sampler, RNG stream \\
-scale $7$B vs $72$B & deliver & generator & questions, $\mathcal{D}$ \\
+scale $7$B vs $72$B & deliver & generator (and judge, when one GPU serves both) & questions, $\mathcal{D}$ \\
 \textsc{sem} guard & compress & semantic check on/off & drafts, structural guard \\
 \bottomrule
 \end{tabular}
@@ -282,9 +282,17 @@ that gates every full run.
 
 \paragraph{Score.} OvertonScore as in Definition~\ref{def:coverage}, with an LLM
 judge predicting each participant's rating; $\bar\rho_w$ is the mean predicted
-rating over the participants in $w$. The judge is validated against held-out
-human ratings for \emph{ranking} reference systems; its per-cluster agreement
-is not established, which bounds every within-question comparison below.
+rating over the participants in $w$. \emph{The judge's validity is unresolved.}
+The benchmark's reported agreement ($\rho = 0.88$, a rank correlation over 8
+reference models) belongs to the benchmark authors' judge. Reproducing that
+check with this project's judge (Qwen2.5-72B-Instruct-AWQ) gave aggregate
+$\rho = 0.167$ (an earlier run with too few participants per question gave
+$0.357$), within-participant $\rho = 0.059$, and a generosity gap of
+$P(\hat r \ge 4) = 0.747$ against $P(r \ge 4) = 0.650$ for humans. The
+achievable ceiling --- human split-half agreement at the same level --- has not
+been measured, so it is not known whether $0.167$ is poor or near that limit.
+Per-cluster agreement is likewise unestablished. Every coverage number below
+inherits this.
 
 \paragraph{Paired comparison.} For conditions $c_1, c_2$ on shared questions
 $Q$, the estimand is
@@ -305,8 +313,8 @@ against baseline have \emph{not} thereby been shown to differ.
 \paragraph{Union, oracle, gain.} With $R_c(x)$ the covered set under condition
 $c$:
 \begin{align*}
-  \mathrm{union}(x)  &= \Big|\textstyle\bigcup_c R_c(x)\Big| \big/ |W(x)|, \
-  \mathrm{oracle}(x) &= \max_c |R_c(x)| \big/ |W(x)|, \
+  \mathrm{union}(x)  &= \Big|\textstyle\bigcup_c R_c(x)\Big| \big/ |W(x)|, \\
+  \mathrm{oracle}(x) &= \max_c |R_c(x)| \big/ |W(x)|, \\
   \mathrm{gain}      &= \overline{\mathrm{union}} - \max_c\, \overline{|R_c|/|W|}.
 \end{align*}
 Union $\ge$ oracle $\ge$ best single, by construction. Gain measures what an arm
@@ -325,19 +333,41 @@ is not distinguishable from zero.
 For calibration of the claims above (numbers from the September 2026 runs):
 
 \begin{itemize}
-  \item \textsc{merge\_v2} $>$ baseline replicates: $+0.039$, $+0.050$
-    ($p{=}0.014$), $+0.048$ ($p{=}0.024$) across independent generations at 72B.
+  \item \emph{Instrument.} All coverage numbers use a judge whose own
+    validation is unresolved (see Evaluation protocol). Read every item below
+    through that.
+  \item \textsc{merge\_v2} $>$ baseline replicates on the reference embedding:
+    $+0.039$, $+0.050$ ($p{=}0.014$), $+0.048$ ($p{=}0.024$) across independent
+    generations at 72B. On freshly trained embeddings it is marginal in both
+    geometry arms ($+0.040$, $p{=}0.062$; $+0.045$, $p{=}0.061$; three
+    rollouts), so embedding-training variance may matter.
   \item CAD at 7B is monotone in $\alpha$ across five values
-    ($0.352, 0.327, 0.099, 0.047, 0.042$ for $\alpha = -0.5..{+}0.5$; no-forks
-    $0.394$): the delivery channel is harmful, and its harm is tunable.
-  \item Hyperbolic vs.\ Euclidean: the hyperbolic encoder fits the tree markedly
+    ($0.352, 0.327, 0.099, 0.047, 0.042$ for $\alpha = -0.5..{+}0.5$): the
+    strength of context influence controls coverage, and suppressing it helps.
+    The \emph{magnitude} of harm is not isolated. The no-forks reference
+    ($0.394$) uses a different instruction from the CAD arms, so
+    $0.394 \to 0.099$ conflates the fork block with the instruction. The
+    $\alpha = -1$ arm, which recovers the no-context model under the same
+    instruction exactly, would separate them and has not been run.
+  \item Geometry: at one rollout the hyperbolic and Euclidean arms appeared to
+    differ ($+0.014$, $p{=}0.62$ vs $+0.071$, $p{=}0.014$; $\Delta\Delta$ at
+    $p{=}0.094$). At three rollouts they converge ($+0.040$ vs $+0.045$;
+    $\Delta\Delta = +0.005$, 95\% CI $[-0.040, +0.057]$, $p{=}0.88$), a
+    well-powered null, even though the hyperbolic encoder fits the tree markedly
     better (tree-distance $\rho$ $0.64$ vs $0.29$; sibling ratio $0.65$ vs
-    $0.08$) and yields no coverage gain ($+0.014$, $p{=}0.62$) where Euclidean
-    does ($+0.071$, $p{=}0.014$); $\Delta\Delta = +0.057$, $p{=}0.094$. No
-    evidence the geometry contributes; not established that it hurts.
-  \item At 7B, \textsc{merge\_v2} falls $0.17$--$0.26$ below baseline; the merge
-    retains its drafts' content (median retention $1.0$), so the loss is in
-    draft quality, not compression.
+    $0.08$). Curvature does not measurably affect coverage.
+  \item At 7B, \textsc{merge\_v2} falls $0.17$--$0.26$ below baseline, measured
+    with a 7B judge (a 72B re-judge is pending). The merge retains its drafts'
+    content (median retention $1.0$; the semantic guard fired on 1 of 60
+    merges), so the loss is in draft quality, not compression.
+  \item Across-sample diversity (INFINITY-CHAT): \textsc{merge\_v2} is
+    \emph{less} diverse than baseline on every metric, losing 84--89 of 100
+    queries ($p \approx 0$). It trades across-sample diversity for within-answer
+    coverage. Retrieval resolved on 71 of the 100 queries.
+  \item Second corpus (ISSP, one module): anchors resolve for 32 of 60 benchmark
+    questions at median relevance $0.36$, only 10 of them at $\ge 0.40$, against
+    60 of 60 at $0.49$ for the primary graph. Unresolved questions concentrate on
+    family and relationships.
   \item Divergence selection (\textsc{divrand}) and hierarchy (\textsc{flat})
     are untested at time of writing; the content control (\textsc{rand}) was
     confounded in every prior run and is being rerun.

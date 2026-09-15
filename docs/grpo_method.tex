@@ -196,22 +196,78 @@ response devotes to it, using the benchmark's own human-rated reference
 responses --- a fit that requires no judge model.}
 \end{table}
 
+\section{Group-diversity objective (proposed; gated)}\label{sec:group}
+
+The largest measured effect in this project is across samples: union coverage
+over separately generated answers is 0.66--0.69, against about 0.51 for any single
+answer. The objective below rewards each rollout for viewpoints the rest of its
+group did not express. It uses no targets and no judge, so it applies to any
+training question, and it replaces \eqref{eq:reward} in \eqref{eq:adv} unchanged.
+
+\paragraph{Pool.} For a group $\{y_i\}_{i=1}^G$, all units of all rollouts are
+greedily clustered by cosine similarity at threshold $\tau_p$ into a pool
+$\mathcal{K}$. A unit joins its best cluster if the match clears $\tau_p$,
+otherwise it opens a new one. No minimum support is imposed: a viewpoint voiced
+by a single rollout is kept.
+
+\paragraph{Covered set.} Rollout $i$ articulates cluster $k$ if some unit matches
+it and at least $d_p$ words of its units are attributed to $k$, by the same
+mention and depth rules as \eqref{eq:covered}. Write $C_i\subseteq\mathcal{K}$.
+
+\paragraph{Reward.}
+\begin{equation}\label{eq:group}
+  q_i=\frac{|C_i|}{|\mathcal{K}|},\qquad
+  n_i=\frac{\big|C_i\setminus\bigcup_{j\neq i}C_j\big|}{|\mathcal{K}|},\qquad
+  r_i=q_i\,(1+\lambda\,n_i).
+\end{equation}
+$n_i$ is the rollout's leave-one-out contribution to the group's union; $\lambda=0$
+recovers within-answer coverage of the pool. In a \emph{reference} variant, $n_i$
+instead removes clusters covered by samples of the frozen base model for the same
+prompt, which credits a viewpoint that several rollouts discover together.
+Neither variant can separate identical rollouts, so a fully collapsed group still
+gives zero advantage.
+
+\paragraph{Gate.} Training is conditional on a within-question test against the
+judge. For rollouts $i$ of one question, with $C^J_i$ the clusters the judge marks
+as covered, the judge target is
+$t_i=\big|C^J_i\setminus\bigcup_{k\neq i}C^J_k\big|+|C^J_i|$. Let $\kappa$ be the
+pairwise concordance of $r$ with $t$, and $\kappa_J$ the concordance of the judge
+with itself when re-run on a different participant subset. Variants
+$(\lambda,d_p,\text{mode})$ are chosen on a random half of the questions; on the
+other half the reward passes iff $\kappa_J>0.5$,
+$\kappa\ge 0.5+0.5(\kappa_J-0.5)$, the bootstrap lower bound of $\kappa$ exceeds
+$0.5$, and concordance with $|C^J_i|$ alone is at least $0.5$.
+
+\paragraph{To log per group (not yet implemented).} Reward standard deviation, the
+fraction of zero-variance groups, $|\mathcal{K}|$, and the mean novelty $\bar n$,
+which separate a group that has collapsed from one whose reward carries no signal.
+
 \section*{Open issues}
 
 \begin{enumerate}
-\item \textbf{Reward--metric agreement is unverified.} The advantage
-\eqref{eq:adv} depends only on the \emph{within-group ordering} of rewards. If
-$r(\cdot)$ does not order two answers to the same question as the evaluation
-metric does, training optimises noise. This should be measured before training,
-and measured within question rather than pooled across questions.
+\item \textbf{Reward--metric agreement has been measured, and fails.} The
+advantage \eqref{eq:adv} depends only on the \emph{within-group ordering} of
+rewards, so the relevant statistic is within-question pairwise concordance with
+the evaluation judge. It is $0.152$ at the defaults ($\tau = 0.50$, $d = 60$)
+and at best $0.301$ across a sweep of $\tau \in [0.25, 0.50]$ and
+$d \in [0, 150]$, against chance $0.500$. The failure has two regimes and no
+setting escapes both: at low $\tau$ few pairs tie but the reward orders them
+wrongly (concordance among separated pairs $0.417$), while at high $\tau$ $73\%$
+of pairs tie. Recalibrating $\tau$ or $d$ therefore cannot repair it, and
+training on \eqref{eq:reward} as specified is not justified. The judge itself is
+not validated at this level (aggregate $\rho = 0.167$ against the benchmark
+authors' $0.88$, ceiling unmeasured), so the concordance target is noisy too.
 \item \textbf{Reachability.} \eqref{eq:grpo} reweights the reference policy's
 existing distribution; it cannot create behaviour the base model never samples.
 A best-of-$K$ sweep on the frozen base establishes whether the target behaviour
 is reachable at all.
-\item \textbf{Construct gap.} Positions are demographic subgroup splits;
-the evaluation's clusters are groupings of individuals' open-ended perspectives.
-These are related but not identical, which upper-bounds how far improvements on
-$r(\cdot)$ can transfer.
+\item \textbf{Construct gap --- the leading explanation for item 1.} Positions
+are survey answer options aggregated over demographic subgroups, about $19.9$ per
+question. The evaluation's viewpoint clusters, about $7.75$ per question, are
+formed by $k$-means over participants' agree/disagree votes on one another's
+written statements. The two differ in both kind and granularity, so a response
+can cover many positions while covering few clusters. Re-targeting the reward at
+cluster-shaped objectives is the direct test and has not yet completed.
 \item \textbf{Calibration of $d$.} See table footnote; the reward's absolute
 scale is not meaningful until $d$ is fit.
 \end{enumerate}
