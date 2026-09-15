@@ -345,8 +345,13 @@ def human_reliability(idx, n_splits: int = 200, seed: int = 0,
     print(f"  mean split-half spearman   = {mean_r:+.3f}   "
           f"95% range [{lo:+.3f}, {hi:+.3f}]")
     print(f"  Spearman-Brown (full-sample) = {sb:+.3f}")
-    print("  ^ CEILING: humans disagreeing with themselves. A judge cannot\n"
-          "    exceed this, so compare the aggregate rho against THIS, not 1.0.")
+    # Attenuation bound: corr(judge, human) <= sqrt(rel_judge * rel_human), so
+    # even a perfectly reliable judge tops out at sqrt(rel_human) -- not at rel_human.
+    print(f"  ceiling on judge-vs-human rho (perfectly reliable judge) = "
+          f"sqrt({sb:.3f}) = {max(sb, 0.0) ** 0.5:.3f}")
+    print("  ^ humans disagreeing with themselves bound any judge. Compare the\n"
+          "    aggregate rho against THIS, not 1.0 -- and with only a handful of\n"
+          "    models, note how wide the split-half range above is.")
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +519,8 @@ def _report_unions(covered: dict, n_clusters_by: dict, combos: list[list[str]]) 
 
 def score(idx, responses_path: str, base_url: str, model: str,
           max_users: int, seed: int, out_path: str, k_rollouts: int = 0,
-          union_spec: str | None = None, dump_clusters: str | None = None) -> None:
+          union_spec: str | None = None, dump_clusters: str | None = None,
+          dump_rollouts: str | None = None) -> None:
     """Score responses. With one response per (question, condition) this is the
     paper's OvertonScore. With K rollouts per pair (eval_overtonbench --n_rollouts
     K), it ALSO reports across-sample coverage@K -- the same human-grounded
@@ -555,6 +561,7 @@ def score(idx, responses_path: str, base_url: str, model: str,
     covered: dict[tuple[int, str], set] = {}      # (qid, cond) -> covered clusters
     n_clusters_by: dict[int, int] = {}
     cluster_rows: list[dict] = []
+    rollout_rows: list[dict] = []
     for (qid, cond), rs in sorted(groups.items()):
         users = users_for(qid)
         if not users:
@@ -570,6 +577,17 @@ def score(idx, responses_path: str, base_url: str, model: str,
             continue
         covered[(qid, cond)] = set().union(*per_resp)
         n_clusters_by[qid] = n_clusters
+        if dump_rollouts is not None:
+            # One row per (question, condition, ROLLOUT, cluster). The cluster
+            # dump keeps only how MANY rollouts hit a cluster, which cannot say
+            # whether one rollout added anything the others lacked -- the
+            # leave-one-out contribution the group-diversity reward is gated on.
+            for r, c in zip(rs, per_resp):
+                for cl in sorted({e["cluster"] for e in users}):
+                    rollout_rows.append({
+                        "question_id": qid, "condition": cond,
+                        "rollout": r.get("rollout", 0), "cluster": cl,
+                        "covered": int(cl in c), "n_clusters": n_clusters})
         if dump_clusters is not None:
             # One row per (question, condition, CLUSTER). The scores csv carries
             # only scalars, so "which clusters did this arm hit" is unanswerable
@@ -618,6 +636,15 @@ def score(idx, responses_path: str, base_url: str, model: str,
             w.writerows(cluster_rows)
         print(f"wrote {dump_clusters}  ({len(cluster_rows)} "
               f"(question, condition, cluster) rows)")
+
+    if dump_rollouts and rollout_rows:
+        import csv as _csv
+        with open(dump_rollouts, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=list(rollout_rows[0]))
+            w.writeheader()
+            w.writerows(rollout_rows)
+        print(f"wrote {dump_rollouts}  ({len(rollout_rows)} "
+              f"(question, condition, rollout, cluster) rows)")
 
     multi = any(r["n_rollouts"] > 1 for r in results)
     print(f"\nby condition (mean over questions):")
@@ -687,6 +714,10 @@ def main():
                          "has only scalars, so which clusters an arm hits -- and "
                          "whether the ones it uniquely covers are MINORITY "
                          "viewpoints -- is unanswerable without this.")
+    ap.add_argument("--dump_rollouts", default=None, metavar="CSV",
+                    help="one row per (question, condition, rollout, cluster) "
+                         "with covered 0/1. Needed for per-rollout leave-one-out "
+                         "contributions (scripts/analysis/group_reward_gate.py).")
     ap.add_argument("--k_rollouts", type=int, default=0,
                     help="cap rollouts per (question, condition) used for "
                          "coverage@K (0 = all present). >1 requires responses "
@@ -713,7 +744,7 @@ def main():
     if args.score:
         score(idx, args.score, args.base_url, args.model,
               args.max_users, args.seed, args.out, args.k_rollouts, args.union,
-              args.dump_clusters)
+              args.dump_clusters, args.dump_rollouts)
 
 
 if __name__ == "__main__":
