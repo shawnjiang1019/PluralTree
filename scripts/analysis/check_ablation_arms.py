@@ -91,10 +91,14 @@ def main():
         w = [p["mean_w"] for p in ps if p.get("mean_w") is not None]
         rel = [p["mean_relevance"] for p in ps
                if p.get("mean_relevance") is not None]
+        # mean_js: model-free disagreement between the selected forks' branches.
+        # Absent in runs generated before jsmax existed, hence the None default.
+        js = [p["mean_js"] for p in ps if p.get("mean_js") is not None]
         stats[cond] = {"mode": ps[0].get("mode"), "rows": len(ps),
                        "n_forks": st.mean(nf) if nf else 0.0,
                        "zero_fork_rows": sum(1 for n in nf if n == 0),
                        "mean_w": st.mean(w) if w else None,
+                       "js": st.mean(js) if js else None,
                        "rel": st.mean(rel) if rel else None}
         s = stats[cond]
         print(f"  {cond:20} mode={str(s['mode']):8} n_forks={s['n_forks']:5.2f} "
@@ -130,6 +134,32 @@ def main():
 
     # divrand specifically: maxw takes the argmax, so a uniform draw over the
     # same pool MUST sit below it. Equal means the draw picked the same pairs.
+    # jsmax ranks the same pool by survey-distribution disagreement instead of
+    # the learned Wasserstein, so each rule must lead on its OWN quantity. If
+    # jsmax does not beat maxw on mean_js, the two orderings agree and the arm
+    # tests nothing -- which would itself say the learned W already tracks
+    # disagreement on the selected pairs.
+    print("\n=== jsmax really ranked by distributional disagreement ===")
+    jm = stats.get("merge_v2_jsdiv")
+    if jm is None:
+        print("  [--]   merge_v2_jsdiv not in this run")
+    elif jm["js"] is None or base.get("js") is None:
+        print("  [FAIL] no mean_js recorded -- responses predate jsmax")
+        problems.append("merge_v2_jsdiv: no mean_js in the trace")
+    else:
+        print(f"  jsdiv mean_js {jm['js']:.4f} vs {args.baseline} {base['js']:.4f}"
+              f"   |   mean_w {jm['mean_w']:.4f} vs {base['mean_w']:.4f}")
+        if jm["js"] <= base["js"] + 1e-9:
+            msg = ("merge_v2_jsdiv: mean_js NOT above maxw's -- the two rankings "
+                   "pick the same pairs, so the arm is inert")
+            print(f"  [{'FAIL' if args.strict else 'warn'}] inert")
+            if args.strict:
+                problems.append(msg)
+            else:
+                print(f"         {msg}")
+        else:
+            print("  [ok]   higher disagreement than the argmax-on-W arm")
+
     print("\n=== divergence selection was really randomised ===")
     dr = stats.get("merge_v2_divrand")
     if dr is None:

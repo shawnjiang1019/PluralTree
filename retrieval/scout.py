@@ -54,7 +54,12 @@ class ScoutConfig:
     min_keep: int = 2          # gate floor: never shrink a cloud below this
     top_k: int = 5             # forks returned
     top_pairs: int = 3         # transport pairs reported per fork
-    pair_select: str = "maxw"  # "maxw" | "random" -- which child pairs survive
+    pair_select: str = "maxw"  # "maxw" | "random" | "jsmax" -- which pairs survive
+    #   "jsmax" ranks by the MODEL-FREE Jensen-Shannon divergence between the two
+    #   branches' survey answer distributions instead of the learned Wasserstein.
+    #   It is the ceiling test for divergence selection: if the best available
+    #   disagreement signal does not beat "maxw", no encoder objective that ranks
+    #   disagreement better can either.
     #   The ONE knob of the selection ablation (merge_v2_divrand). "maxw" keeps
     #   the highest rel^alpha * W pairs (the divergence scout); "random" keeps a
     #   deterministic uniform sample of the SAME candidate pool, so the arms
@@ -81,7 +86,48 @@ def _rand_rank(question: str, fork: "ScoredFork", seed: int) -> float:
     return int.from_bytes(d, "big") / 2 ** 64
 
 
-def rank_key(question: str, cfg: ScoutConfig):
+def branch_distribution(graph, branch: int, max_nodes: int = 32) -> list[float] | None:
+    """Mean answer distribution over the opinion leaves under ``branch``.
+
+    None when the branch holds no opinion leaves, or when its leaves answer
+    questions with different option counts -- a divergence between those is not
+    defined, and averaging over them would invent one.
+    """
+    dists = getattr(graph, "opinion_dist", None)
+    if not dists:
+        return None
+    rows = [dists[n] for n in subtree_nodes(branch, graph.children_indices, max_nodes)
+            if n in dists]
+    if not rows:
+        return None
+    k = len(rows[0])
+    if any(len(r) != k for r in rows):
+        return None
+    return [sum(r[i] for r in rows) / len(rows) for i in range(k)]
+
+
+def fork_js(graph, fork: "ScoredFork", max_nodes: int = 32) -> float | None:
+    """Jensen-Shannon divergence (bits, in [0, 1]) between a fork's two branches.
+
+    MODEL-FREE disagreement: it reads the survey distributions directly and never
+    touches h_all. This is the ceiling on what any learned divergence could rank,
+    which is why it is worth selecting on directly (pair_select="jsmax").
+    """
+    import math
+
+    p = branch_distribution(graph, fork.branch_a, max_nodes)
+    q = branch_distribution(graph, fork.branch_b, max_nodes)
+    if p is None or q is None or len(p) != len(q):
+        return None
+    m = [(a + b) / 2.0 for a, b in zip(p, q)]
+
+    def _kl(a, b):
+        return sum(x * math.log2(x / y) for x, y in zip(a, b) if x > 0.0 and y > 0.0)
+
+    return 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
+
+
+def rank_key(question: str, cfg: ScoutConfig, graph=None):
     """The sort key that decides which forks survive -- the ablated component.
 
     Both branches return a scalar the caller sorts descending and truncates at
@@ -92,13 +138,22 @@ def rank_key(question: str, cfg: ScoutConfig):
     """
     if cfg.pair_select == "random":
         return lambda f: _rand_rank(question, f, cfg.pair_seed)
+    if cfg.pair_select == "jsmax":
+        if graph is None:
+            raise ValueError("pair_select='jsmax' needs the graph: the ranking "
+                             "reads answer distributions, not embeddings")
+        # Undefined forks (branches whose leaves answer different questions) sort
+        # BELOW every scorable one; ranking them as 0.0 would read as "measured,
+        # and they agree".
+        return lambda f: (lambda js: -1.0 if js is None else js)(
+            fork_js(graph, f, cfg.max_nodes))
     if cfg.pair_select != "maxw":
         raise ValueError(f"unknown pair_select {cfg.pair_select!r}")
     return lambda f: f.score
 
 
 def selection_stats(forks: list["ScoredFork"], mode: str,
-                    extra: dict | None = None) -> dict:
+                    extra: dict | None = None, graph=None) -> dict:
     """What the pair-selection ablation actually did, per row.
 
     The manipulation check for merge_v2_divrand, and it is NOT the one
@@ -124,6 +179,14 @@ def selection_stats(forks: list["ScoredFork"], mode: str,
            "mean_w": (sum(f.w for f in forks) / n) if n else None,
            "mean_relevance": (sum(f.relevance for f in forks) / n) if n else None,
            "anchors": sorted({f.anchor for f in forks})}
+    # mean_js is what separates jsmax from maxw: the two rank the SAME pool by
+    # different quantities, so each arm should lead on its own (jsmax higher
+    # mean_js, maxw higher mean_w). Recorded for every retrieved arm so the
+    # comparison is computable from the responses file alone.
+    if graph is not None and forks:
+        js = [j for j in (fork_js(graph, f) for f in forks) if j is not None]
+        out["mean_js"] = (sum(js) / len(js)) if js else None
+        out["n_js_defined"] = len(js)
     out.update(extra or {})
     return out
 
@@ -347,7 +410,7 @@ def scout(
         stats.update(anchor_pool=list(anchors), n_candidates=len(forks),
                      pool_mean_w=(sum(f.w for f in forks) / len(forks))
                      if forks else None)
-    forks.sort(key=rank_key(question, cfg), reverse=True)
+    forks.sort(key=rank_key(question, cfg, graph), reverse=True)
     forks = forks[: cfg.top_k]
     for f in forks:
         _fill_top_pairs(f, h_all, rel, manifold, cfg)
@@ -776,6 +839,39 @@ def _selftest() -> None:
     except ValueError:
         pass
 
+    # --- jsmax: model-free disagreement, read off the survey distributions ---
+    class _JSGraph:
+        """Anchor 0 with two opinion-leaf children; 3 has a different option count."""
+        children_indices = [[1, 2, 3], [], [], []]
+        opinion_dist = {1: [1.0, 0.0], 2: [0.0, 1.0], 3: [0.4, 0.3, 0.3]}
+
+    jg = _JSGraph()
+    opposed = ScoredFork(anchor=0, branch_a=1, branch_b=2, w=0.0,
+                         relevance=1.0, score=0.0)
+    same = ScoredFork(anchor=0, branch_a=1, branch_b=1, w=0.0,
+                      relevance=1.0, score=0.0)
+    mismatched = ScoredFork(anchor=0, branch_a=1, branch_b=3, w=0.0,
+                            relevance=1.0, score=0.0)
+    assert abs(fork_js(jg, opposed) - 1.0) < 1e-9, fork_js(jg, opposed)
+    assert abs(fork_js(jg, same)) < 1e-9, fork_js(jg, same)
+    assert fork_js(jg, mismatched) is None, "different option counts are undefined"
+    assert branch_distribution(jg, 0) is None, "the anchor itself has no leaves"
+
+    # ranking: opposed above agreeing, undefined below both
+    js_key = rank_key(q_text, ScoutConfig(pair_select="jsmax"), jg)
+    assert js_key(opposed) > js_key(same) > js_key(mismatched), \
+        (js_key(opposed), js_key(same), js_key(mismatched))
+    # the graph is not optional for this mode -- it reads distributions, not h_all
+    try:
+        rank_key(q_text, ScoutConfig(pair_select="jsmax"))
+        raise AssertionError("jsmax without a graph must fail loudly")
+    except ValueError:
+        pass
+    # stats carry mean_js only when the graph is supplied
+    s_js = selection_stats([opposed, same], "jsmax", graph=jg)
+    assert abs(s_js["mean_js"] - 0.5) < 1e-9 and s_js["n_js_defined"] == 2, s_js
+    assert "mean_js" not in selection_stats([opposed], "maxw")
+
     # Flat retrieval: volume-matched, hierarchy-free, renderable.
     fcfg = ScoutConfig(top_k=2, top_pairs=1)
     flat = flat_forks(q_text, g, h, feat, None, cfg=fcfg, q_emb=q)
@@ -836,8 +932,11 @@ def _main():
     ap.add_argument("--alpha", type=float, default=1.0)
     ap.add_argument("--temp", type=float, default=0.1)
     ap.add_argument("--top", type=int, default=5)
-    ap.add_argument("--pair_select", choices=["maxw", "random"], default="maxw",
-                    help="random = the selection ablation (merge_v2_divrand)")
+    ap.add_argument("--pair_select", choices=["maxw", "random", "jsmax"],
+                    default="maxw",
+                    help="random = the selection ablation (merge_v2_divrand); "
+                         "jsmax = rank by survey-distribution disagreement "
+                         "(merge_v2_jsdiv)")
     ap.add_argument("--flat", action="store_true",
                     help="flat similarity retrieval, no hierarchy (merge_v2_flat)")
     ap.add_argument("--prompt", action="store_true",

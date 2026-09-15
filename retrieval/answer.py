@@ -65,6 +65,14 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #        coverage mechanism. If this ties merge_v2, max-W selection is not
     #        what the retrieval contributes. Volume- and path-matched by
     #        construction (scout.rank_key), unlike merge_v2_rand's first version.
+    "merge_v2_jsdiv": ScoutConfig(tau=0.25, alpha=1.0, pair_select="jsmax"),
+    #        SELECTION CEILING: rank the same candidate pairs by the model-free
+    #        Jensen-Shannon divergence between the branches' survey answer
+    #        distributions instead of the learned Wasserstein. Same graph,
+    #        anchors, gate, render, merge path and fork count. If the best
+    #        available disagreement signal does not beat merge_v2, then no
+    #        encoder objective that ranks disagreement better would either, and
+    #        retraining the geometry for divergence is not worth doing.
     "merge_v2_flat": ScoutConfig(tau=0.25, alpha=1.0),  # HIERARCHY ablation:
     #        no anchor, no descent, no child subtrees -- the most
     #        question-similar opinion leaves, paired into pseudo-forks
@@ -250,7 +258,8 @@ INSTRUCTION_BY_CONDITION: dict[str, str] = {
 # instead of one. Handled by _merge_answer*(), not the single-call path.
 MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
                                    "merge_v2_rand", "merge_v2_sem",
-                                   "merge_v2_divrand", "merge_v2_flat"}
+                                   "merge_v2_divrand", "merge_v2_flat",
+                                   "merge_v2_jsdiv"}
 
 # Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
 RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
@@ -1132,7 +1141,7 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
         # forks are LESS RELEVANT, which is true of merge_v2_rand's unrelated
         # anchor and false by construction of a same-anchor pair swap.
         sel_stats = selection_stats(forks, "flat" if flat else cfg.pair_select,
-                                    pool)
+                                    pool, graph=graph)
         if not forks:
             print(f"warning: scout returned 0 forks (tau={cfg.tau}) — "
                   f"baseline prompt used for: {question[:60]}", file=sys.stderr)
