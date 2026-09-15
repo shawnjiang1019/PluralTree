@@ -39,7 +39,8 @@
 #   Run:    sbatch jobs/eval/job_scale_7b.sh
 #
 # Knobs: MODEL, LOCAL_ROOT, TAU, SEED, MAXQ, MAXU, NROLL, KROLL, CONDS, EMB,
-#        FEATS, DATASET, OUT, SCORES, TP, PORT.
+#        FEATS, DATASET, OUT, SCORES, TP, PORT,
+#        SKIPJUDGE=1 (generate only; judge with 72B via job_judge_only.sh).
 
 module load python/3.11 gcc cuda/13.2 arrow/24.0.0 opencv/4.13.0
 source ~/pluraltree-env/bin/activate
@@ -144,6 +145,14 @@ echo "tag failures (injected answers missing <answer> tags):"
 grep -c "missing <answer> tags" logs/scale_7b_${SLURM_JOB_ID}.err || true
 echo "merge_v2 lossy fallbacks (merge compressed, concatenation used instead):"
 grep -c "merge_v2 LOSSY" logs/scale_7b_${SLURM_JOB_ID}.err || true
+
+if [ "${SKIPJUDGE:-0}" = "1" ]; then
+    echo ""
+    echo "SKIPJUDGE=1: generated ${OUT}, no judge pass. Judge with the 72B model:"
+    echo "  RESP=${OUT} SCORES=${SCORES} ROLLOUTS=${SCORES%.csv}_rollouts.csv \\"
+    echo "    sbatch jobs/eval/job_judge_only.sh"
+    exit 0
+fi
 
 echo "=== stage 2: judge (SAME 7B server) ==="
 python -m evaluation.overton.judge_overtonbench --score "${OUT}" \

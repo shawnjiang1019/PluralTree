@@ -17,7 +17,9 @@
 # rejected before stage 2 is reached. The judge itself does not care what the
 # condition is called -- it scores whatever rows are in the file.
 #
-# Knobs: RESP, SCORES, MODEL, MAXU, KROLL, PORT, TP.
+# Knobs: RESP, SCORES, MODEL, MAXU, KROLL, PORT, TP,
+#        SEED (participant subset; re-judge at another SEED for judge-vs-itself),
+#        ROLLOUTS (csv path: per-rollout covered clusters, for the group gate).
 
 module load python/3.11 gcc cuda/13.2 arrow/24.0.0
 source ~/pluraltree-env/bin/activate
@@ -39,6 +41,10 @@ MAXU="${MAXU:-20}"
 # sets and discards them after printing the union table.
 CLUSTERS="${CLUSTERS:-${SCORES%.csv}_clusters.csv}"
 KROLL="${KROLL:-0}"
+SEED="${SEED:-0}"
+ROLLOUTS="${ROLLOUTS:-}"
+ROLL_ARG=""
+[ -n "${ROLLOUTS}" ] && ROLL_ARG="--dump_rollouts ${ROLLOUTS}"
 PORT="${PORT:-8000}"
 TP="${TP:-4}"
 VLLM="${VLLM:-vllm}"
@@ -67,8 +73,8 @@ echo "vLLM up"
 python -u -m evaluation.overton.judge_overtonbench --score "${RESP}" \
     --max_users "${MAXU}" --k_rollouts "${KROLL}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
-    --out "${SCORES}" \
-    --dump_clusters "${CLUSTERS}" \
+    --out "${SCORES}" --seed "${SEED}" \
+    --dump_clusters "${CLUSTERS}" ${ROLL_ARG} \
     || { echo "JUDGING FAILED"; exit 1; }
 
 echo ""

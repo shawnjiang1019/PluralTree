@@ -40,7 +40,7 @@ def load_eval_holdout_texts(split: str = "full") -> set[str]:
 def build_prompts(graph, h_all, text_feat, manifold, *, cfg, instruction: str,
                   eval_holdout_texts: set[str] | None = None,
                   min_positions: int = 2, max_questions: int = 0,
-                  q_emb_fn=None) -> list[dict]:
+                  q_emb_fn=None, inject: bool = True) -> list[dict]:
     """One record per usable graph question. Returns dicts with keys:
     question_id, question, prompt (chat messages), positions (list of dicts).
 
@@ -61,6 +61,18 @@ def build_prompts(graph, h_all, text_feat, manifold, *, cfg, instruction: str,
         if _norm(question) in holdout:
             continue
         positions = positions_from_subtree(graph, nid)
+        if not inject:
+            # Plain question under BASELINE_INSTRUCTION (build_prompt with no
+            # forks). For the group-diversity reward, which needs no graph
+            # targets and no retrieval: at 7B, injection collapses coverage
+            # (0.394 -> 0.099), so the policy is trained on the prompt it can
+            # actually answer. Positions ride along for logging only.
+            records.append({"question_id": nid, "question": question,
+                            "prompt": build_prompt(question, None, graph),
+                            "positions": [asdict(p) for p in positions]})
+            if max_questions and len(records) >= max_questions:
+                break
+            continue
         if len(positions) < min_positions:
             continue
         q_emb = (q_emb_fn or embed_question)(question)

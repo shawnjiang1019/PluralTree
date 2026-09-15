@@ -45,13 +45,23 @@ KL="${KL:-0.04}"
 MAXSTEPS="${MAXSTEPS:-0}"          # 0 = run to n_epochs
 PROMPTS="${PROMPTS:-0}"            # 0 = all usable graph questions
 OUT="${OUT:-grpo_lora}"
+# Reward: coverage (graph positions, per answer) or group (credit for viewpoints
+# the rest of the group missed; alignment/group_reward.py). Train group ONLY
+# after scripts/analysis/group_reward_gate.py passes -- use LAMBDA/DEPTH it chose.
+REWARD="${REWARD:-coverage}"
+LAMBDA="${LAMBDA:-1.0}"
+DEPTH="${DEPTH:-0}"
+INJECT="${INJECT:-1}"            # 0 = plain question prompts (group reward only)
+RARGS="--reward_kind ${REWARD} --lambda_div ${LAMBDA} --pool_min_depth ${DEPTH}"
+[ "${INJECT}" = "0" ] && RARGS="${RARGS} --no_inject"
 echo "BASE=${BASE} GROUP=${GROUP} LR=${LR} KL=${KL} MAXSTEPS=${MAXSTEPS} PROMPTS=${PROMPTS} EMB=${EMB}"
+echo "REWARD=${REWARD} LAMBDA=${LAMBDA} DEPTH=${DEPTH} INJECT=${INJECT}"
 
 if [ "${DRY:-0}" = "1" ]; then
     echo "=== DRY RUN (reward + advantage on real prompts; no trl/GPU) ==="
     python -m alignment.train_grpo \
         --embeddings "${EMB}" --text_feat "${FEATS}" --dataset opinionqa \
-        --curvature 0.5 --prompts_max 20 --dry_run --stub_embed \
+        --curvature 0.5 --prompts_max 20 --dry_run --stub_embed ${RARGS} \
         || { echo "DRY RUN FAILED (see .err)"; exit 1; }
     exit 0
 fi
@@ -60,7 +70,7 @@ python -m alignment.train_grpo \
     --embeddings "${EMB}" --text_feat "${FEATS}" --dataset opinionqa \
     --curvature 0.5 \
     --base_model "${BASE}" --group_size "${GROUP}" --lr "${LR}" --kl_coef "${KL}" \
-    --max_steps "${MAXSTEPS}" --prompts_max "${PROMPTS}" --save_dir "${OUT}" \
+    --max_steps "${MAXSTEPS}" --prompts_max "${PROMPTS}" --save_dir "${OUT}" ${RARGS} \
     || { echo "GRPO TRAIN FAILED (see .err)"; exit 1; }
 
 echo "Done. LoRA adapter: ${OUT}"

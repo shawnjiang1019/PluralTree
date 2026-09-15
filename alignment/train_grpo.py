@@ -23,6 +23,7 @@ import argparse
 import os
 import re
 import sys
+from collections import defaultdict
 
 import numpy as np
 
@@ -93,8 +94,9 @@ def build_dataset(args, cfg: GRPOAlignConfig):
                          cfg=ScoutConfig(tau=cfg.tau, alpha=cfg.alpha),
                          instruction=PLURALISM_ROUTE,
                          eval_holdout_texts=holdout,
-                         max_questions=cfg.prompts_max)
-    print(f"built {len(recs)} training prompts "
+                         max_questions=cfg.prompts_max,
+                         inject=cfg.inject)
+    print(f"built {len(recs)} {'scout-injected' if cfg.inject else 'plain'} training prompts "
           f"(eval holdout: {'off' if args.no_holdout else len(holdout)} questions)")
     return recs
 
@@ -115,6 +117,70 @@ def make_reward_func(embed_fn, rcfg: RewardConfig):
     return reward_func
 
 
+def make_group_reward_func(embed_fn, gcfg, group_size: int):
+    """TRL reward_func for alignment/group_reward.py.
+
+    The reward of one completion depends on the others sampled for the SAME prompt,
+    so completions are regrouped by the dataset's ``question_id`` column rather
+    than by position in the batch -- correct whatever order TRL lays the batch out
+    in. A group smaller than ``group_size`` means TRL split one prompt's
+    generations across reward calls; novelty would then be computed against a
+    partial group, so that is reported rather than silently scored.
+    """
+    from alignment.group_reward import group_rewards
+
+    def reward_func(completions, question_id=None, **_):
+        if question_id is None:
+            raise ValueError("group reward needs the dataset's question_id column")
+        texts = [_completion_text(c) for c in completions]
+        groups: dict = defaultdict(list)
+        for i, q in enumerate(question_id):
+            groups[q].append(i)
+        rewards = [0.0] * len(texts)
+        for q, idxs in groups.items():
+            if len(idxs) != group_size:
+                print(f"  WARNING group reward: question {q} has {len(idxs)} "
+                      f"completions in this call, expected {group_size}")
+            r, _bd = group_rewards([texts[i] for i in idxs], embed_fn, gcfg)
+            for i, v in zip(idxs, r):
+                rewards[i] = v
+        return rewards
+    return reward_func
+
+
+def _group_cfg(cfg: GRPOAlignConfig):
+    from alignment.group_reward import GroupRewardConfig
+    return GroupRewardConfig(sim_thr=cfg.pool_sim_thr, min_depth_words=cfg.pool_min_depth,
+                             lambda_div=cfg.lambda_div, mode="group")
+
+
+def dry_run_group(recs: list[dict], embed_fn, cfg: GRPOAlignConfig) -> None:
+    """Fake groups spanning the axis the group reward scores: a collapsed group,
+    and a group where one rollout covers what the others do not."""
+    from alignment.advantage import group_relative_advantage
+    from alignment.group_reward import group_rewards
+
+    def para(topic_words: str, n: int = 3) -> str:
+        return "\n".join(f"{topic_words} matter here for reason number {k} in practice."
+                         for k in range(n))
+
+    gcfg = _group_cfg(cfg)
+    for rec in recs[:3]:
+        q = para(rec["question"][:60])
+        other = para("wages inflation housing costs rent")
+        collapsed = [q] * cfg.group_size
+        mixed = ([q] * (cfg.group_size - 1)) + [other]
+        print(f"  q{rec['question_id']}: {rec['question'][:70]}")
+        for name, grp in (("collapsed", collapsed), ("one-novel", mixed)):
+            r, bd = group_rewards(grp, embed_fn, gcfg)
+            adv = group_relative_advantage(r)
+            print(f"    {name:<10} rewards[first,last]=({r[0]:.3f},{r[-1]:.3f}) "
+                  f"adv[last]={adv[-1]:+.3f} pool={bd[0]['n_pool']} "
+                  f"unique[last]={bd[-1]['n_unique']}")
+        print()
+    print("dry run OK -- group reward + advantage run on real prompts.")
+
+
 # ---------------------------------------------------------------------------
 # --dry_run: exercise reward + advantage on real prompts, no GPU / no trl
 # ---------------------------------------------------------------------------
@@ -126,6 +192,11 @@ def dry_run(args, cfg: GRPOAlignConfig):
         print("no prompts built — check embeddings / graph / holdout"); return
     embed_fn = _hashing_embed_fn() if args.stub_embed else \
         __import__("alignment.reward", fromlist=["default_embed_fn"]).default_embed_fn(cfg.reward_embedder)
+    if cfg.reward_kind == "group":
+        print(f"\nscoring fake groups of {cfg.group_size} with the GROUP reward "
+              f"(lambda={cfg.lambda_div}, depth={cfg.pool_min_depth}):\n")
+        dry_run_group(recs, embed_fn, cfg)
+        return
     rcfg = RewardConfig(match_thr=cfg.match_thr, l_precision=cfg.l_precision,
                         l_verbose=cfg.l_verbose,
                         min_depth_words=cfg.min_depth_words, weight=cfg.weight)
@@ -180,14 +251,17 @@ def train(args, cfg: GRPOAlignConfig):
     recs = build_dataset(args, cfg)
     if not recs:
         raise SystemExit("no prompts built — aborting")
-    ds = Dataset.from_list([{"prompt": r["prompt"], "positions": r["positions"]}
-                            for r in recs])
+    ds = Dataset.from_list([{"prompt": r["prompt"], "positions": r["positions"],
+                             "question_id": r["question_id"]} for r in recs])
 
     embed_fn = default_embed_fn(cfg.reward_embedder)
-    rcfg = RewardConfig(match_thr=cfg.match_thr, l_precision=cfg.l_precision,
-                        l_verbose=cfg.l_verbose,
-                        min_depth_words=cfg.min_depth_words, weight=cfg.weight)
-    reward_func = make_reward_func(embed_fn, rcfg)
+    if cfg.reward_kind == "group":
+        reward_func = make_group_reward_func(embed_fn, _group_cfg(cfg), cfg.group_size)
+    else:
+        rcfg = RewardConfig(match_thr=cfg.match_thr, l_precision=cfg.l_precision,
+                            l_verbose=cfg.l_verbose,
+                            min_depth_words=cfg.min_depth_words, weight=cfg.weight)
+        reward_func = make_reward_func(embed_fn, rcfg)
 
     lora = LoraConfig(r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
                       lora_dropout=cfg.lora_dropout, task_type="CAUSAL_LM",
@@ -246,14 +320,26 @@ def main():
     ap.add_argument("--max_steps", type=int, default=None)
     ap.add_argument("--prompts_max", type=int, default=None)
     ap.add_argument("--save_dir", default=None)
+    ap.add_argument("--reward_kind", choices=["coverage", "group"], default=None)
+    ap.add_argument("--lambda_div", type=float, default=None)
+    ap.add_argument("--pool_sim_thr", type=float, default=None)
+    ap.add_argument("--pool_min_depth", type=int, default=None)
+    ap.add_argument("--no_inject", action="store_true",
+                    help="plain question prompts, no scout forks (group reward only)")
     args = ap.parse_args()
 
     cfg = GRPOAlignConfig()
     for k in ("base_model", "group_size", "lr", "kl_coef", "max_steps",
-              "prompts_max", "save_dir"):
+              "prompts_max", "save_dir", "reward_kind", "lambda_div",
+              "pool_sim_thr", "pool_min_depth"):
         v = getattr(args, k)
         if v is not None:
             setattr(cfg, k, v)
+    if args.no_inject:
+        cfg.inject = False
+    if cfg.reward_kind == "coverage" and not cfg.inject:
+        ap.error("--no_inject needs --reward_kind group: the coverage reward "
+                 "scores against the injected anchor's graph positions")
     if args.dry_run:
         args.stub_embed = args.stub_embed or True     # default stub in dry_run
         dry_run(args, cfg)

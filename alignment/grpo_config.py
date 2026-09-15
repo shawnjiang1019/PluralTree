@@ -46,7 +46,18 @@ class GRPOAlignConfig:
     l_precision: float = 0.50     # exponent (reward is multiplicative now)
     l_verbose: float = 0.0        # off: the eval is monotone in coverage
 
+    # --- reward choice ---
+    reward_kind: str = "coverage"  # "coverage" (graph positions, per answer) or
+    #                                "group" (alignment/group_reward.py: credit for
+    #                                viewpoints the rest of the group missed).
+    #                                Neither has passed its judge gate.
+    lambda_div: float = 1.0        # group: novelty weight, r = q * (1 + lambda * n)
+    pool_sim_thr: float = 0.55     # group: cosine that builds and matches pool clusters
+    pool_min_depth: int = 0        # group: words per cluster for it to count
+
     # --- scout retrieval baked into prompts (frozen during RL) ---
+    inject: bool = True            # False: plain question, no forks (group reward only;
+    #                                7B collapses under injection, 0.394 -> 0.099)
     tau: float = 0.25
     alpha: float = 1.0
 
