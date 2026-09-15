@@ -53,7 +53,7 @@ MINVALS="${MINVALS:-2}"          # valueprism: drop situations with <2 values
 EMB="${EMB:-embeddings_opinionqa.pt}"
 DATASET="${DATASET:-opinionqa}"
 TAU="${TAU:-0.25}"
-SEED="${SEED:-0}"
+SEED="${SEED:-42}"               # MUST match train.py --seed: node ids depend on it
 # Exit 2 below this resolution rate, so a dependent eval submitted with
 # --dependency=afterok is genuinely GATED rather than merely sequenced: without
 # it this job exits 0 on any result and the eval fires even when the graph

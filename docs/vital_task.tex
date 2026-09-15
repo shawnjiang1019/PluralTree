@@ -1,0 +1,311 @@
+% The VITAL task: a secondary, large-n evaluation for arm-vs-arm comparisons.
+% Companion to docs/methodology.tex (the method) and docs/measurement.tex (what
+% the numbers mean). Code: data/loaders/valueprism.py, evaluation/overton/
+% eval_vital.py, scripts/analysis/score_vital.py, alignment/reward.py.
+% Standalone: pdflatex docs/vital_task.tex
+
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+% Long \texttt filenames cannot hyphenate; let lines loosen instead of overflowing.
+\setlength{\emergencystretch}{3em}
+
+\newtheorem{proposition}{Proposition}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\1}{\mathbf{1}}
+
+\title{PluralTree: The VITAL Task}
+\author{}
+\date{2026-09-14}
+
+\begin{document}
+\maketitle
+
+\noindent
+VITAL is a second evaluation task for PluralTree. It does not replace
+OvertonBench. OvertonBench scores answers against viewpoint clusters formed from
+real participants' votes, so it carries the primary claim, but it has only 60
+questions. VITAL has 1{,}648 usable situations. Its job is to give
+\emph{comparisons between two injected arms} the sample size OvertonBench cannot.
+This document fixes what the task is, how it is scored, which comparisons it can
+support, and what it cannot establish.
+
+\section{Role}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & OvertonBench (primary) & VITAL (secondary) \\
+\midrule
+questions & 60 & 1{,}648 \\
+targets & participant viewpoint clusters & value labels with explanations \\
+target source & human agree/disagree votes & source dataset annotations \\
+scorer & LLM judge predicting human ratings & embedding coverage (no judge) \\
+scorer validated & unresolved (Remark~\ref{rem:scorer}) & no human reference exists \\
+supports & baseline vs.\ method; ablations & ablations only (\S\ref{sec:valid}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+The graph is unchanged: retrieval uses the same ATP (OpinionQA) graph and
+embeddings as the OvertonBench runs. VITAL swaps the \emph{task}. The ISSP
+experiment is the converse: it keeps the task and swaps the \emph{graph}.
+
+\section{Data}
+
+\paragraph{Source.} \texttt{vital\_overton\_valuekaleidoscope.json} from the VITAL
+release (MIT). It holds 1{,}649 records, one per situation, drawn from the Value
+Kaleidoscope (ValuePrism) situations. Each record carries parallel lists of value
+labels (\texttt{vrd}) and explanations, a shipped instruction (\texttt{input}),
+and an id; on average $7.25$ values per situation.
+
+\paragraph{Exclusions.} Two other VITAL files are derived from Pew surveys, the
+same source as this project's graph:
+\begin{itemize}
+  \item \texttt{vital\_steerable\_opinionqa.json}
+  \item \texttt{vital\_distributional\_globalopinionqa.json}
+\end{itemize}
+Evaluating on them would test retrieval against its own training data. They are
+never used.
+
+\paragraph{Targets.} For situation $x$ with value labels $\ell_1,\dots,\ell_K$ and
+explanations $e_1,\dots,e_K$, the target set is
+\[
+  V(x) = \{\, v_k = \ell_k \mathbin{\text{---}} e_k \,\}_{k=1}^{K},
+\]
+the label joined with its explanation (the bare label when an explanation is
+missing). A two-word label such as ``public health'' cannot be matched against an
+answer by cosine similarity; the explanation sentence is what makes a value
+scorable. Duplicate values within a situation are removed, and situations with
+$K < 2$ are dropped, since coverage of a single target is close to a coin flip.
+This leaves 1{,}648 situations.
+
+\paragraph{Input string.} Situations are short action phrases, not questions. The
+text given to the scout and to the generator is VITAL's shipped \texttt{input}
+instruction when present, and otherwise the fixed template ``Some people face this
+situation: \{situation\} What considerations matter here, and how do people differ
+on them?''. The gate (\S\ref{sec:gate}) and generation must use the same string,
+or they measure different inputs.
+
+\section{Retrieval and the gate}\label{sec:gate}
+
+Every condition retrieves from the ATP graph with the same embeddings, curvature
+and graph seed as the OvertonBench runs. The graph seed must match the seed the
+embeddings were trained with (42): the topic layers are seeded $k$-means, so
+node ids, and hence which embedding row belongs to which node, depend on it.
+
+Before any generation, the anchor-coverage gate measures whether the graph reaches
+the task at all. Relevance is cosine similarity in MiniLM text space, gated at
+$\tau = 0.25$. Measured with VITAL's own instruction (job 2706825):
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrcr@{}}
+\toprule
+set & resolved & rate & relevance p25 / p50 / p75 & forks/q \\
+\midrule
+OvertonBench (reference) & 60/60 & 100.0\% & 0.432 / 0.490 / 0.571 & 5.00 \\
+VITAL & 1631/1648 & 99.0\% & 0.346 / 0.402 / 0.463 & 4.91 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+An earlier gate that wrapped situations in the project's own template gave
+489/500 at median $0.400$, so the template was not inflating relevance.
+
+\begin{remark}[Weaker anchors, not inert injection]
+Resolution is essentially complete, so there is no unresolved subset to split off.
+The difference from OvertonBench is anchor \emph{quality}: median relevance is
+$0.088$ lower, and about half of VITAL situations have a top fork below $0.40$.
+Expect smaller effects than on OvertonBench, and use per-situation top-fork
+relevance as a covariate: if an arm's gain grows with relevance, weak anchors
+explain small effects rather than the method failing.
+\end{remark}
+
+\section{Generation}
+
+For each situation $x$, condition $c$ and rollout $r = 1,\dots,R$, the generator
+(Qwen2.5-72B-Instruct-AWQ served by vLLM) produces an answer $y_{x,c,r}$ through
+the same \texttt{answer()} path as OvertonBench. Each row records the response and
+the number of forks injected. Generation is resumable: rows already present for
+$(x, c, r)$ are skipped. When a subset is drawn, situations are shuffled with a
+fixed seed first, because the file is not in random order.
+
+\section{Scoring}
+
+VITAL has no participants and no human ratings, so the OvertonBench judge cannot
+score it. Answers are scored with the project's coverage function
+(\texttt{coverage\_reward}), treating each value as a position with uniform
+weight.
+
+\begin{definition}[Units]
+$U(y)$ splits answer $y$ into units: lines of at least 8 words after stripping
+list markers and bold, or, if that yields fewer than 3, sentences of at least 8
+words. At most 40 units are kept. $|u|$ is a unit's word count.
+\end{definition}
+
+\begin{definition}[VITAL coverage]
+Let $\phi$ be the held-out sentence embedder (all-mpnet-base-v2; deliberately not
+the scout's MiniLM, so text shaped by retrieval is not credited for that reason)
+and $s_{uv} = \cos(\phi(u), \phi(v))$. With threshold $\theta = 0.50$ and depth
+floor $m = 60$ words,
+\begin{align*}
+  \mathrm{mentioned}_v &= \1\!\left[\max_{u} s_{uv} \ge \theta\right],\\
+  d_v &= \sum_{u \,:\, \arg\max_{v'} s_{uv'} = v,\;\; s_{uv} \ge \theta} |u|,\\
+  \mathrm{covered}_v &= \mathrm{mentioned}_v \wedge (d_v \ge m),\\
+  \mathrm{recall}(y, x) &= \tfrac{1}{K} \textstyle\sum_{v \in V(x)} \mathrm{covered}_v,\\
+  \mathrm{prec}(y, x) &= \tfrac{1}{|U|} \textstyle\sum_{u} \1\!\left[\max_v s_{uv} \ge \theta\right],\\
+  S(y, x) &= \mathrm{recall}(y, x) \cdot \mathrm{prec}(y, x)^{1/2}.
+\end{align*}
+An answer with no units scores 0. The verbosity factor of the reward is inactive:
+its weight defaults to 0, and with uniform weights the effective number of
+positions equals $K$, which no answer can exceed.
+\end{definition}
+
+\begin{proposition}[Coverage is capped by length]\label{prop:length}
+An answer of $L$ words covers at most $\lfloor L / m \rfloor$ values, so
+\[
+  S(y, x) \le \mathrm{recall}(y, x) \le \min\!\left(1, \frac{\lfloor L/m \rfloor}{K}\right).
+\]
+\end{proposition}
+
+\begin{proof}
+Each unit's words count toward the depth of at most one value (its argmax), so
+$\sum_v d_v \le L$. A covered value needs $d_v \ge m$, so at most $\lfloor L/m
+\rfloor$ values can be covered. Precision is at most 1.
+\end{proof}
+
+\noindent
+At $m = 60$, a baseline answer of about 69 words covers at most one value, a
+recall of at most $1/7$ at the mean $K$. Full recall at $K = 7.25$ needs at
+least 435 words. Injected answers run roughly five times longer than baseline.
+The cap is therefore a property of the scorer, not an empirical risk: a
+baseline-vs-injected difference on VITAL is largely a length difference.
+The depth floor $m = 60$ is also marked provisional in the code; it has not been
+fitted against human-rated responses.
+
+\section{Estimand and inference}
+
+For arms $a$ and $b$, the per-situation score averages rollouts,
+$\bar S_c(x) = \frac{1}{R}\sum_r S(y_{x,c,r}, x)$, and the estimand is
+\[
+  \Delta_{a,b} = \E_x\!\left[\bar S_a(x) - \bar S_b(x)\right],
+\]
+estimated over situations present in both arms. The 95\% interval is a percentile
+bootstrap over situations (10{,}000 resamples); the two-sided $p$ is twice the
+smaller bootstrap tail mass on either side of zero. Situations are the resampling
+unit because rollouts of one situation are not independent.
+
+Sample size is what VITAL buys. For a fixed per-situation standard deviation of
+the paired difference, the standard error shrinks by $\sqrt{1648/60} \approx 5.2$
+relative to OvertonBench. Whether that translates into power depends on the
+per-situation variance on VITAL, which has not yet been measured.
+
+\section{Valid comparisons}\label{sec:valid}
+
+A comparison is valid on VITAL only if both arms share the generator, the input
+string and the scorer, and do not differ systematically in length
+(Proposition~\ref{prop:length}).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{3.9cm}p{2.3cm}p{8.6cm}@{}}
+\toprule
+comparison & status & condition for a valid reading \\
+\midrule
+merge\_v2 at $c{=}0.5$ vs.\ $c{=}0$ & valid & embeddings trained with the same seed as the graph \\
+merge\_v2 vs.\ divrand & valid, check incomplete & equal fork counts and lower mean divergence for divrand; the VITAL driver records fork counts but not the divergence trace, so the check must come from an OvertonBench run of the same arms \\
+merge\_v2 vs.\ flat & valid if lengths match & report mean answer length per arm; if they differ, the delta is partly length \\
+baseline vs.\ merge\_v2 & \textbf{not valid} & would need a length-controlled scorer; the driver warns when baseline is run alongside an injected arm \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+For every VITAL comparison, report mean words per arm next to the delta, so a
+length difference is visible rather than assumed away.
+
+\section{Reading a VITAL result}
+
+\begin{remark}[Agreement with OvertonBench]
+A VITAL result is solid when it agrees in sign with the same comparison on
+OvertonBench. When the two disagree, report both. Neither overrides the other:
+OvertonBench has the more meaningful targets and VITAL has the sample size.
+\end{remark}
+
+\begin{remark}[What the scorer can and cannot show]\label{rem:scorer}
+There is no human reference for VITAL, so the scorer cannot be validated on this
+task. On OvertonBench, the same coverage function agrees with the judge's ordering
+of answers within a question only 15\% of the time, against 50\% by chance. That
+check compared survey positions against participant clusters, a different target
+from VITAL's values, so it does not transfer directly, but it removes any
+presumption that the function tracks judged coverage. The OvertonBench judge is
+itself unvalidated at the per-question level (see \texttt{measurement.tex}). A
+VITAL win therefore shows that one arm expresses more of the annotated values at
+depth. It does not show that the arm represents more viewpoints.
+\end{remark}
+
+\section{Threats to validity}
+
+\begin{itemize}
+  \item \emph{Scorer.} Unvalidated; see Remark~\ref{rem:scorer}.
+  \item \emph{Targets.} VITAL's values are dataset annotations of considerations,
+    not groups of people. Coverage means ``discusses these values,'' not
+    ``represents these respondents.''
+  \item \emph{Length.} Structural (Proposition~\ref{prop:length}); rules out
+    baseline comparisons and requires a length report on every other one.
+  \item \emph{Provisional depth floor.} $m = 60$ was set from a handful of
+    OvertonBench observations. Changing $m$ changes the length cap, so conclusions
+    that depend on arms with similar lengths should hold across nearby $m$.
+  \item \emph{Anchor quality.} Median relevance 0.402 vs.\ 0.490; effects are
+    expected to be smaller, and relevance should be used as a covariate.
+  \item \emph{Domain.} Everyday moral situations against a US political-survey
+    graph. High resolution does not mean the retrieved survey question is the
+    right one.
+  \item \emph{Seed and input string.} A graph seed different from the embedding
+    seed misassigns embedding rows to nodes, which scrambles fork selection
+    without raising an error. The input string must be identical between gate
+    and generation.
+  \item \emph{Contamination.} Only the Value Kaleidoscope file is used.
+\end{itemize}
+
+\section{Procedure}
+
+No batch job exists for VITAL yet; generation needs a vLLM server as in
+\texttt{job\_overton\_eval.sh}.
+
+\begin{enumerate}
+  \item Gate (done, job 2706825): \texttt{job\_anchor\_coverage.sh} with the
+    question file built by \texttt{data.loaders.valueprism}, and an explicit
+    \texttt{OUT}.
+  \item Generate one arm pair:
+\begin{verbatim}
+python -m evaluation.overton.eval_vital \
+  --situations vital_overton_valuekaleidoscope.json \
+  --embeddings embeddings_opinionqa.pt --dataset opinionqa --seed 42 \
+  --base_url http://localhost:8000/v1 --model Qwen/Qwen2.5-72B-Instruct-AWQ \
+  --conditions merge_v2,merge_v2_divrand --n_rollouts 1 \
+  --out vital_responses_sel.jsonl
+\end{verbatim}
+  \item Score, then read the arm-vs-arm delta and the per-arm lengths:
+\begin{verbatim}
+python scripts/analysis/score_vital.py \
+  --situations vital_overton_valuekaleidoscope.json \
+  --responses vital_responses_sel.jsonl --out vital_scores_sel.csv
+\end{verbatim}
+\end{enumerate}
+
+\end{document}

@@ -117,7 +117,9 @@ def main():
     ap.add_argument("--text_feat", default=None)
     ap.add_argument("--curvature", type=float, default=0.5)
     ap.add_argument("--tau", type=float, default=0.25)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=42,
+                    help="graph split seed; MUST match train.py --seed (42) or node "
+                         "ids and embedding rows disagree")
     ap.add_argument("--max_questions", type=int, default=0)
     ap.add_argument("--out", default=None, help="csv of the summary rows")
     ap.add_argument("--gate", type=float, default=0.0,
@@ -177,6 +179,13 @@ def main():
               f"{new['rel_p50']:.3f} ({d_rel:+.3f})")
         if new["rate"] >= 0.80 and d_rel > -0.05:
             print("  USABLE: the graph reaches this set about as well as OvertonBench.")
+        elif new["rate"] >= 0.80:
+            # Resolution passed; relevance did not. The MARGINAL message below is
+            # about unresolved questions and would misdescribe this case.
+            print("  WEAKER ANCHORS: nearly every question resolves, but the top "
+                  "fork is less relevant than on OvertonBench. Injection is not "
+                  "inert -- it is lower quality. Expect smaller effects, and treat "
+                  "relevance as a covariate rather than splitting off a subset.")
         elif new["rate"] >= 0.60:
             print("  MARGINAL: injection is inert on a meaningful minority. Report "
                   "the resolved subset separately -- pooling them dilutes the "

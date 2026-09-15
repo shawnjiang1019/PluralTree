@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:4
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=16
-#SBATCH --time=24:00:00
+#SBATCH --time=08:00:00
 #SBATCH --account=def-enaskt
 #SBATCH --output=logs/vital_%j.out
 #SBATCH --error=logs/vital_%j.err
