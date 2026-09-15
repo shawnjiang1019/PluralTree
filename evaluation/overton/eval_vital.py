@@ -39,7 +39,9 @@ def main():
     ap.add_argument("--embeddings", required=True)
     ap.add_argument("--dataset", choices=list(DATASETS), default="opinionqa")
     ap.add_argument("--curvature", type=float, default=0.5)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=42,
+                    help="graph split seed; MUST match train.py --seed (42) or node "
+                         "ids and embedding rows disagree")
     ap.add_argument("--text_feat", default=None)
     ap.add_argument("--base_url", default="http://localhost:8000/v1")
     ap.add_argument("--model", required=True)
@@ -50,6 +52,11 @@ def main():
     ap.add_argument("--seed_situations", type=int, default=0,
                     help="shuffle before truncating -- id 0 is the trolley "
                          "problem, the file is not representative in order")
+    ap.add_argument("--tag", default="",
+                    help="suffix written into the condition name (merge_v2@c0). "
+                         "Two geometry arms run the SAME condition on different "
+                         "embeddings; without a tag score_vital cannot tell "
+                         "them apart when their files are scored together.")
     ap.add_argument("--out", default="vital_responses.jsonl")
     ap.add_argument("--dry_run", action="store_true")
     args = ap.parse_args()
@@ -61,7 +68,7 @@ def main():
     from retrieval.answer import CONDITIONS, answer
     from retrieval.scout import ScoutConfig, embed_question, load_or_compute_text_feat
 
-    from data.loaders.valueprism import load_situations
+    from data.loaders.valueprism import DEFAULT_TEMPLATE, load_situations
 
     conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
     unknown = [c for c in conditions if c not in CONDITIONS]
@@ -86,7 +93,14 @@ def main():
         situations = sorted(situations, key=lambda s: s["situation_id"])
         rng.shuffle(situations)
         situations = situations[: args.max_questions]
-    questions = [(s["situation_id"], s["situation"]) for s in situations]
+    # Same string the gate measured (valueprism.questions_only): VITAL's shipped
+    # `input` prompt, else DEFAULT_TEMPLATE. The bare situation is a 7-word action
+    # phrase -- retrieving and answering on it measures a different input than
+    # the gate did.
+    questions = [(s["situation_id"],
+                  (s.get("prompt") or "").strip()
+                  or DEFAULT_TEMPLATE.format(situation=s["situation"]).strip())
+                 for s in situations]
     print(f"{len(questions)} situations x {len(conditions)} conditions -> {args.out}")
 
     done: set[tuple[str, str, int]] = set()
@@ -101,11 +115,12 @@ def main():
         for qid, question in questions:
             q_emb = embed_question(question)
             for cond in conditions:
+                name = f"{cond}@{args.tag}" if args.tag else cond
                 cfg = None
                 if cond == "scout" and args.tau is not None:
                     cfg = ScoutConfig(tau=args.tau, alpha=CONDITIONS["scout"].alpha)
                 for rollout in range(args.n_rollouts):
-                    if (qid, cond, rollout) in done:
+                    if (qid, name, rollout) in done:
                         continue
                     resp, trace = answer(question, cond, graph=graph, h_all=h_all,
                                          text_feat=text_feat, manifold=manifold,
@@ -114,7 +129,7 @@ def main():
                                          with_trace=True)
                     f.write(json.dumps({
                         "question_id": qid, "question": question,
-                        "condition": cond, "rollout": rollout,
+                        "condition": name, "rollout": rollout,
                         "response": resp, "n_forks": trace.get("n_forks", 0),
                     }) + "\n")
                     f.flush()

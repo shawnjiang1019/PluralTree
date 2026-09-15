@@ -47,7 +47,9 @@ def _bootstrap(deltas: list[float], n: int = 10000, seed: int = 0):
 def main():
     ap = argparse.ArgumentParser(description="Score VITAL responses")
     ap.add_argument("--situations", required=True)
-    ap.add_argument("--responses", required=True)
+    ap.add_argument("--responses", required=True,
+                    help="comma list; e.g. both geometry arms' files, whose "
+                         "conditions eval_vital --tag made distinct")
     ap.add_argument("--min_values", type=int, default=2)
     ap.add_argument("--embedder", default="sentence-transformers/all-mpnet-base-v2")
     ap.add_argument("--baseline", default=None,
@@ -64,10 +66,11 @@ def main():
     print(f"  {len(situations)} situations")
 
     rows = []
-    with open(args.responses, encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                rows.append(json.loads(line))
+    for path in [p.strip() for p in args.responses.split(",") if p.strip()]:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    rows.append(json.loads(line))
     print(f"  {len(rows)} response rows")
 
     embed_fn = default_embed_fn(args.embedder)
@@ -85,6 +88,7 @@ def main():
         score, breakdown = coverage_reward(r["response"], positions, embed_fn, cfg)
         per_row.append({"question_id": r["question_id"], "condition": r["condition"],
                         "rollout": r.get("rollout", 0), "coverage": score,
+                        "n_words": len((r["response"] or "").split()),
                         "n_values": len(positions),
                         "recall": breakdown.get("recall"),
                         "precision": breakdown.get("precision")})
@@ -93,21 +97,27 @@ def main():
 
     with open(args.out, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["question_id", "condition", "rollout",
-                                          "coverage", "n_values", "recall",
-                                          "precision"])
+                                          "coverage", "n_words", "n_values",
+                                          "recall", "precision"])
         w.writeheader()
         w.writerows(per_row)
     print(f"  wrote {args.out}")
 
     by_cond = defaultdict(list)
+    words = defaultdict(list)
     by_q = defaultdict(dict)
     for r in per_row:
         by_cond[r["condition"]].append(r["coverage"])
+        words[r["condition"]].append(r["n_words"])
         by_q[r["question_id"]].setdefault(r["condition"], []).append(r["coverage"])
 
+    # Length next to every score: coverage is capped at floor(words/60)/K values
+    # (docs/vital_task.tex, Proposition 1), so a delta between arms of different
+    # length is partly a length difference.
     print("\nby condition (mean over rows):")
     for c in sorted(by_cond):
-        print(f"  {c:<18}{st.mean(by_cond[c]):.4f}   (n={len(by_cond[c])})")
+        print(f"  {c:<18}{st.mean(by_cond[c]):.4f}   words={st.mean(words[c]):.0f}"
+              f"   (n={len(by_cond[c])})")
 
     conds = sorted(by_cond)
     print("\npaired deltas (arm - arm, bootstrap over questions):")
@@ -123,8 +133,9 @@ def main():
                 continue
             m, lo, hi, p = _bootstrap(deltas)
             flag = "  [LENGTH-BIAS RISK]" if args.baseline in (c1, c2) else ""
+            dw = st.mean(words[c1]) - st.mean(words[c2])
             print(f"  {c1} - {c2}: {m:+.4f} [{lo:+.4f},{hi:+.4f}] "
-                  f"p={p:.4f} n={len(deltas)}{flag}")
+                  f"p={p:.4f} n={len(deltas)}  words {dw:+.0f}{flag}")
 
 
 if __name__ == "__main__":
