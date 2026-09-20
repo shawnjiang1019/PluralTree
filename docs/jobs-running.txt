@@ -1,0 +1,139 @@
+JOBS IN FLIGHT — updated 2026-09-20
+===================================
+Refresh with:  squeue --me -o "%.10i %.14j %.2t %.11L %R"
+
+  id        name           writes                          settles
+  --------  -------------  ------------------------------  ------------------------------------------
+  3482970   sel_ablation   overton_responses_jsdiv.jsonl   does ranking pairs by TRUE disagreement (JS)
+            (= jsdiv)      overton_scores_jsdiv{,_clusters}.csv  beat the learned Wasserstein ranking?
+                                                           Predicted: tie, or "inert" in the check --
+                                                           the geometry already ranks JS at rho=0.755.
+  3483855   sel_spread     overton_responses_spread.jsonl  does spreading anchors across SURVEY
+                           overton_scores_spread{,_clusters}.csv QUESTIONS (and greedy coverage
+                                                           selection) beat merge_v2? merge_v2 draws
+                                                           4.85 forks from only 2.13 anchors.
+  3484045   g8_gen         overton_responses_g8.jsonl      RL stage 0: 60 q x 8 samples, 7B base,
+                                                           plain prompts. No judging (SKIPJUDGE=1).
+  3484046   g8_judge0      overton_scores_g8{,_clusters,_rollouts}.csv   72B judge, participant seed 0
+  3484047   g8_judge1      overton_scores_g8_s1{,_clusters,_rollouts}.csv 72B judge, seed 1 = the
+                                                           judge-vs-itself CEILING the gate's bar uses
+  3484048   g8_gate        docs/group_reward_gate_baseline.csv  may the group-diversity reward be
+                                                           trained on at all?
+
+  PD (Dependency) is normal: afterok chains stop the run if a step fails.
+  PD (ReqNodeNotAvail, UnavailableNodes:...) = maintenance reservation, not an error.
+
+
+READ THE GATE LOG IN THIS ORDER (it stops at the first failure)
+---------------------------------------------------------------
+  1. headroom     union@8 - within-answer on the 7B base. <= 0.03 -> RL is over,
+                  exits immediately. GRPO can only reweight what the base already
+                  samples; no spread means nothing to select.
+  2. flat groups  share of questions where all 8 rollouts get identical rewards.
+                  Those z-score to zero advantage and train nothing. Fail > 0.30.
+  3. judge vs itself   must exceed 0.5, else there is no stable ordering to track.
+  4. confirm-half concordance + CI vs the bar, and the lambda=0 control (does the
+                  novelty term add agreement over plain coverage?).
+
+  If it PASSES, the log names the chosen lambda/depth; smoke-train 20 steps:
+    REWARD=group INJECT=0 LAMBDA=<chosen> DEPTH=<chosen> MAXSTEPS=20 \
+      sbatch --job-name=grpo_smoke jobs/train/job_grpo_align.sh
+  In that log watch the [group reward] lines: flat= should stay well under 0.30,
+  and no "WARNING ... expected 8" (TRL splitting a prompt across reward calls).
+
+
+WHEN THE ABLATIONS LAND — CHECK THE MANIPULATION FIRST
+-------------------------------------------------------
+  python scripts/analysis/check_ablation_arms.py --responses overton_responses_spread.jsonl --strict
+  python scripts/analysis/check_ablation_arms.py --responses overton_responses_jsdiv.jsonl --strict
+
+  Anchors per row (spread/cover must beat merge_v2's 2.13):
+    python - <<'PY'
+    import json, statistics as st
+    from collections import Counter
+    rows = [json.loads(l) for l in open("overton_responses_spread.jsonl") if l.strip()]
+    for c in sorted({r["condition"] for r in rows}):
+        ps = [r["pair_select"] for r in rows if r["condition"] == c and r.get("pair_select")]
+        if ps:
+            a = [len(set(p.get("anchors") or [])) for p in ps]
+            print(f"{c:<18} anchors/row={st.mean(a):.2f} {Counter(a).most_common()}")
+    PY
+
+  Then the deltas (run against BOTH baselines -- an arm can beat baseline while
+  tying merge_v2, and both facts matter):
+    python scripts/analysis/plot_delta_ci.py --scores overton_scores_spread.csv \
+      --baseline merge_v2 --conditions merge_v2_spread,merge_v2_cover --out docs/delta_ci_spread.png
+    python scripts/analysis/plot_delta_ci.py --scores overton_scores_jsdiv.csv \
+      --baseline merge_v2 --conditions merge_v2_jsdiv --out docs/delta_ci_jsdiv.png
+
+
+WAITING, NO QUEUE NEEDED (interactive GPU)
+-------------------------------------------
+  salloc --account=def-enaskt --gres=gpu:1 --mem=32G --cpus-per-task=8 --time=2:00:00
+  module load python/3.11 gcc cuda/13.2 arrow/24.0.0
+  source ~/pluraltree-env/bin/activate
+  cd ~/projects/def-enaskt/shawnj/PluralTree && git pull
+  export OPINIONQA_DIR=$HOME/projects/def-enaskt/shawnj/data/human_resp
+  export ISSP_DIR=$HOME/projects/def-enaskt/shawnj/data/issp
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1
+
+  [1] COVERAGE FUNNEL -- highest value unrun analysis. Where is a viewpoint lost:
+      never retrieved / retrieved but not drafted / dropped by the merge / said
+      but not credited. Decides whether the next push is delivery work or the
+      construct gap.
+        python scripts/analysis/coverage_funnel.py --responses overton_responses_flat.jsonl \
+          --clusters overton_scores_flat_clusters.csv \
+          --conditions baseline,merge_v2,merge_v2_flat --out docs/coverage_funnel_flat.csv
+        python scripts/analysis/coverage_funnel.py --responses overton_responses_issp.jsonl \
+          --clusters overton_scores_issp_clusters.csv \
+          --conditions baseline,merge_v2 --out docs/coverage_funnel_issp.csv
+
+  [2] ISSP ON THE ATP SCALE (re-judge output already exists). Baseline should land
+      near 0.50 (was 0.414 judged against all participants) and the resolved-subset
+      delta should stay near +0.048.
+        python scripts/analysis/plot_delta_ci.py --scores overton_scores_issp_u20.csv \
+          --responses overton_responses_issp.jsonl --conditions merge_v2 \
+          --out docs/delta_ci_issp_u20.png
+
+  [3] VITAL COMBINED SCORING (c0 done: 0.3544, 719 words; needs c0p5 complete).
+        wc -l vital_responses_c0p5.jsonl vital_responses_c0.jsonl
+        SKIPGEN=1 SCORE_RESP=vital_responses_c0p5.jsonl,vital_responses_c0.jsonl \
+          SCORES=vital_scores_geom.csv sbatch --job-name=vital_score --time=1:00:00 jobs/eval/job_vital.sh
+
+  [4] DOES THE GAIN TRACK DISAGREEMENT (~7 min graph load)
+        python scripts/analysis/divergence_payoff.py --scores overton_scores_flat.csv \
+          --embeddings embeddings_opinionqa.pt --text_feat feats_opinionqa.pt \
+          --condition merge_v2 --seed 42 --out docs/divergence_payoff_flat.csv
+
+  [5] GEOMETRY, EUCLIDEAN ARM (c=0.5 gave within-axis rho=+0.755)
+        python -m evaluation.intrinsic.validate_divergence --dataset opinionqa \
+          --embeddings embeddings_opinionqa_c0.pt --curvature 0 --feats feats_opinionqa.pt
+
+
+RULES THAT COST US A RUN ALREADY
+---------------------------------
+  * TWO JOBS, ONE OUT= IS CORRUPTION, NOT A RETRY. Generation appends and builds
+    its skip-list at start, so concurrent writers duplicate cells and the judge
+    then unions over 6 rollouts while reporting 3. Killed both VITAL c0p5 jobs
+    and both sel_spread jobs over this. Check squeue --me BEFORE resubmitting.
+  * The job NAME comes from the script, so every submission shows the same name.
+    Pass --job-name=<experiment> so duplicates are visible in squeue.
+  * Always pass OUT=/SCORES= explicitly: job_selection_ablation defaults to
+    overton_responses_sel.jsonl and would overwrite the old selection run.
+  * Jobs read the code when they START, not when submitted. Pull before
+    submitting; avoid pushing to retrieval/ while runs are queued.
+  * Gate CSVs collide: job_anchor_coverage defaults to docs/anchor_cov_${SRC}.csv,
+    and two SRC=none runs overwrite each other (this destroyed a VITAL gate).
+
+
+STILL UNRUN, NOT SUBMITTED
+---------------------------
+  baseline_long     length-matched baseline: is merge_v2's +0.04 just 330 words
+                    against baseline's 69? NOT IMPLEMENTED (~30 lines). Biggest
+                    single threat to the headline claim.
+  merge_v2_rand     content control: matched IRRELEVANT forks. Invalid in every
+                    prior run (1.00 vs 4.85 forks); matched_random_fork now fixes
+                    the volume, so it is finally runnable.
+  trace_execution   needs a run generated AFTER the draft_traces change, then
+                    --drafts. Multi-pass arms stored only the merge call's
+                    <think>, which has no plan in it.

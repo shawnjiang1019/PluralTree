@@ -18,10 +18,23 @@ class HyperbolicTreeGRUCell(nn.Module):
     4. Combine via gated update, map back to Poincaré ball
     """
 
-    def __init__(self, d_input: int, d_hidden: int, manifold: PoincareBall, child_attention: bool = True):
+    def __init__(self, d_input: int, d_hidden: int, manifold: PoincareBall,
+                 child_attention: bool = True, tangent_scale: float = 0.0):
         super().__init__()
         self.d_hidden = d_hidden
         self.manifold = manifold
+        # SATURATION. exp_map_zero gives ||x|| = tanh(sqrt(c)||v||)/sqrt(c), so the
+        # normalized radius is rho = tanh(sqrt(c)||v||): rho > 0.999 once
+        # sqrt(c)||v|| > 3.8. h_new_tan is a convex mix of tanh-bounded terms, so
+        # its norm grows like sqrt(d_hidden) -- at d=64 that is ~7, and at c=0.5
+        # EVERY node lands on the projection clamp (measured: rho = 0.9999 for
+        # 100% of nodes, on both the ATP and ISSP graphs). The radius channel then
+        # carries no information and gradients through the map are attenuated by
+        # sech^2(5) ~ 2e-4, which is also why a penalty on rho cannot fix it.
+        # tangent_scale > 0 multiplies the tangent vector first; 1/sqrt(d_hidden)
+        # puts ||v|| ~ 1 and rho ~ 0.6, mid-ball. 0.0 keeps the original behaviour
+        # so existing embeddings stay reproducible.
+        self.tangent_scale = tangent_scale
         self.aggregator = ChildAggregator(d_hidden, manifold, attention=child_attention)
 
         # GRU gates operate in tangent space (Euclidean)
@@ -48,6 +61,8 @@ class HyperbolicTreeGRUCell(nn.Module):
         n = torch.tanh(self.W_n(candidate_input))  # candidate
 
         h_new_tan = (1.0 - z) * h_agg_tan + z * n
+        if self.tangent_scale > 0.0:
+            h_new_tan = h_new_tan * self.tangent_scale
         return self.manifold.exp_map_zero(h_new_tan)
 
     def forward(

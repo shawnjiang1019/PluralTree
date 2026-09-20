@@ -41,13 +41,15 @@ class GKITreeGRUCell(nn.Module):
         child_attention: bool = True,
         depth_aware: bool = True,
         inject: bool = True,
+        tangent_scale: float = 0.0,
     ):
         super().__init__()
         self.manifold = manifold
         self.injection_point = injection_point
         # When False, all knowledge injection is bypassed (pure Tree-GRU ablation).
         self.inject = inject
-        self.tree_gru_cell = HyperbolicTreeGRUCell(d_input, d_hidden, manifold, child_attention)
+        self.tree_gru_cell = HyperbolicTreeGRUCell(d_input, d_hidden, manifold,
+                                                   child_attention, tangent_scale)
 
         # GKI injector (creates a plain HyperbolicGate by default)
         self.gki = GKIInjector(d_hidden, sources, manifold, gate_bias)

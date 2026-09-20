@@ -351,6 +351,27 @@ class Trainer:
                         f"H@1 {val_metrics['hits@1']:.4f} | "
                         f"H@10 {val_metrics['hits@10']:.4f}"
                     )
+                    # Ball occupancy. Both survey embeddings trained to date have
+                    # rho = 0.9999 for 100% of nodes -- the projection clamp --
+                    # which leaves the radius carrying no information and makes
+                    # every pairwise distance nearly equal (ISSP: sd 0.29). Cheap
+                    # enough to print every eval, and it would have caught that at
+                    # the first one.
+                    with torch.no_grad():
+                        h_d = h_all.detach()
+                        man = self.encoder.manifold
+                        rho = man.c.sqrt() * h_d.norm(dim=-1)
+                        n = h_d.shape[0]
+                        g = torch.Generator(device="cpu").manual_seed(0)
+                        i = torch.randint(0, n, (512,), generator=g).to(h_d.device)
+                        j = torch.randint(0, n, (512,), generator=g).to(h_d.device)
+                        d_s = man.distance(h_d[i], h_d[j]).squeeze(-1)
+                        print(
+                            f"  [ball]  rho mean {rho.mean():.4f} | "
+                            f"p50 {rho.median():.4f} | "
+                            f"frac>0.9 {(rho > 0.9).float().mean():.3f} | "
+                            f"pair-dist sd {d_s.std():.3f}"
+                        )
                     if self._csv_writer is not None:
                         self._csv_writer.writerow([
                             self.global_step, epoch + 1,

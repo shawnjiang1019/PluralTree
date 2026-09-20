@@ -83,6 +83,12 @@ def parse_args():
                         "validate via branch_divergence_rel_mean up, sibling_ratio off 0.")
     p.add_argument("--div_margin", type=float, default=1.0,
                    help="Min geodesic distance siblings are pushed to (floor only).")
+    p.add_argument("--tangent_scale", type=float, default=0.0,
+                   help="scale the Tree-GRU tangent vector before exp_map_zero. "
+                        "0 = legacy (no scaling), which SATURATES the ball: the "
+                        "tangent norm grows like sqrt(d_hidden), so at d=64/c=0.5 "
+                        "every node lands at rho=0.9999 and the radius carries no "
+                        "information. -1 = auto (1/sqrt(d_hidden)) puts rho ~ 0.6.")
     p.add_argument("--lambda_boundary", type=float, default=0.0,
                    help="Weight on the boundary penalty (keep mass off the rim; "
                         "replaces manual CURV/LSTR anti-saturation tuning).")
@@ -248,6 +254,8 @@ def main():
         gate_bias        = args.gate_bias,
         depth_aware      = (args.gate_type == "depth_aware"),
         inject           = (not args.no_gki),
+        tangent_scale    = ((1.0 / args.d_hidden ** 0.5) if args.tangent_scale < 0
+                            else args.tangent_scale),
         gradient_checkpointing = args.checkpoint,
         bidirectional        = args.bidirectional,
         lateral              = args.lateral,

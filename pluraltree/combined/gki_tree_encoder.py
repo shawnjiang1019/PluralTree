@@ -46,6 +46,7 @@ class GKITreeEncoder(nn.Module):
         lateral: bool = False,
         lateral_max_siblings: int = 16,
         combine_gate_bias: float = -2.0,
+        tangent_scale: float = 0.0,
     ):
         super().__init__()
         self.d_hidden = d_hidden
@@ -57,7 +58,7 @@ class GKITreeEncoder(nn.Module):
         self.input_proj = nn.Linear(d_input, d_hidden)
         self.cell = GKITreeGRUCell(
             d_hidden, d_hidden, manifold, sources, injection_point, gate_bias,
-            depth_aware=depth_aware, inject=inject,
+            depth_aware=depth_aware, inject=inject, tangent_scale=tangent_scale,
         )
         self.schedule = None
         # Cached level-batching plan (tree structure is static across forwards).
