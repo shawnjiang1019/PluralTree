@@ -19,7 +19,8 @@ class HyperbolicTreeGRUCell(nn.Module):
     """
 
     def __init__(self, d_input: int, d_hidden: int, manifold: PoincareBall,
-                 child_attention: bool = True, tangent_scale: float = 0.0):
+                 child_attention: bool = True, tangent_scale: float = 0.0,
+                 tangent_clip: float = 0.0):
         super().__init__()
         self.d_hidden = d_hidden
         self.manifold = manifold
@@ -35,6 +36,15 @@ class HyperbolicTreeGRUCell(nn.Module):
         # puts ||v|| ~ 1 and rho ~ 0.6, mid-ball. 0.0 keeps the original behaviour
         # so existing embeddings stay reproducible.
         self.tangent_scale = tangent_scale
+        # A SCALE IS NOT ENOUGH, measured: with tangent_scale=1/sqrt(64) the ATP
+        # run still had p50 rho = 0.9998. h_new_tan mixes in h_agg_tan, which is
+        # log_map_zero of the aggregated children -- and the log map of a point
+        # near the rim has UNBOUNDED norm. Saturated children therefore produce a
+        # huge tangent vector, which saturates the parent, on up the tree. A
+        # constant factor only moves where that loop catches; a cap breaks it,
+        # because rho <= tanh(sqrt(c) * clip) no matter what the children did
+        # (clip=1.0 at c=0.5 gives rho <= 0.61). 0.0 disables.
+        self.tangent_clip = tangent_clip
         self.aggregator = ChildAggregator(d_hidden, manifold, attention=child_attention)
 
         # GRU gates operate in tangent space (Euclidean)
@@ -63,6 +73,9 @@ class HyperbolicTreeGRUCell(nn.Module):
         h_new_tan = (1.0 - z) * h_agg_tan + z * n
         if self.tangent_scale > 0.0:
             h_new_tan = h_new_tan * self.tangent_scale
+        if self.tangent_clip > 0.0:
+            nrm = h_new_tan.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            h_new_tan = h_new_tan * torch.clamp(self.tangent_clip / nrm, max=1.0)
         return self.manifold.exp_map_zero(h_new_tan)
 
     def forward(

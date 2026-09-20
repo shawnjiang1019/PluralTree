@@ -24,7 +24,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from data.loaders.graphs import DATASETS, load_graph
 from retrieval.scout import (ScoredFork, ScoutConfig, describe_node, flat_forks,
@@ -34,6 +34,14 @@ from retrieval.scout import (ScoredFork, ScoutConfig, describe_node, flat_forks,
 # div_only ablates the relevance guards (old pure-divergence scout).
 CONDITIONS: dict[str, ScoutConfig | None] = {
     "baseline": None,
+    "baseline_long": None,        # LENGTH CONTROL: baseline padded to ~650 words
+    #        (merge_v2's p50 is 672). No retrieval, so a merge_v2 win over this
+    #        arm is content; a tie says the gain was length.
+    "merge_v2_brief": ScoutConfig(tau=0.25, alpha=1.0),
+    #        merge_v2 whose FINAL answer is held to ~90 words, inside the band
+    #        the benchmark's human ratings actually cover (66-106). The lossless
+    #        guard is relaxed for it in answer(), or a brief merge would be
+    #        called lossy and replaced by the concatenation fallback.
     "scout": ScoutConfig(tau=0.25, alpha=1.0),
     "div_only": ScoutConfig(tau=0.0, alpha=0.0),
     "route": ScoutConfig(tau=0.25, alpha=1.0),   # same retrieval as scout;
@@ -109,6 +117,34 @@ FULL_DIST_CONDITIONS: set[str] = {"distributional"}
 
 BASELINE_INSTRUCTION = (
     "Answer the question thoughtfully and concisely."
+)
+
+# LENGTH CONTROL. Measured: the benchmark's human ratings cover responses of
+# 66-106 words (p50 88). baseline sits inside that band (p50 65); merge_v2 does
+# not (p50 672, 0% within it). So baseline-vs-merge_v2 confounds content with a
+# 10x length difference, evaluated where no judge was ever calibrated -- and two
+# judges extrapolate oppositely there (+0.079 vs -0.244 rho against length).
+# These two conditions pull the comparison back onto one length:
+#   baseline_long    no retrieval, padded to merge_v2's length (both arms long)
+#   merge_v2_brief   full retrieval and merge, answer held to the human band
+BASELINE_LONG_INSTRUCTION = (
+    "Answer the question thoughtfully and in depth. Write about 650 words, "
+    "developing each point you raise rather than listing points briefly."
+)
+
+MERGE_INSTRUCTION_BRIEF = (
+    "You will see a question and several draft answers to it, written "
+    "independently by different processes. Some drafts had access to survey data "
+    "about how different groups answer related questions; some did not.\n"
+    "Write ONE final answer of about 90 words that covers as many of the "
+    "DISTINCT positions appearing in the drafts as it can at that length.\n"
+    "Rules:\n"
+    "- Prefer covering more distinct positions over developing any one of them.\n"
+    "- Keep group attributions (which groups hold which view) where they fit.\n"
+    "- Do not average disagreeing positions into a middle view, and do not "
+    "comment on the drafts themselves.\n"
+    "Put the final answer inside <answer></answer> tags. The reader sees ONLY "
+    "what is inside those tags."
 )
 
 # Think/answer separation: the retrieved forks may be off-topic, and an
@@ -263,6 +299,7 @@ MERGE_INSTRUCTION_V2 = (
 INSTRUCTION_BY_CONDITION: dict[str, str] = {
     "route": PLURALISM_ROUTE,
     "expand": PLURALISM_EXPAND,
+    "baseline_long": BASELINE_LONG_INSTRUCTION,
 }
 
 # Conditions that make MULTIPLE generation calls (draft A, draft B, then merge)
@@ -271,7 +308,7 @@ MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
                                    "merge_v2_rand", "merge_v2_sem",
                                    "merge_v2_divrand", "merge_v2_flat",
                                    "merge_v2_jsdiv", "merge_v2_spread",
-                                   "merge_v2_cover"}
+                                   "merge_v2_cover", "merge_v2_brief"}
 
 # Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
 RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
@@ -640,7 +677,12 @@ def build_prompt(question: str, forks: list[ScoredFork] | None, graph,
     injects each anchor's full subgroup spectrum instead of the two poles.
     """
     if not forks:
-        return [{"role": "system", "content": BASELINE_INSTRUCTION},
+        # The baseline family is the only instruction that survives having no
+        # forks; anything pluralism-shaped would ask for perspectives that were
+        # never injected. baseline_long rides this path too.
+        sys_msg = (instruction if instruction == BASELINE_LONG_INSTRUCTION
+                   else BASELINE_INSTRUCTION)
+        return [{"role": "system", "content": sys_msg},
                 {"role": "user", "content": question}]
     ctx = forks_to_context(forks, graph, full_dist)
     return [{"role": "system", "content": instruction},
@@ -892,7 +934,8 @@ def _draft_budget(msgs, want: int, cfg: MergeConfig) -> int:
 
 def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
                  cfg: MergeConfig = MergeConfig(), chat_fn=None,
-                 labels: list[str] | None = None, embed_fn=None) -> tuple[str, dict]:
+                 labels: list[str] | None = None, embed_fn=None,
+                 instruction: str | None = None) -> tuple[str, dict]:
     """One merge call + guard + fallback. Pure w.r.t. retrieval — drafts in, answer out.
 
     ``chat_fn`` is injected (defaults to ``chat``) so the merge logic is testable
@@ -902,6 +945,9 @@ def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
     structural-only guard, so runs computed before it stay comparable.
     """
     chat_fn = chat_fn or chat
+    # merge_v2_brief swaps this for MERGE_INSTRUCTION_BRIEF; everything else
+    # (budget, guard, fallback) is shared, so the arms differ only in the ask.
+    instr = instruction or MERGE_INSTRUCTION_V2
     kept = [d.strip() for d in drafts if d and d.strip()]
     info: dict = {"drafts": kept, "labels": list(labels or []),
                   "merge_fallback": False, "merge_fail": "", "raw_merge": ""}
@@ -916,12 +962,12 @@ def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
     # compression, i.e. it manufactures the failure the guard exists to catch.
     # So take everything the context window has left rather than a fixed number.
     user_msg = f"Question: {question}\n\n{blocks}"
-    budget = _merge_budget(MERGE_INSTRUCTION_V2 + user_msg, cfg)
+    budget = _merge_budget(instr + user_msg, cfg)
 
     # If the drafts alone overflow the window, no max_tokens makes the request
     # legal -- it would 400 whatever we ask for. Concatenating is exactly what
     # the guard would have done anyway, so do it now instead of losing the call.
-    est = len(MERGE_INSTRUCTION_V2 + user_msg) // 4
+    est = len(instr + user_msg) // 4
     if est + budget > cfg.max_model_len:
         info["merge_fallback"] = True
         info["merge_fail"] = f"prompt_overflow ({est} tok > {cfg.max_model_len})"
@@ -930,7 +976,7 @@ def merge_drafts(question: str, drafts: list[str], base_url: str, model: str, *,
         return concat_drafts(kept), info
 
     raw_merge = chat_fn(base_url, model,
-                        [{"role": "system", "content": MERGE_INSTRUCTION_V2},
+                        [{"role": "system", "content": instr},
                          {"role": "user", "content": user_msg}],
                         temperature=0.7, max_tokens=budget)
     merged, tagged = extract_answer(raw_merge)
@@ -1028,7 +1074,8 @@ def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str
 
 def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
                      full_dist: bool = False, cfg: MergeConfig = MergeConfig(),
-                     chat_fn=None, embed_fn=None) -> tuple[str, dict]:
+                     chat_fn=None, embed_fn=None,
+                     merge_instruction: str | None = None) -> tuple[str, dict]:
     """N drafts -> lossless merge. Returns (answer, parts). 1 + n_drafts calls.
 
     ``full_dist`` forces the fork-injected drafts to render the full subgroup
@@ -1071,7 +1118,8 @@ def _merge_answer_v2(question: str, forks, graph, base_url: str, model: str,
                                 "words": len(text.split())})
 
     merged, info = merge_drafts(question, drafts, base_url, model, cfg=cfg,
-                                chat_fn=chat_fn, labels=labels, embed_fn=embed_fn)
+                                chat_fn=chat_fn, labels=labels, embed_fn=embed_fn,
+                                instruction=merge_instruction)
     # draft_a/draft_b keep the v1 trace schema so eval/analysis reads both alike
     parts = {"draft_a": drafts[0] if drafts else "",
              "draft_b": drafts[1] if len(drafts) > 1 else "",
@@ -1226,10 +1274,22 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             # merge_v2_flat are listed for the same reason: an ablation that
             # runs a different merge algorithm than its reference measures the
             # merge, not the component it names.
+            m_cfg = merge_cfg or MergeConfig()
+            m_instr = None
+            if condition == "merge_v2_brief":
+                # The guard asserts merged >= longest draft in words and
+                # positions, which a ~90-word merge can never satisfy: it would
+                # be called lossy and replaced by the concatenation fallback,
+                # putting the arm right back at 600+ words. Brevity IS the
+                # manipulation here, so the length/position floors come off.
+                m_cfg = replace(m_cfg, min_len_ratio=0.0, min_pos_ratio=0.0,
+                                min_cov_ratio=None)
+                m_instr = MERGE_INSTRUCTION_BRIEF
             merged, parts = _merge_answer_v2(
                 question, forks, graph, base_url, model, full_dist,
-                merge_cfg or MergeConfig(), chat_fn,
-                merge_embed_fn() if condition == "merge_v2_sem" else None)
+                m_cfg, chat_fn,
+                merge_embed_fn() if condition == "merge_v2_sem" else None,
+                merge_instruction=m_instr)
         else:
             merged, parts = _merge_answer(question, forks, graph, base_url,
                                           model, full_dist)

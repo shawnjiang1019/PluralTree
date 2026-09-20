@@ -89,6 +89,13 @@ def parse_args():
                         "tangent norm grows like sqrt(d_hidden), so at d=64/c=0.5 "
                         "every node lands at rho=0.9999 and the radius carries no "
                         "information. -1 = auto (1/sqrt(d_hidden)) puts rho ~ 0.6.")
+    p.add_argument("--tangent_clip", type=float, default=0.0,
+                   help="cap the tangent norm before exp_map_zero, which BOUNDS "
+                        "the radius: rho <= tanh(sqrt(c)*clip), e.g. 1.0 at c=0.5 "
+                        "gives rho <= 0.61. Needed because h_agg_tan is a log map "
+                        "of the children, whose norm diverges near the rim -- so "
+                        "saturation propagates up the tree and a constant scale "
+                        "only delays it. 0 = off.")
     p.add_argument("--lambda_boundary", type=float, default=0.0,
                    help="Weight on the boundary penalty (keep mass off the rim; "
                         "replaces manual CURV/LSTR anti-saturation tuning).")
@@ -256,6 +263,7 @@ def main():
         inject           = (not args.no_gki),
         tangent_scale    = ((1.0 / args.d_hidden ** 0.5) if args.tangent_scale < 0
                             else args.tangent_scale),
+        tangent_clip     = args.tangent_clip,
         gradient_checkpointing = args.checkpoint,
         bidirectional        = args.bidirectional,
         lateral              = args.lateral,
