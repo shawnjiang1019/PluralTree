@@ -158,6 +158,22 @@ def main() -> int:
         print("no rows with a <think> trace in the requested conditions")
         return 1
 
+    # A multi-pass arm stores the MERGE call's think, and the merge prompt asks
+    # for a combined answer, not a plan -- so n_planned is 0 and every rate is
+    # undefined. The drafts are where the plan lives, and their thinks exist only
+    # in runs generated after retrieval.answer started emitting draft_traces.
+    planned = [s["n_planned"] for s in per_row if s["scope"] == "merge"]
+    if planned and max(planned) == 0:
+        print("\nNO PLAN FOUND: every row has an empty <think>.")
+        print("  Multi-pass arms (merge*, persona_merge) store the MERGE call's "
+              "trace, which contains no plan. Options:")
+        print("   1. run on a SINGLE-PASS condition (scout / route / div_only / "
+              "distributional), whose <think> is the triage plan;")
+        print("   2. use a run generated after the draft_traces change and pass "
+              "--drafts, which scores each draft's own <think>.")
+        print("  Nothing below is interpretable until one of those holds.")
+        return 2
+
     print(f"=== plan vs execution (theta={args.theta}) ===")
     print(f"  {'condition':<22}{'rows':>6}{'planned':>9}{'execution':>11}"
           f"{'unplanned':>11}{'ignored_forks':>15}")

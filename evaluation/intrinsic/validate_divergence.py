@@ -287,15 +287,25 @@ def main():
         print("\nreading (within-group, the scale fork selection uses):")
         print(f"  input    {_verdict(w_inp):<8} {w_inp:+.3f}")
         print(f"  geometry {_verdict(w_geo):<8} {w_geo:+.3f}")
-        if w_inp > 0.2 and w_geo < w_inp - 0.15:
+        # Geometry first: what the scout reads is the geodesic, so a strong
+        # geodesic ranking settles the question however the input scores.
+        if w_geo > 0.4:
+            extra = (" -- and it RECOVERS ranking the raw input features do not "
+                     "carry, so the encoder is adding the signal, not passing it "
+                     "through") if w_geo > w_inp + 0.15 else ""
+            print(f"  -> the geometry ranks disagreement{extra}. Max-divergence "
+                  f"fork selection is NOT arbitrary, so the ablation nulls are "
+                  f"downstream: delivery, or the graph-vs-cluster target gap")
+        elif w_inp > 0.2:
             print("  -> the input carries disagreement and the ENCODER discards it: "
                   "the training objective is the suspect")
-        elif w_inp <= 0.2:
-            print("  -> the input features barely carry disagreement: the feature "
-                  "design, not only the objective, limits what geometry can rank")
         else:
-            print("  -> the geometry keeps what the input carries: look downstream "
-                  "(delivery, judge targets) for the ablation nulls")
+            print("  -> neither the input nor the geometry ranks disagreement: fix "
+                  "the feature design first (residualize the shared question text, "
+                  "or represent the distribution directly), then the objective")
+        print("  (input distance is cosine over distribution-weighted option text; "
+              "a low score there is partly that metric's fault, so read it as a "
+              "floor on what the input carries, not a ceiling)")
     else:
         print(f"verdict (within-group): {_verdict(w_geo)}  -- pass --feats to tell an "
               f"encoder loss apart from a feature-design loss")
