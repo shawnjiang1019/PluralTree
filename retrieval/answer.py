@@ -411,6 +411,13 @@ def chat(base_url: str, model: str, messages: list[dict], *,
                "temperature": temperature, "max_tokens": max_tokens}
     if top_p is not None:
         payload["top_p"] = top_p
+    # Extra request fields, as JSON, from the environment -- so a thinking model
+    # can be told not to think without threading a flag through every call site:
+    #   PLURALTREE_CHAT_EXTRA='{"chat_template_kwargs":{"enable_thinking":false}}'
+    # Unset (the default) leaves the request byte-identical to previous runs.
+    _extra = os.environ.get("PLURALTREE_CHAT_EXTRA")
+    if _extra:
+        payload.update(json.loads(_extra))
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions", data=body,
@@ -431,7 +438,11 @@ def chat(base_url: str, model: str, messages: list[dict], *,
         raise RuntimeError(
             f"chat {e.code} {e.reason} (model={model}, max_tokens={max_tokens}, "
             f"n_messages={len(messages)}): {detail}") from e
-    return out["choices"][0]["message"]["content"]
+    # Reasoning models split the reply: with a reasoning parser enabled, vLLM puts
+    # the thinking in `reasoning_content` and can leave `content` null, which used
+    # to surface as a None return and a crash three frames later.
+    msg = out["choices"][0]["message"]
+    return msg.get("content") or msg.get("reasoning_content") or ""
 
 
 # ---------------------------------------------------------------------------
