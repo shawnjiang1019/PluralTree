@@ -82,11 +82,28 @@ def judge_messages(question: str, perspective: str,
             {"role": "user", "content": "\n".join(parts)}]
 
 
+_PARSE_FAIL: dict[str, int] = {}
+
+
 def predict(base_url: str, model: str, messages: list[dict]) -> float | None:
     """1-5 integer from the judge, or None if unparseable."""
     out = chat(base_url, model, messages, temperature=0.0, max_tokens=8)
-    m = re.search(r"[1-5]", out)
-    return float(m.group()) if m else None
+    s = (out or "").strip()
+    # STRICT FIRST. A reasoning model whose thinking is not disabled returns prose
+    # in `content` (measured: "We need answer user's request: ..."), and a bare
+    # re.search would happily read a rating out of it -- silent corruption across
+    # thousands of calls. Accept a leading digit; only fall back to a search for
+    # short replies like "4." or "rating: 4".
+    m = re.match(r"([1-5])\b", s) or (re.search(r"[1-5]", s) if len(s) <= 12 else None)
+    if m is None and len(s) > 12:
+        _PARSE_FAIL["prose"] = _PARSE_FAIL.get("prose", 0) + 1
+        if _PARSE_FAIL["prose"] in (1, 10, 100, 1000):
+            print(f"  warning: judge reply is prose, not a rating "
+                  f"({_PARSE_FAIL['prose']} so far): {s[:60]!r}\n"
+                  f"  a thinking model needs "
+                  f"PLURALTREE_CHAT_EXTRA='{{\"chat_template_kwargs\":"
+                  f"{{\"enable_thinking\":false}}}}'", file=sys.stderr)
+    return float(m.group(0)) if m else None
 
 
 def _avg_ranks(xs: list[float]) -> list[float]:
