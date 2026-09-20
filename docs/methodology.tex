@@ -330,50 +330,11 @@ is not distinguishable from zero.
 \section{What is and is not established}
 %==============================================================================
 
-For calibration of the claims above (numbers from the September 2026 runs):
-
-\begin{itemize}
-  \item \emph{Instrument.} All coverage numbers use a judge whose own
-    validation is unresolved (see Evaluation protocol). Read every item below
-    through that.
-  \item \textsc{merge\_v2} $>$ baseline replicates on the reference embedding:
-    $+0.039$, $+0.050$ ($p{=}0.014$), $+0.048$ ($p{=}0.024$) across independent
-    generations at 72B. On freshly trained embeddings it is marginal in both
-    geometry arms ($+0.040$, $p{=}0.062$; $+0.045$, $p{=}0.061$; three
-    rollouts), so embedding-training variance may matter.
-  \item CAD at 7B is monotone in $\alpha$ across five values
-    ($0.352, 0.327, 0.099, 0.047, 0.042$ for $\alpha = -0.5..{+}0.5$): the
-    strength of context influence controls coverage, and suppressing it helps.
-    The \emph{magnitude} of harm is not isolated. The no-forks reference
-    ($0.394$) uses a different instruction from the CAD arms, so
-    $0.394 \to 0.099$ conflates the fork block with the instruction. The
-    $\alpha = -1$ arm, which recovers the no-context model under the same
-    instruction exactly, would separate them and has not been run.
-  \item Geometry: at one rollout the hyperbolic and Euclidean arms appeared to
-    differ ($+0.014$, $p{=}0.62$ vs $+0.071$, $p{=}0.014$; $\Delta\Delta$ at
-    $p{=}0.094$). At three rollouts they converge ($+0.040$ vs $+0.045$;
-    $\Delta\Delta = +0.005$, 95\% CI $[-0.040, +0.057]$, $p{=}0.88$), a
-    well-powered null, even though the hyperbolic encoder fits the tree markedly
-    better (tree-distance $\rho$ $0.64$ vs $0.29$; sibling ratio $0.65$ vs
-    $0.08$). Curvature does not measurably affect coverage.
-  \item At 7B, \textsc{merge\_v2} falls $0.17$--$0.26$ below baseline, measured
-    with a 7B judge (a 72B re-judge is pending). The merge retains its drafts'
-    content (median retention $1.0$; the semantic guard fired on 1 of 60
-    merges), so the loss is in draft quality, not compression.
-  \item Across-sample diversity (INFINITY-CHAT): \textsc{merge\_v2} is
-    \emph{less} diverse than baseline on every metric, losing 84--89 of 100
-    queries ($p \approx 0$). It trades across-sample diversity for within-answer
-    coverage. Retrieval resolved on 71 of the 100 queries.
-  \item Second corpus (ISSP, one module): anchors resolve for 32 of 60 benchmark
-    questions at median relevance $0.36$, only 10 of them at $\ge 0.40$, against
-    60 of 60 at $0.49$ for the primary graph. Unresolved questions concentrate on
-    family and relationships.
-  \item Divergence selection (\textsc{divrand}) and hierarchy (\textsc{flat})
-    are untested at time of writing; the content control (\textsc{rand}) was
-    confounded in every prior run and is being rerun.
-  \item Reward--judge concordance within question is $0.15$ against chance
-    $0.5$; the reward scores survey positions, the judge scores participant
-    clusters, and no threshold reconciles them.
-\end{itemize}
+The calibration of every claim above --- what is established, what is ruled out
+as a driver, what remains untested, and the judge-validity caveat that bounds all
+of it --- is kept in a companion document, \texttt{established\_claims.tex}, so
+that this file stays a specification of the method. Numbers there are dated and
+carry their confidence intervals; the running record as results land is
+\texttt{findings\_2026\_09\_15.md}.
 
 \end{document}

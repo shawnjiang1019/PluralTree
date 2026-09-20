@@ -1,0 +1,131 @@
+% What is and is not established for PluralTree -- the calibration of every claim
+% in methodology.tex, split out so the method spec stays a method spec.
+% Numbers are from job logs as of 2026-09-15; the running record is
+% docs/findings_2026_09_15.md.
+% Standalone-compilable: pdflatex docs/established_claims.tex
+
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\title{PluralTree: What Is and Is Not Established}
+\author{}
+\date{2026-09-15}
+
+\begin{document}
+\maketitle
+
+\noindent
+Companion to \texttt{methodology.tex}, which defines the method. This document
+states what the measurements support, at what strength, and what remains
+untested. Prose results as they land are recorded in
+\texttt{findings\_2026\_09\_15.md}; this file is the version that belongs beside
+the method.
+
+\section{Instrument}
+
+All coverage numbers come from an LLM judge whose own validation is unresolved.
+Its aggregate agreement with human ratings is $\rho = 0.167$, against a ceiling
+of $\sqrt{0.574} \approx 0.76$ set by the benchmark's own human split-half
+reliability ($0.574$ after the Spearman--Brown correction). With only eight
+reference models the sampling error at that level is very wide (split-half range
+$[-0.17, +0.83]$), so the ranking-level check can neither validate nor invalidate
+a judge. Read every item below through that.
+
+\section{Established}
+
+\begin{itemize}
+  \item \textsc{merge\_v2} $>$ baseline replicates on the reference embedding:
+    $+0.039$, $+0.050$ ($p{=}0.014$), $+0.048$ ($p{=}0.024$) across independent
+    generations at 72B. On freshly trained embeddings it is marginal in both
+    geometry arms ($+0.040$, $p{=}0.062$; $+0.045$, $p{=}0.061$; three
+    rollouts), so embedding-training variance may matter.
+  \item The gain transfers to a second, independently built survey graph. On one
+    ISSP module, restricted to the $34$ of $60$ questions whose anchors resolve,
+    \textsc{merge\_v2} gains $+0.048$ (95\% CI $[+0.005, +0.094]$, $p{=}0.031$);
+    on the $26$ unresolved questions, where the arm runs without forks, the
+    difference is $-0.008$ ($p{=}0.65$). Pooled over all 60 the effect dilutes to
+    $+0.024$ ($p{=}0.11$), as attenuation predicts.
+  \item The retrieval instrument is valid. Within an axis --- the only comparison
+    fork selection makes --- the learned hyperbolic distance ranks the
+    Jensen--Shannon divergence between subgroups' answer distributions at
+    $\rho = +0.755$ (2{,}027 axes; pooled $+0.529$; shuffled null $-0.000$),
+    while the encoder's own input features rank it at only $+0.074$. The encoder
+    recovers ordering its inputs do not expose.
+  \item The merge is faithful: median retention $1.0$, with the semantic guard
+    firing on 1 of 60 merges. Where coverage is lost at 7B, the loss is in draft
+    quality, not compression.
+  \item CAD at 7B is monotone in $\alpha$ across five values
+    ($0.352, 0.327, 0.099, 0.047, 0.042$ for $\alpha = -0.5..{+}0.5$): the
+    strength of context influence controls coverage, and suppressing it helps.
+\end{itemize}
+
+\section{Ruled out as drivers of coverage}
+
+\begin{itemize}
+  \item \emph{Curvature.} At three rollouts the hyperbolic and Euclidean arms
+    converge ($+0.040$ vs $+0.045$; $\Delta\Delta = +0.005$, 95\% CI
+    $[-0.040, +0.057]$, $p{=}0.88$), a well-powered null, even though the
+    hyperbolic encoder fits the tree markedly better (tree-distance $\rho$ $0.64$
+    vs $0.29$; sibling ratio $0.65$ vs $0.08$). An earlier one-rollout run
+    appeared to separate the arms ($\Delta\Delta$ at $p{=}0.094$); it did not
+    replicate.
+  \item \emph{Hierarchy.} Flat retrieval --- no anchor, no descent, nearest
+    opinion leaves paired into pseudo-forks --- ties \textsc{merge\_v2}
+    ($+0.010$ in flat's favour, 95\% CI $[-0.011, +0.031]$, $p{=}0.34$), with
+    fork volume matched ($5.00$ vs $4.85$) and lower divergence ($11.9$ vs
+    $13.7$). Any hierarchy benefit is bounded near $+0.01$.
+  \item \emph{Per-question routing.} On 60 questions no feature set beats the
+    trivial always-inject policy, which recovers $+0.525$ of the oracle gap;
+    graph features recover $-0.040$ and the full causal set $-0.178$, below
+    length alone ($+0.118$). Five earlier routers failed the same way.
+\end{itemize}
+
+\section{Not established}
+
+\begin{itemize}
+  \item \emph{That divergence selection matters.} Random-pair (\textsc{divrand})
+    and distribution-ranked (\textsc{jsmax}) selection arms have not reported.
+    The disagreement being ranked is small in absolute terms: mean
+    $\mathrm{JS} = 0.0154$ bits over same-axis subgroup pairs, so the most
+    divergent available pair is often barely divergent.
+  \item \emph{That fork content is load-bearing.} The matched irrelevant-fork
+    control (\textsc{rand}) was confounded in every prior run.
+  \item \emph{That the gain is not length.} Injected answers run roughly five
+    times longer than baseline's and no length-matched baseline has been run.
+  \item \emph{The reward.} Reward--judge concordance within question is $0.15$
+    against chance $0.5$; the reward scores survey positions, the judge scores
+    participant clusters, and no threshold reconciles them. The group-diversity
+    reward replacing it is gated on the same statistic and has not yet been
+    measured.
+  \item \emph{CAD's magnitude.} The no-forks reference ($0.394$) uses a different
+    instruction from the CAD arms, so $0.394 \to 0.099$ conflates the fork block
+    with the instruction. The $\alpha = -1$ arm would separate them and has not
+    been run.
+  \item \emph{The 7B collapse's size.} At 7B \textsc{merge\_v2} falls
+    $0.17$--$0.26$ below baseline, but measured with a 7B judge; the 72B re-judge
+    is pending.
+\end{itemize}
+
+\section{Known trade-off}
+
+Across-sample diversity (INFINITY-CHAT): \textsc{merge\_v2} is \emph{less}
+diverse than baseline on every metric, losing 84--89 of 100 queries
+($p \approx 0$). It trades across-sample diversity for within-answer coverage.
+Retrieval resolved on 71 of the 100 queries.
+
+\section{Where coverage is lost}
+
+Of the viewpoint clusters the benchmark scores, $29.7\%$ (ATP) and $45.4\%$
+(ISSP) are covered by no arm at all, and those clusters are smaller than average
+(relative size $0.278$ on ISSP). The clusters an arm \emph{does} recover beyond
+baseline are larger than a typical miss ($0.53$ vs $0.45$), so no arm is reaching
+the minority end the benchmark exists to reward. Which stage loses them ---
+retrieval, drafting, merging or judging --- is the question
+\texttt{scripts/analysis/coverage\_funnel.py} was built to answer.
+
+\end{document}

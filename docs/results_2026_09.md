@@ -1,5 +1,10 @@
 # Results snapshot — September 2026
 
+> **SUPERSEDED.** Read [`methodology_and_results.md`](methodology_and_results.md)
+> for the current claim ladder and [`findings_2026_09_15.md`](findings_2026_09_15.md)
+> for the newest runs. Kept because it is the only write-up of the CAD α-sweep
+> (§2), and because its numbers record what was believed at the time.
+
 What the last round of experiments established, what it invalidated, and what is
 still running. Numbers are copied from job logs; anything not measured is marked
 as such.

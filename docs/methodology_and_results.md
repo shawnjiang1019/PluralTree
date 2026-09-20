@@ -1,6 +1,9 @@
 # PluralTree — methodology, results, and what to do next
 
-Written 2026-09-13. Supersedes the narrower `results_2026_09.md`. Every number is
+Written 2026-09-13. Supersedes the narrower `results_2026_09.md`. Results after
+that date are in [`findings_2026_09_15.md`](findings_2026_09_15.md), which revises
+the hierarchy, geometry, routing and ISSP rows below; see
+[`README.md`](README.md) for the full docs map. Every number is
 from a job log; anything unmeasured is marked. Reads as: what was built → what was
 tested → what held, what broke → where to go → what a reviewer will say → what to
 run and why.
