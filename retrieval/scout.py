@@ -54,7 +54,18 @@ class ScoutConfig:
     min_keep: int = 2          # gate floor: never shrink a cloud below this
     top_k: int = 5             # forks returned
     top_pairs: int = 3         # transport pairs reported per fork
-    pair_select: str = "maxw"  # "maxw" | "random" | "jsmax" -- which pairs survive
+    anchor_spread: bool = False   # one anchor per SURVEY QUESTION.
+    #   Measured on v13: merge_v2 draws 4.85 forks from 2.13 distinct anchors, so
+    #   the block is one question seen through several demographic cuts, and 30 of
+    #   180 rows had a single anchor. Anchor choice is already semantic top-k
+    #   (lexical_anchors' fallback), so without this the divergence step only
+    #   reorders pairs inside topics similarity already picked.
+    pair_select: str = "maxw"  # "maxw" | "random" | "jsmax" | "cover" -- pairs kept
+    #   "cover" is greedy max-coverage over DISTINCT subgroup leaves instead of
+    #   top-k by score: at each step take the fork adding the most leaves the
+    #   block does not already contain, ties broken by score. maxw repeatedly
+    #   picks the widest pair of the same anchor, which is where the redundancy
+    #   above comes from.
     #   "jsmax" ranks by the MODEL-FREE Jensen-Shannon divergence between the two
     #   branches' survey answer distributions instead of the learned Wasserstein.
     #   It is the ceiling test for divergence selection: if the best available
@@ -84,6 +95,50 @@ def _rand_rank(question: str, fork: "ScoredFork", seed: int) -> float:
     key = f"{question}|{fork.anchor}|{fork.branch_a}|{fork.branch_b}|{seed}"
     d = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(d, "big") / 2 ** 64
+
+
+def question_key(graph, nid: int) -> str:
+    """Which SURVEY QUESTION a node belongs to, for anchor spreading.
+
+    OpinionQA/ISSP names are ``q:{qkey}``, ``ax:{qkey}:{attr}``,
+    ``op:{qkey}:{attr}:{group}`` -- all three share the question key, which is why
+    a relevance-ranked anchor list happily returns a question node and two of its
+    own axes. GOQA's ``op_{row}_{country}`` keys on the row. Anything else keys on
+    itself, so unknown schemas simply do not dedupe.
+    """
+    name = graph.id_to_entity[nid]
+    for p in ("q:", "ax:", "op:"):
+        if name.startswith(p):
+            return name[len(p):].split(":", 1)[0]
+    if name.startswith("op_"):
+        parts = name.split("_", 2)
+        if len(parts) >= 3:
+            return parts[1]
+    return name
+
+
+def select_forks(question: str, pool: list["ScoredFork"], cfg: ScoutConfig,
+                 graph=None) -> list["ScoredFork"]:
+    """The ``top_k`` forks that survive, under the configured selection rule.
+
+    Every mode truncates the SAME candidate pool at ``top_k``, so arms stay
+    volume-matched; only the ordering rule differs. "cover" cannot be expressed
+    as a sort key because each pick depends on what is already selected.
+    """
+    if cfg.pair_select != "cover":
+        return sorted(pool, key=rank_key(question, cfg, graph),
+                      reverse=True)[: cfg.top_k]
+    key = rank_key(question, ScoutConfig(**{**cfg.__dict__, "pair_select": "maxw"}),
+                   graph)
+    remaining, chosen, covered = list(pool), [], set()
+    while remaining and len(chosen) < cfg.top_k:
+        def gain(f):
+            return len(set(f.nodes_a) | set(f.nodes_b) | covered) - len(covered)
+        best = max(remaining, key=lambda f: (gain(f), key(f)))
+        chosen.append(best)
+        covered |= set(best.nodes_a) | set(best.nodes_b)
+        remaining.remove(best)
+    return chosen
 
 
 def branch_distribution(graph, branch: int, max_nodes: int = 32) -> list[float] | None:
@@ -147,7 +202,7 @@ def rank_key(question: str, cfg: ScoutConfig, graph=None):
         # and they agree".
         return lambda f: (lambda js: -1.0 if js is None else js)(
             fork_js(graph, f, cfg.max_nodes))
-    if cfg.pair_select != "maxw":
+    if cfg.pair_select not in ("maxw", "cover"):
         raise ValueError(f"unknown pair_select {cfg.pair_select!r}")
     return lambda f: f.score
 
@@ -251,6 +306,7 @@ def lexical_anchors(
     graph,
     rel: Tensor,
     max_anchors: int = 4,
+    spread: bool = False,
 ) -> list[int]:
     """Internal nodes whose entity name appears in the question (hashmap lookup).
 
@@ -270,14 +326,31 @@ def lexical_anchors(
         for c in graph.children_indices[p]:
             parents[c] = p
 
+    # ``spread``: at most one anchor per survey question. The fallback below is
+    # plain semantic top-k, and a question node plus two of its own axes are all
+    # highly relevant to the same wording -- so without this the anchor set is
+    # one topic several times over.
+    taken: set[str] = set()
+
+    def _accept(a: int, acc: list[int]) -> bool:
+        if a in acc:
+            return False
+        if spread:
+            k = question_key(graph, a)
+            if k in taken:
+                return False
+            taken.add(k)
+        acc.append(a)
+        return True
+
     hits: list[int] = []
     names = sorted(enumerate(graph.id_to_entity), key=lambda t: -len(t[1]))
     for nid, name in names:
         if len(name) < 3 or name.lower() not in ql:
             continue
         a = nid if nid in internal else parents.get(nid)
-        if a is not None and a not in hits:
-            hits.append(a)
+        if a is not None:
+            _accept(a, hits)
         if len(hits) >= max_anchors:
             return hits
     if hits:
@@ -285,7 +358,13 @@ def lexical_anchors(
 
     # Lexical miss: most relevant internal nodes by MiniLM cosine.
     order = torch.argsort(rel, descending=True).tolist()
-    return [v for v in order if v in internal][:max_anchors]
+    out: list[int] = []
+    for v in order:
+        if v in internal:
+            _accept(v, out)
+        if len(out) >= max_anchors:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +481,9 @@ def scout(
         q_emb = embed_question(question)
     rel = node_relevance(q_emb, text_feat)
 
-    anchors = (anchor_fn or lexical_anchors)(question, graph, rel, cfg.max_anchors)
+    anchors = (anchor_fn(question, graph, rel, cfg.max_anchors) if anchor_fn
+               else lexical_anchors(question, graph, rel, cfg.max_anchors,
+                                    spread=cfg.anchor_spread))
     forks: list[ScoredFork] = []
     for a in anchors:
         forks.extend(score_anchor(a, graph, h_all, rel, manifold, cfg))
@@ -410,8 +491,7 @@ def scout(
         stats.update(anchor_pool=list(anchors), n_candidates=len(forks),
                      pool_mean_w=(sum(f.w for f in forks) / len(forks))
                      if forks else None)
-    forks.sort(key=rank_key(question, cfg, graph), reverse=True)
-    forks = forks[: cfg.top_k]
+    forks = select_forks(question, forks, cfg, graph)
     for f in forks:
         _fill_top_pairs(f, h_all, rel, manifold, cfg)
     return forks
@@ -839,6 +919,58 @@ def _selftest() -> None:
     except ValueError:
         pass
 
+    # --- anchor spread: one anchor per survey question -----------------------
+    class _QGraph:
+        """A question node and two of its own axes all match the same wording.
+
+        Axes carry opinion leaves, as in the real graph -- without children they
+        would not count as internal nodes and could never be anchors.
+        """
+        id_to_entity = ["root", "q:Q1", "ax:Q1:AGE", "ax:Q1:PARTY", "q:Q2",
+                        "ax:Q2:AGE", "op:Q1:AGE:a", "op:Q1:AGE:b",
+                        "op:Q1:PARTY:a", "op:Q1:PARTY:b", "op:Q2:AGE:a",
+                        "op:Q2:AGE:b"]
+        children_indices = [[1, 4], [2, 3], [6, 7], [8, 9], [5], [10, 11],
+                            [], [], [], [], [], []]
+
+    qg = _QGraph()
+    assert question_key(qg, 1) == "Q1" and question_key(qg, 2) == "Q1", "q:/ax: share"
+    assert question_key(qg, 4) == "Q2"
+
+    class _GoqaG:
+        id_to_entity = ["op_12_Canada", "topic:3"]
+        children_indices = [[], []]
+    assert question_key(_GoqaG(), 0) == "12", "goqa keys on the row"
+    assert question_key(_GoqaG(), 1) == "topic:3", "unknown schema keys on itself"
+
+    # Q1's question node and its two axes are the three most relevant internals.
+    qrel = torch.tensor([0.0, 0.9, 0.85, 0.8, 0.7, 0.6] + [0.0] * 6)
+    plain = lexical_anchors("unmatched wording", qg, qrel, 2)
+    spread = lexical_anchors("unmatched wording", qg, qrel, 2, spread=True)
+    assert plain == [1, 2], plain                    # both anchors are Q1
+    assert spread == [1, 4], spread                  # one anchor per question
+    assert len({question_key(qg, a) for a in spread}) == len(spread)
+
+    # --- cover: greedy max-coverage over distinct leaves ---------------------
+    def _f(a, b, na, nb, score):
+        return ScoredFork(anchor=0, branch_a=a, branch_b=b, w=score, relevance=1.0,
+                          score=score, nodes_a=na, nodes_b=nb)
+
+    # the two widest forks re-pair the SAME leaves; the third adds new ones
+    cover_pool = [_f(1, 2, [1], [2], 9.0), _f(1, 3, [1], [3], 8.0),
+                  _f(4, 5, [4], [5], 1.0)]
+    cov_cfg = ScoutConfig(top_k=2, pair_select="cover")
+    max_cfg = ScoutConfig(top_k=2, pair_select="maxw")
+    got_cover = select_forks("q", cover_pool, cov_cfg)
+    got_maxw = select_forks("q", cover_pool, max_cfg)
+
+    def _leaves(fs):
+        return set().union(*[set(f.nodes_a) | set(f.nodes_b) for f in fs])
+    assert len(got_cover) == len(got_maxw) == 2, "volume must stay matched"
+    assert _leaves(got_cover) == {1, 2, 4, 5}, _leaves(got_cover)
+    assert _leaves(got_maxw) == {1, 2, 3}, _leaves(got_maxw)
+    assert got_cover[0].score == 9.0, "ties in gain break by score, so it starts widest"
+
     # --- jsmax: model-free disagreement, read off the survey distributions ---
     class _JSGraph:
         """Anchor 0 with two opinion-leaf children; 3 has a different option count."""
@@ -932,7 +1064,9 @@ def _main():
     ap.add_argument("--alpha", type=float, default=1.0)
     ap.add_argument("--temp", type=float, default=0.1)
     ap.add_argument("--top", type=int, default=5)
-    ap.add_argument("--pair_select", choices=["maxw", "random", "jsmax"],
+    ap.add_argument("--anchor_spread", action="store_true",
+                    help="one anchor per survey question (merge_v2_spread)")
+    ap.add_argument("--pair_select", choices=["maxw", "random", "jsmax", "cover"],
                     default="maxw",
                     help="random = the selection ablation (merge_v2_divrand); "
                          "jsmax = rank by survey-distribution disagreement "

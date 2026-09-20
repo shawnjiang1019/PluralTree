@@ -65,6 +65,17 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #        coverage mechanism. If this ties merge_v2, max-W selection is not
     #        what the retrieval contributes. Volume- and path-matched by
     #        construction (scout.rank_key), unlike merge_v2_rand's first version.
+    "merge_v2_spread": ScoutConfig(tau=0.25, alpha=1.0, anchor_spread=True),
+    #        ANCHOR SPREAD: one anchor per survey question. merge_v2 draws 4.85
+    #        forks from 2.13 anchors (30 of 180 rows from ONE), so its block is a
+    #        single question seen through several demographic cuts. Same gate,
+    #        render, volume and merge path -- only which topics are reachable.
+    "merge_v2_cover": ScoutConfig(tau=0.25, alpha=1.0, anchor_spread=True,
+                                  pair_select="cover"),
+    #        SPREAD + greedy max-coverage over distinct subgroup leaves instead
+    #        of top-k by rel^alpha * W. Tests whether the block should maximise
+    #        how many viewpoints it contains rather than how far apart any one
+    #        pair is -- the redundancy maxw creates by re-pairing one anchor.
     "merge_v2_jsdiv": ScoutConfig(tau=0.25, alpha=1.0, pair_select="jsmax"),
     #        SELECTION CEILING: rank the same candidate pairs by the model-free
     #        Jensen-Shannon divergence between the branches' survey answer
@@ -259,7 +270,8 @@ INSTRUCTION_BY_CONDITION: dict[str, str] = {
 MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
                                    "merge_v2_rand", "merge_v2_sem",
                                    "merge_v2_divrand", "merge_v2_flat",
-                                   "merge_v2_jsdiv"}
+                                   "merge_v2_jsdiv", "merge_v2_spread",
+                                   "merge_v2_cover"}
 
 # Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
 RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
