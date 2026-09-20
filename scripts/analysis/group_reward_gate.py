@@ -111,7 +111,7 @@ def boot_ci(qpairs: dict, qids: list, n_boot: int = 2000, seed: int = 0):
     return vals[int(0.025 * len(vals))], vals[int(0.975 * len(vals)) - 1]
 
 
-def headroom(sets: dict, n_cl: dict) -> None:
+def headroom(sets: dict, n_cl: dict, min_gap: float = 0.03) -> dict:
     by_cond = defaultdict(list)
     for (cond, qid), by_roll in sets.items():
         n = n_cl[(cond, qid)]
@@ -121,14 +121,17 @@ def headroom(sets: dict, n_cl: dict) -> None:
         union = len(set().union(*by_roll.values())) / n
         by_cond[cond].append((within, union, len(by_roll)))
     print("=== stage-0 headroom: union@K - within-answer coverage ===")
+    gaps = {}
     for cond, rows in sorted(by_cond.items()):
         w = st.mean(r[0] for r in rows)
         u = st.mean(r[1] for r in rows)
         k = st.mean(r[2] for r in rows)
-        flag = "  <- NO HEADROOM (<= 0.03): nothing across samples to train toward" \
-            if u - w <= 0.03 else ""
+        gaps[cond] = u - w
+        flag = (f"  <- NO HEADROOM (<= {min_gap}): nothing across samples to "
+                f"train toward") if u - w <= min_gap else ""
         print(f"  {cond:<16} within={w:.4f}  union@{k:.0f}={u:.4f}  gap={u - w:+.4f}  "
               f"(n={len(rows)}){flag}")
+    return gaps
 
 
 def main() -> int:
@@ -147,6 +150,17 @@ def main() -> int:
     ap.add_argument("--embedder", default="sentence-transformers/all-mpnet-base-v2")
     ap.add_argument("--stub_embed", action="store_true",
                     help="topic-keyword embedder from group_reward's self-test (tests only)")
+    ap.add_argument("--min_headroom", type=float, default=0.03,
+                    help="fail when union@K - within-answer is at or below this: "
+                         "GRPO reweights the reference policy's own samples, so "
+                         "without across-sample spread there is nothing for a "
+                         "diversity reward to select. 0.03 is the measured "
+                         "per-question noise floor; 0 disables the check.")
+    ap.add_argument("--max_flat", type=float, default=0.30,
+                    help="fail when this fraction of groups has ~zero reward "
+                         "spread. The advantage is a within-group z-score, so a "
+                         "flat group contributes no gradient however good the "
+                         "reward is -- the mode-collapse failure (Vendi ~1.4/8).")
     ap.add_argument("--split_seed", type=int, default=0)
     ap.add_argument("--out", default="docs/group_reward_gate.csv")
     ap.add_argument("--gate", action="store_true", help="exit 2 unless the gate passes")
@@ -156,7 +170,20 @@ def main() -> int:
     from scripts.analysis.bestofk_selection import embed_units
 
     sets_a, n_cl = load_judge_sets(args.rollouts)
-    headroom(sets_a, n_cl)
+    gaps = headroom(sets_a, n_cl, args.min_headroom)
+    # Cheapest kill first: without across-sample spread there is nothing for a
+    # diversity reward to select, whatever its concordance turns out to be.
+    gap0 = gaps.get(args.condition, float("nan"))
+    if args.min_headroom and not (gap0 == gap0 and gap0 > args.min_headroom):
+        print(f"\nGATE FAILED: headroom {gap0:+.4f} <= {args.min_headroom} for "
+              f"{args.condition!r}. The policy's own samples already say the same "
+              f"thing, and GRPO can only reweight what the reference policy "
+              f"samples -- a diversity reward has nothing to select. Widen the "
+              f"sampling distribution (temperature, verbalized sampling) and "
+              f"re-measure before training.")
+        if args.gate:
+            return 2
+
     sets_b = load_judge_sets(args.rollouts_b)[0] if args.rollouts_b else None
     resp = load_responses(args.responses)
     ref = load_responses(args.ref_responses) if args.ref_responses else None
@@ -179,6 +206,7 @@ def main() -> int:
                 for l in args.lambdas.split(",") for d in args.depths.split(",")]
     q_primary = {v: {} for v in variants}
     q_secondary = {v: {} for v in variants}
+    q_flat = {v: {} for v in variants}      # question -> 1 when the group is flat
     q_self: dict = {}
 
     for q in qids:
@@ -209,6 +237,9 @@ def main() -> int:
             rr = dict(zip(rolls, r))
             q_primary[(m, lam, d)][q] = pairs_of(t_prim, rr)
             q_secondary[(m, lam, d)][q] = pairs_of(t_own, rr)
+            # A group whose rewards are all equal z-scores to zero advantage, so
+            # it trains nothing. Measured here, before any GPU time.
+            q_flat[(m, lam, d)][q] = int(st.pstdev(r) < 1e-9) if len(r) > 1 else 1
 
     rows = []
     print(f"\n=== variants on the TUNE half ({len(tune)} questions) ===")
@@ -248,12 +279,22 @@ def main() -> int:
         print("  judge vs itself       not measured (pass --rollouts_b); the gate "
               "cannot pass without its ceiling")
 
+    # Mode collapse: the fraction of groups the reward cannot separate at all.
+    flat_all = list(q_flat[v].values())
+    flat_rate = st.mean(flat_all) if flat_all else float("nan")
+    n_zero = sum(flat_all)
+    print(f"  flat groups           {flat_rate:.3f}  ({n_zero}/{len(flat_all)} with "
+          f"identical rewards -> zero advantage)")
+
     # A judge that cannot reproduce its own ordering (self <= 0.5) leaves nothing
     # to align with, and would drop the bar below chance -- fail rather than pass
     # a reward against noise.
     bar = 0.5 + 0.5 * (self_c - 0.5) if self_c == self_c else float("nan")
     judge_ok = self_c == self_c and self_c > 0.5
-    passed = (judge_ok and c >= bar and lo > 0.5 and s >= 0.5)
+    gap = gaps.get(args.condition, float("nan"))
+    head_ok = (not args.min_headroom) or (gap == gap and gap > args.min_headroom)
+    flat_ok = flat_rate == flat_rate and flat_rate <= args.max_flat
+    passed = (judge_ok and head_ok and flat_ok and c >= bar and lo > 0.5 and s >= 0.5)
     rows.append({"half": "confirm", "mode": v[0], "lambda": v[1], "depth": v[2],
                  "conc": c, "tie_rate": float("nan"), "conc_sep": float("nan"),
                  "secondary": s, "pairs": n})
@@ -272,6 +313,8 @@ def main() -> int:
           + ", ".join(x for x, bad in [
               ("no judge ceiling", bar != bar),
               (f"judge vs itself {self_c:.3f} <= 0.5", bar == bar and not judge_ok),
+              (f"headroom {gap:+.3f} <= {args.min_headroom}", not head_ok),
+              (f"flat groups {flat_rate:.2f} > {args.max_flat}", not flat_ok),
               (f"primary {c:.3f} < bar", bar == bar and c < bar),
               (f"CI lower {lo:.3f} <= 0.5", not lo > 0.5),
               (f"secondary {s:.3f} < 0.5", s < 0.5)] if bad))

@@ -117,7 +117,7 @@ def make_reward_func(embed_fn, rcfg: RewardConfig):
     return reward_func
 
 
-def make_group_reward_func(embed_fn, gcfg, group_size: int):
+def make_group_reward_func(embed_fn, gcfg, group_size: int, log_every: int = 25):
     """TRL reward_func for alignment/group_reward.py.
 
     The reward of one completion depends on the others sampled for the SAME prompt,
@@ -127,7 +127,15 @@ def make_group_reward_func(embed_fn, gcfg, group_size: int):
     generations across reward calls; novelty would then be computed against a
     partial group, so that is reported rather than silently scored.
     """
+    import statistics as _st
+
     from alignment.group_reward import group_rewards
+
+    # Running mode-collapse readout. The advantage is a within-group z-score, so
+    # a group whose rewards are equal trains on nothing; if most groups are flat
+    # the run is burning GPU hours regardless of how good the reward is. Vendi
+    # ~1.4 effective modes over 8 samples is why this is worth watching.
+    seen = {"groups": 0, "flat": 0, "pool": 0.0, "novelty": 0.0}
 
     def reward_func(completions, question_id=None, **_):
         if question_id is None:
@@ -141,9 +149,18 @@ def make_group_reward_func(embed_fn, gcfg, group_size: int):
             if len(idxs) != group_size:
                 print(f"  WARNING group reward: question {q} has {len(idxs)} "
                       f"completions in this call, expected {group_size}")
-            r, _bd = group_rewards([texts[i] for i in idxs], embed_fn, gcfg)
+            r, bd = group_rewards([texts[i] for i in idxs], embed_fn, gcfg)
             for i, v in zip(idxs, r):
                 rewards[i] = v
+            seen["groups"] += 1
+            seen["flat"] += int(len(r) < 2 or _st.pstdev(r) < 1e-9)
+            seen["pool"] += bd[0]["n_pool"] if bd else 0
+            seen["novelty"] += _st.mean(b["novelty"] for b in bd) if bd else 0.0
+            if log_every and seen["groups"] % log_every == 0:
+                n = seen["groups"]
+                print(f"  [group reward] {n} groups: flat={seen['flat'] / n:.2f} "
+                      f"(no gradient)  mean_pool={seen['pool'] / n:.1f}  "
+                      f"mean_novelty={seen['novelty'] / n:.3f}")
         return rewards
     return reward_func
 
