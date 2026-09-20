@@ -45,12 +45,20 @@ DIVM="${DIVM:-1.0}"        # min geodesic distance between siblings
 EPOCHS="${EPOCHS:-12}"     # val MRR plateaus ~epoch 9 (docs/opinionqa_train_metrics.png)
 DATASET="${DATASET:-opinionqa}"   # opinionqa | globalopinionqa | issp
 EMB="${EMB:-embeddings_${DATASET}.pt}"
-echo "CURV=${CURV}  LSTR=${LSTR}  LDIV=${LDIV}  DIVM=${DIVM}  EPOCHS=${EPOCHS}  EMB=${EMB}"
+# TSCALE: tangent scaling before exp_map_zero. 0 = legacy, which SATURATES the
+# ball -- the Tree-GRU tangent norm grows like sqrt(d_hidden) (~7 at d=64) while
+# the map saturates past ~5, so every node lands on the projection clamp
+# (rho=0.9999 for 100% of nodes, measured on both graphs). -1 = auto, 1/sqrt(d).
+# Watch the [ball] line at each eval to confirm which one you got.
+TSCALE="${TSCALE:-0}"
+# Anything else to hand train.py, e.g. EXTRA="--lambda_boundary 0.1".
+EXTRA="${EXTRA:-}"
+echo "CURV=${CURV}  LSTR=${LSTR}  LDIV=${LDIV}  DIVM=${DIVM}  EPOCHS=${EPOCHS}  EMB=${EMB}  TSCALE=${TSCALE}"
 
 python scripts/train/train.py --dataset "${DATASET}" \
     --curvature "${CURV}" --lambda_struct "${LSTR}" \
     --lambda_div "${LDIV}" --div_margin "${DIVM}" \
-    --n_epochs "${EPOCHS}" \
+    --n_epochs "${EPOCHS}" --tangent_scale "${TSCALE}" ${EXTRA} \
     --save_embeddings "${EMB}" --device cuda \
     || { echo "TRAIN FAILED (see .err)"; exit 1; }
 
