@@ -9,7 +9,8 @@ successor), **PROPOSED** (designed, never run — no numbers), **BACKGROUND**
 | file | status | what it is |
 |---|---|---|
 | [handoff_2026_09_20.md](handoff_2026_09_20.md) | CURRENT | **new session starts here**: where things stand, why each direction was taken or dropped, what to run next, and the traps |
-| [findings_2026_09_15.md](findings_2026_09_15.md) | CURRENT | newest results: ISSP transfer, hierarchy null, geometry-ranks-disagreement, judge ceiling, router closed |
+| [findings_2026_09_20.md](findings_2026_09_20.md) | CURRENT | **newest**: the headline reverses under a better-calibrated judge; length bias and the 66–106 word calibration band |
+| [findings_2026_09_15.md](findings_2026_09_15.md) | CURRENT (§1, §12 superseded) | ISSP transfer, hierarchy null, geometry-ranks-disagreement, judge ceiling, router closed |
 | [methodology_and_results.md](methodology_and_results.md) | CURRENT | the claim ladder: what is established, what broke, what is pending |
 | [methodology.tex](methodology.tex) | CURRENT | the method as a paper section (pdf beside it) |
 

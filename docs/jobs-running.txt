@@ -1,139 +1,159 @@
-JOBS IN FLIGHT — updated 2026-09-20
-===================================
-Refresh with:  squeue --me -o "%.10i %.14j %.2t %.11L %R"
-
-  id        name           writes                          settles
-  --------  -------------  ------------------------------  ------------------------------------------
-  3482970   sel_ablation   overton_responses_jsdiv.jsonl   does ranking pairs by TRUE disagreement (JS)
-            (= jsdiv)      overton_scores_jsdiv{,_clusters}.csv  beat the learned Wasserstein ranking?
-                                                           Predicted: tie, or "inert" in the check --
-                                                           the geometry already ranks JS at rho=0.755.
-  3483855   sel_spread     overton_responses_spread.jsonl  does spreading anchors across SURVEY
-                           overton_scores_spread{,_clusters}.csv QUESTIONS (and greedy coverage
-                                                           selection) beat merge_v2? merge_v2 draws
-                                                           4.85 forks from only 2.13 anchors.
-  3484045   g8_gen         overton_responses_g8.jsonl      RL stage 0: 60 q x 8 samples, 7B base,
-                                                           plain prompts. No judging (SKIPJUDGE=1).
-  3484046   g8_judge0      overton_scores_g8{,_clusters,_rollouts}.csv   72B judge, participant seed 0
-  3484047   g8_judge1      overton_scores_g8_s1{,_clusters,_rollouts}.csv 72B judge, seed 1 = the
-                                                           judge-vs-itself CEILING the gate's bar uses
-  3484048   g8_gate        docs/group_reward_gate_baseline.csv  may the group-diversity reward be
-                                                           trained on at all?
-
-  PD (Dependency) is normal: afterok chains stop the run if a step fails.
-  PD (ReqNodeNotAvail, UnavailableNodes:...) = maintenance reservation, not an error.
+JOB LOG — updated 2026-09-20
+============================
+One line per job: what it asked, what it answered.
 
 
-READ THE GATE LOG IN THIS ORDER (it stops at the first failure)
----------------------------------------------------------------
-  1. headroom     union@8 - within-answer on the 7B base. <= 0.03 -> RL is over,
-                  exits immediately. GRPO can only reweight what the base already
-                  samples; no spread means nothing to select.
-  2. flat groups  share of questions where all 8 rollouts get identical rewards.
-                  Those z-score to zero advantage and train nothing. Fail > 0.30.
-  3. judge vs itself   must exceed 0.5, else there is no stable ordering to track.
-  4. confirm-half concordance + CI vs the bar, and the lambda=0 control (does the
-                  novelty term add agreement over plain coverage?).
+DONE
+----
 
-  If it PASSES, the log names the chosen lambda/depth; smoke-train 20 steps:
-    REWARD=group INJECT=0 LAMBDA=<chosen> DEPTH=<chosen> MAXSTEPS=20 \
-      sbatch --job-name=grpo_smoke jobs/train/job_grpo_align.sh
-  In that log watch the [group reward] lines: flat= should stay well under 0.30,
-  and no "WARNING ... expected 8" (TRL splitting a prompt across reward calls).
+3482970  sel_ablation (jsdiv)                                          COMPLETED
+  Ask:    does ranking fork pairs by TRUE disagreement (JS between the two
+          subgroups' survey answers) beat the learned Wasserstein ranking?
+  Answer: NO. jsdiv 0.4764 vs merge_v2 0.5350 (delta -0.059, CI [-0.109,-0.010],
+          p=0.017). vs baseline: -0.021, n.s. -> it loses merge_v2's whole gain.
+  Check:  passed. jsdiv really did rank by disagreement (mean_js 0.0447 vs
+          0.0395) and fork volume matched (4.85 vs 4.85).
 
+3483855  sel_spread (spread + cover)                                   COMPLETED
+  Ask:    does spreading anchors across distinct survey questions, or greedy
+          coverage of distinct subgroups, beat merge_v2? (merge_v2 draws 4.85
+          forks from only 2.13 anchors.)
+  Answer: NO. spread -0.085 (p=0.002), cover -0.050 (p=0.07) vs merge_v2; both
+          statistically equal to baseline. merge_v2 beat baseline again here:
+          +0.069, p=0.003 (6th replication).
+  Check:  volume matched, but SPREAD DID NOT DO WHAT IT WAS BUILT TO DO --
+          1.67 questions/row vs merge_v2's 1.98 (it changed branch granularity,
+          not topic count). Treat its number as "a perturbation", not "spread".
 
-WHEN THE ABLATIONS LAND — CHECK THE MANIPULATION FIRST
--------------------------------------------------------
-  python scripts/analysis/check_ablation_arms.py --responses overton_responses_spread.jsonl --strict
-  python scripts/analysis/check_ablation_arms.py --responses overton_responses_jsdiv.jsonl --strict
+3484045  g8_gen                                                        COMPLETED
+  Ask:    RL stage 0 -- 60 questions x 8 samples, 7B base, plain prompts.
+  Answer: 480 rows generated, no judging (SKIPJUDGE=1). 10 minutes.
 
-  Anchors per row (spread/cover must beat merge_v2's 2.13):
-    python - <<'PY'
-    import json, statistics as st
-    from collections import Counter
-    rows = [json.loads(l) for l in open("overton_responses_spread.jsonl") if l.strip()]
-    for c in sorted({r["condition"] for r in rows}):
-        ps = [r["pair_select"] for r in rows if r["condition"] == c and r.get("pair_select")]
-        if ps:
-            a = [len(set(p.get("anchors") or [])) for p in ps]
-            print(f"{c:<18} anchors/row={st.mean(a):.2f} {Counter(a).most_common()}")
-    PY
+3484046  g8_judge0   /   3484047  g8_judge1                            COMPLETED
+  Ask:    judge those samples twice, 20 participants each, different seeds.
+          The second pass is the judge-vs-itself ceiling.
+  Answer: see the gate below.
 
-  Then the deltas (run against BOTH baselines -- an arm can beat baseline while
-  tying merge_v2, and both facts matter):
-    python scripts/analysis/plot_delta_ci.py --scores overton_scores_spread.csv \
-      --baseline merge_v2 --conditions merge_v2_spread,merge_v2_cover --out docs/delta_ci_spread.png
-    python scripts/analysis/plot_delta_ci.py --scores overton_scores_jsdiv.csv \
-      --baseline merge_v2 --conditions merge_v2_jsdiv --out docs/delta_ci_jsdiv.png
+3484048  g8_gate                                              FAILED (exit 2 = RESULT)
+  Ask:    may we train on the group-diversity reward?
+  Answer: NO, and the reason is the benchmark, not the reward.
+            headroom          +0.176  (PASS: 8 samples cover far more than 1)
+            flat groups        0.267  (PASS: collapse was not the blocker)
+            judge vs itself    0.507  (= CHANCE)
+            reward concordance 0.228  (bar 0.503; ties on 51% of pairs)
+          The judge cannot rank 8 samples of ONE model above chance, so no
+          per-sample reward can be validated here. This also explains the old
+          coverage reward (0.152) and all five failed routers.
 
+judge_only MAXU=0 (all participants, same g8 samples)                  COMPLETED
+  Ask:    does judging everyone instead of 20 participants fix the ceiling?
+  Answer: headroom holds (within 0.2835 -> union@8 0.4353, +0.152, rollout_gain
+          1.68) but the ceiling question is NOT answered: with no subsample there
+          is no second independent pass to compare against. Needs a disjoint
+          half-split flag in the judge (~10 lines, not written).
 
-WAITING, NO QUEUE NEEDED (interactive GPU)
--------------------------------------------
-  salloc --account=def-enaskt --gres=gpu:1 --mem=32G --cpus-per-task=8 --time=2:00:00
-  module load python/3.11 gcc cuda/13.2 arrow/24.0.0
-  source ~/pluraltree-env/bin/activate
-  cd ~/projects/def-enaskt/shawnj/PluralTree && git pull
-  export OPINIONQA_DIR=$HOME/projects/def-enaskt/shawnj/data/human_resp
-  export ISSP_DIR=$HOME/projects/def-enaskt/shawnj/data/issp
-  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1
+validate_divergence, ATP and ISSP                            (interactive, no queue)
+  Ask:    does the learned geometry rank real subgroup disagreement?
+  Answer: ATP yes (within-axis rho +0.755, input features only +0.074).
+          ISSP no  (+0.086, while its input features reach +0.893).
+          Both graphs: mean JS only ~0.015 bits -- subgroups barely disagree.
 
-  [1] COVERAGE FUNNEL -- highest value unrun analysis. Where is a viewpoint lost:
-      never retrieved / retrieved but not drafted / dropped by the merge / said
-      but not credited. Decides whether the next push is delivery work or the
-      construct gap.
-        python scripts/analysis/coverage_funnel.py --responses overton_responses_flat.jsonl \
-          --clusters overton_scores_flat_clusters.csv \
-          --conditions baseline,merge_v2,merge_v2_flat --out docs/coverage_funnel_flat.csv
-        python scripts/analysis/coverage_funnel.py --responses overton_responses_issp.jsonl \
-          --clusters overton_scores_issp_clusters.csv \
-          --conditions baseline,merge_v2 --out docs/coverage_funnel_issp.csv
+embedding radius check                                       (interactive, seconds)
+  Ask:    why is ISSP's divergence signal flat (pair-dist sd 0.29 vs ATP 3.58)?
+  Answer: BOTH embeddings are pinned to the projection clamp: rho = 0.9999 for
+          100% of nodes. Cause is dimensional, not dynamical -- the Tree-GRU
+          tangent norm grows like sqrt(d_hidden) (~7 at d=64), and
+          exp_map_zero saturates past ~5. Fix implemented on branch
+          fix/hyperbolic-saturation (--tangent_scale, plus a [ball] readout each
+          eval). Not yet retrained.
 
-  [2] ISSP ON THE ATP SCALE (re-judge output already exists). Baseline should land
-      near 0.50 (was 0.414 judged against all participants) and the resolved-subset
-      delta should stay near +0.048.
-        python scripts/analysis/plot_delta_ci.py --scores overton_scores_issp_u20.csv \
-          --responses overton_responses_issp.jsonl --conditions merge_v2 \
-          --out docs/delta_ci_issp_u20.png
-
-  [3] VITAL COMBINED SCORING (c0 done: 0.3544, 719 words; needs c0p5 complete).
-        wc -l vital_responses_c0p5.jsonl vital_responses_c0.jsonl
-        SKIPGEN=1 SCORE_RESP=vital_responses_c0p5.jsonl,vital_responses_c0.jsonl \
-          SCORES=vital_scores_geom.csv sbatch --job-name=vital_score --time=1:00:00 jobs/eval/job_vital.sh
-
-  [4] DOES THE GAIN TRACK DISAGREEMENT (~7 min graph load)
-        python scripts/analysis/divergence_payoff.py --scores overton_scores_flat.csv \
-          --embeddings embeddings_opinionqa.pt --text_feat feats_opinionqa.pt \
-          --condition merge_v2 --seed 42 --out docs/divergence_payoff_flat.csv
-
-  [5] GEOMETRY, EUCLIDEAN ARM (c=0.5 gave within-axis rho=+0.755)
-        python -m evaluation.intrinsic.validate_divergence --dataset opinionqa \
-          --embeddings embeddings_opinionqa_c0.pt --curvature 0 --feats feats_opinionqa.pt
+delta_regressor on the flat run                              (interactive, no queue)
+  Ask:    can any feature route per-question between baseline and injection?
+  Answer: NO. always-inject recovers +0.525 of the oracle gap; graph features
+          -0.040, full causal set -0.178, length alone +0.118. Router closed.
 
 
-RULES THAT COST US A RUN ALREADY
----------------------------------
-  * TWO JOBS, ONE OUT= IS CORRUPTION, NOT A RETRY. Generation appends and builds
+WHAT IT ADDS UP TO
+------------------
+  * merge_v2 > baseline: replicated 6x (+0.038 to +0.069), and transfers to ISSP
+    (+0.048 on the 34/60 questions its graph reaches).
+  * Every component we can name contributes nothing: curvature (p=0.88),
+    hierarchy (p=0.34), divergence ranking, anchor spread, coverage-greedy
+    selection. Any substitution for argmax(rel^alpha * W) returns to baseline.
+  * The benchmark separates SYSTEMS, not SAMPLES of one system. That bounds
+    routing, per-sample rewards and GRPO-style RL.
+  * The headroom that is real and large is ACROSS samples (+0.15 to +0.18), not
+    within one answer.
+
+
+STILL TO RUN
+------------
+  baseline_long    length-matched baseline (merge_v2 ~330 words vs baseline ~69).
+                   NOT IMPLEMENTED, ~30 lines. Biggest threat to the headline.
+  merge_v2_rand    content control: matched IRRELEVANT forks. Now runnable
+                   (matched_random_fork fixes the old volume confound).
+  coverage_funnel  where a viewpoint is lost: retrieval / drafting / merging /
+                   judging. Interactive, no queue. Highest-value unrun analysis.
+  judge half-split reliability of the per-rollout verdict; decides whether
+                   per-sample RL is blocked permanently.
+  retrain          embeddings with --tangent_scale -1 on the branch, then
+                   re-check rho spread, pair-dist sd, validate_divergence, MRR.
+
+
+RULES (each cost us a run)
+--------------------------
+  * Two jobs with the same OUT= corrupts the file. Generation appends and builds
     its skip-list at start, so concurrent writers duplicate cells and the judge
-    then unions over 6 rollouts while reporting 3. Killed both VITAL c0p5 jobs
-    and both sel_spread jobs over this. Check squeue --me BEFORE resubmitting.
-  * The job NAME comes from the script, so every submission shows the same name.
-    Pass --job-name=<experiment> so duplicates are visible in squeue.
-  * Always pass OUT=/SCORES= explicitly: job_selection_ablation defaults to
-    overton_responses_sel.jsonl and would overwrite the old selection run.
-  * Jobs read the code when they START, not when submitted. Pull before
-    submitting; avoid pushing to retrieval/ while runs are queued.
-  * Gate CSVs collide: job_anchor_coverage defaults to docs/anchor_cov_${SRC}.csv,
-    and two SRC=none runs overwrite each other (this destroyed a VITAL gate).
+    then unions over twice the rollouts. Check squeue --me before resubmitting.
+  * Job names come from the script: pass --job-name=<experiment> or every
+    submission shows "sel_ablation".
+  * Jobs read the code when they START. Pull first; don't push to retrieval/
+    while runs are queued.
+  * Never compare absolute scores across runs -- baselines differ (0.4899 vs
+    0.4975). Only within-run paired deltas.
 
 
-STILL UNRUN, NOT SUBMITTED
----------------------------
-  baseline_long     length-matched baseline: is merge_v2's +0.04 just 330 words
-                    against baseline's 69? NOT IMPLEMENTED (~30 lines). Biggest
-                    single threat to the headline claim.
-  merge_v2_rand     content control: matched IRRELEVANT forks. Invalid in every
-                    prior run (1.00 vs 4.85 forks); matched_random_fork now fixes
-                    the volume, so it is finally runnable.
-  trace_execution   needs a run generated AFTER the draft_traces change, then
-                    --drafts. Multi-pass arms stored only the merge call's
-                    <think>, which has no plan in it.
+WAITING ON (submitted 2026-09-20) — judge swap: Qwen3.8-27B-FP8
+----------------------------------------------------------------
+Why at all: judge reliability is the measured blocker. The current judge
+(Qwen2.5-72B-AWQ) agrees with humans at rho=0.167 (ceiling ~0.76) and ranks 8
+samples of ONE model at 0.507 = chance, which is what failed the RL gate and
+every router. A newer, cheaper judge might do better. No regeneration needed:
+these all re-score answers already on disk.
+
+Setup notes (cost an hour to find):
+  * Qwen3.8-27B-FP8 serves on A100 under vLLM 0.24.0 at TP=2. 27B FP8 needs 2
+    GPUs, not 4 -> queues faster than the 72B jobs.
+  * THINKING IS ON BY DEFAULT and its prose lands in `content` (there is no
+    reasoning parser), so every request must carry
+    PLURALTREE_CHAT_EXTRA='{"chat_template_kwargs":{"enable_thinking":false}}'
+    and sbatch must pass --export=ALL. Without it the judge returns
+    "We need answer user's request: ..." instead of a digit.
+  * judge predict() now parses STRICTLY (leading digit, or a search only for
+    replies <= 12 chars) and warns on prose -- previously a leaked reasoning
+    trace containing "3 of 5" would have been read as a rating.
+  * Interactive runs need HF_HOME + HF_*_OFFLINE + OPINIONQA_DIR exported or
+    load_index hangs trying to reach the hub from a compute node.
+
+q38_val    job_judge_validate.sh
+  Ask:    does the new judge agree with human ratings better than 0.167?
+  Read:   aggregate rho vs the human split-half ceiling (~0.76). Higher = the
+          instrument improves and every coverage number gets firmer.
+
+q38_flat   job_judge_only.sh on overton_responses_flat.jsonl
+  Ask:    does merge_v2 - baseline (+0.04, replicated 6x) survive a different
+          judge?
+  Read:   if it shrinks or inverts, the headline result was judge-specific --
+          the most consequential outcome of the three.
+
+q38_s0 / q38_s1   job_judge_only.sh on overton_responses_g8.jsonl, seeds 0 and 1
+  Ask:    can this judge rank 8 samples of one model above chance?
+  Read:   then rerun the gate on the two rollout dumps:
+            python scripts/analysis/group_reward_gate.py \
+              --responses overton_responses_g8.jsonl \
+              --rollouts overton_scores_g8_q38_rollouts.csv \
+              --rollouts_b overton_scores_g8_q38_s1_rollouts.csv \
+              --condition baseline --out docs/group_reward_gate_q38.csv
+          judge-vs-itself well above 0.507 -> the gate becomes informative and
+          per-sample RL reopens. Still ~0.5 -> the limit is the metric, not the
+          model, which is a cleaner claim for the paper.

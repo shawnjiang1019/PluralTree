@@ -41,6 +41,13 @@ COND="${COND:-merge_v2}"
 KEEP="${KEEP:-baseline}"
 LABEL="${LABEL:-${COND}_compressed}"
 WORDS="${WORDS:-90}"          # median length of the human-rated responses
+# MATCH beats a fixed target: a global "about 90 words" came back at p50 128,
+# and baseline is often below the 66-word band floor anyway. Matching each
+# rewrite to its own question's baseline length is what makes the arms
+# comparable. Empty = use WORDS for every row.
+MATCH="${MATCH:-baseline}"
+MATCH_ARG=""
+[ -n "${MATCH}" ] && MATCH_ARG="--match_condition ${MATCH}"
 OUT="${OUT:-overton_responses_comp.jsonl}"
 MAXQ="${MAXQ:-0}"
 # Same generator that wrote the originals, so the rewrite is not a second
@@ -70,7 +77,8 @@ curl -sf "http://localhost:${PORT}/health" > /dev/null \
 
 CUDA_VISIBLE_DEVICES="" python -u -m evaluation.overton.compress_responses \
     --responses "${RESP}" --condition "${COND}" --keep "${KEEP}" \
-    --label "${LABEL}" --target_words "${WORDS}" --max_questions "${MAXQ}" \
+    --label "${LABEL}" --target_words "${WORDS}" ${MATCH_ARG} \
+    --max_questions "${MAXQ}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" --out "${OUT}" \
     || { echo "COMPRESSION FAILED (see .err)"; exit 1; }
 

@@ -58,6 +58,16 @@ def main() -> int:
                     help="output condition name (default: <condition>_compressed)")
     ap.add_argument("--target_words", type=int, default=90,
                     help="90 = the median length of the human-rated responses")
+    ap.add_argument("--match_condition", default=None,
+                    help="match each rewrite to THIS condition's word count for "
+                         "the same question instead of a fixed target (e.g. "
+                         "baseline). Measured: a fixed 'about 90 words' target "
+                         "came back at p50 128, and baseline is itself often "
+                         "below the 66-word band floor -- so matching arm to arm "
+                         "is what makes the comparison length-controlled.")
+    ap.add_argument("--retry_over", type=float, default=1.25,
+                    help="rewrite once more, with a hard cap, when the first "
+                         "attempt exceeds this multiple of the target. 0 = off.")
     ap.add_argument("--base_url", default="http://localhost:8000/v1")
     ap.add_argument("--model", required=True)
     ap.add_argument("--max_questions", type=int, default=0)
@@ -103,8 +113,21 @@ def main() -> int:
                     done.add((int(d["question_id"]), d["condition"], int(d.get("rollout", 0))))
         print(f"  resuming: {len(done)} rows already present")
 
-    instruction = COMPRESS_INSTRUCTION.format(n=args.target_words)
-    n_long = n_empty = 0
+    # Per-question length of the arm we are matching, so each rewrite gets its
+    # own target rather than one global number.
+    match_len: dict[tuple[int, int], int] = {}
+    if args.match_condition:
+        for r in rows:
+            if r["condition"] == args.match_condition:
+                match_len[(int(r["question_id"]), int(r.get("rollout", 0)))] = \
+                    len((r.get("response") or "").split())
+        if not match_len:
+            print(f"no {args.match_condition!r} rows to match against"); return 1
+        vals = sorted(match_len.values())
+        print(f"  matching lengths to {args.match_condition}: "
+              f"p50={vals[len(vals) // 2]} words")
+
+    n_long = n_empty = n_retry = 0
     with open(args.out, "a", encoding="utf-8") as f:
         for r in passthrough:
             key = (int(r["question_id"]), r["condition"], int(r.get("rollout", 0)))
@@ -116,29 +139,48 @@ def main() -> int:
             if key in done:
                 continue
             src = r.get("response") or ""
-            msgs = [{"role": "system", "content": instruction},
-                    {"role": "user",
-                     "content": f"Question: {r['question']}\n\nAnswer:\n{src}"}]
-            # ~2 tokens per word, plus room for the tags.
-            raw = chat(args.base_url, args.model, msgs, temperature=0.0,
-                       max_tokens=max(256, args.target_words * 3))
-            text, _tagged = extract_answer(raw)
-            text = text.strip()
+            qkey = (int(r["question_id"]), int(r.get("rollout", 0)))
+            target = match_len.get(qkey, args.target_words) if args.match_condition \
+                else args.target_words
+            target = max(30, target)          # a 12-word target is not answerable
+            user = f"Question: {r['question']}\n\nAnswer:\n{src}"
+
+            def _rewrite(instr: str) -> str:
+                raw = chat(args.base_url, args.model,
+                           [{"role": "system", "content": instr},
+                            {"role": "user", "content": user}],
+                           temperature=0.0, max_tokens=max(256, target * 3))
+                t, _tagged = extract_answer(raw)
+                return t.strip()
+
+            text = _rewrite(COMPRESS_INSTRUCTION.format(n=target))
             n_out = len(text.split())
+            # Measured overshoot: "about N words" comes back ~1.4x N. One retry
+            # with a hard ceiling costs a call and keeps the arms matched.
+            if args.retry_over and n_out > args.retry_over * target:
+                n_retry += 1
+                retry = _rewrite(
+                    COMPRESS_INSTRUCTION.format(n=target)
+                    + f"\nHARD LIMIT: the answer must be at most {target} words. "
+                      f"Your previous attempt was {n_out} words, which is too long.")
+                if retry and len(retry.split()) < n_out:
+                    text, n_out = retry, len(retry.split())
             if not text:
                 n_empty += 1
-            elif n_out > 2 * args.target_words:
+            elif n_out > 2 * target:
                 n_long += 1
             f.write(json.dumps({
                 "question_id": int(r["question_id"]), "question": r["question"],
                 "condition": label, "rollout": int(r.get("rollout", 0)),
                 "response": text, "n_forks": r.get("n_forks", 0),
                 "words_before": len(src.split()), "words_after": n_out,
-                "source_condition": args.condition}) + "\n")
+                "target_words": target, "source_condition": args.condition}) + "\n")
             f.flush()
             if i % 20 == 0:
                 print(f"  {i}/{len(todo)} ...")
 
+    if n_retry:
+        print(f"  {n_retry} rewrites needed the hard-limit retry")
     if n_empty:
         print(f"  WARNING {n_empty} empty rewrites -- they will score 0")
     if n_long:
