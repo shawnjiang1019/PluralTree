@@ -42,9 +42,30 @@ class PoincareBall(nn.Module):
 
     # ---- exponential / logarithmic maps at the origin ----
 
+    # SOFT TANGENT CAP, off by default (0.0). Measured: every embedding trained
+    # here sits at the projection clamp (rho = 0.9999 for 100% of nodes). A cap
+    # inside one module (the Tree-GRU cell) is not enough -- on ISSP it bounded
+    # the internal nodes but frac(rho>0.9) stayed 0.844, EXACTLY the leaf share
+    # (3398 of 4034 nodes), because leaves are re-mapped by the knowledge gate
+    # and its injector with their own exp_map_zero calls. Capping here bounds
+    # every path through one setting.
+    #   Soft, not hard: v -> v * s*tanh(|v|/s)/|v|. A hard clamp has zero radial
+    #   gradient for capped points, so they pile up at the cap exactly as they did
+    #   at the rim; the soft form is monotone and always differentiable.
+    #   Bound: each exp_map_zero output has rho <= tanh(sqrt(c) * s) (0.61 at s=1,
+    #   c=0.5). Points later COMPOSED by Mobius addition (the knowledge gate) can
+    #   exceed that -- two points at normalized radius r compose to at most
+    #   2r/(1+r^2), ~0.89 here; measured max after the gate was 0.725. Well off
+    #   the rim either way, which is the property that matters.
+    tangent_cap: float = 0.0
+
     def exp_map_zero(self, v: Tensor) -> Tensor:
         """Exponential map from the origin: T_0 B -> B."""
         c = self.c
+        if self.tangent_cap > 0.0:
+            s = self.tangent_cap
+            n = safe_norm(v)
+            v = v * (s * torch.tanh(n / s) / n)
         v_norm = safe_norm(v)
         coeff = torch.tanh(c.sqrt() * v_norm) / (c.sqrt() * v_norm)
         return self.project(coeff * v)

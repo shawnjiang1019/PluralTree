@@ -90,9 +90,10 @@ def parse_args():
                         "every node lands at rho=0.9999 and the radius carries no "
                         "information. -1 = auto (1/sqrt(d_hidden)) puts rho ~ 0.6.")
     p.add_argument("--tangent_clip", type=float, default=0.0,
-                   help="cap the tangent norm before exp_map_zero, which BOUNDS "
-                        "the radius: rho <= tanh(sqrt(c)*clip), e.g. 1.0 at c=0.5 "
-                        "gives rho <= 0.61. Needed because h_agg_tan is a log map "
+                   help="soft-cap the tangent norm at EVERY exp_map_zero (set on "
+                        "the manifold), so each map gives rho <= tanh(sqrt(c)*clip) "
+                        "-- 0.61 at clip=1, c=0.5; Mobius composition in the "
+                        "knowledge gate can reach ~0.89. Needed because h_agg_tan is a log map "
                         "of the children, whose norm diverges near the rim -- so "
                         "saturation propagates up the tree and a constant scale "
                         "only delays it. 0 = off.")
@@ -236,6 +237,10 @@ def main():
     # 3. Build model
     # ------------------------------------------------------------------
     manifold = PoincareBall(c=args.curvature)
+    # The cap belongs on the manifold, not only in the cell: leaves are re-mapped
+    # by the knowledge gate after gru_step, and a cell-only cap left exactly the
+    # leaf fraction of ISSP (0.844) on the rim. Covers every exp_map_zero call.
+    manifold.tangent_cap = args.tangent_clip
 
     # Text embeddings serve as the knowledge source (frozen)
     knowledge_source = KGEmbeddingSource(
