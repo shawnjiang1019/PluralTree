@@ -47,6 +47,79 @@ def load(path: str):
     return covered, all_clusters, size
 
 
+def cluster_weights(all_clusters, size, q, mode: str) -> dict[int, float]:
+    """Per-cluster weight for question q.
+
+    The benchmark's own metric is `uniform`: a view held by 5% of participants
+    counts exactly as much as one held by 60%. That is the scoring rule, and it
+    is prevalence-BLIND -- which matters here because every injection arm trades
+    majority clusters for minority ones (measured: gains at relative prevalence
+    0.274, losses at 0.601). Under uniform weighting that trade nets zero by
+    construction, so the property the method is built for is invisible.
+
+      minority  coverage restricted to clusters under half the largest one
+      invprev   weight 1/rel, so rare views dominate the average
+
+    These are SECONDARY metrics, reported beside `uniform`, never instead of it:
+    the benchmark's published numbers are uniform and comparisons must stay
+    comparable to them.
+    """
+    n_p = max(1, max(size.get((q, cl), 0) for cl in all_clusters[q]))
+    rel = {cl: size.get((q, cl), 0) / n_p for cl in all_clusters[q]}
+    if mode == "uniform":
+        return {cl: 1.0 for cl in all_clusters[q]}
+    if mode == "minority":
+        return {cl: (1.0 if rel[cl] < 0.5 else 0.0) for cl in all_clusters[q]}
+    if mode == "invprev":
+        return {cl: 1.0 / max(rel[cl], 1e-6) for cl in all_clusters[q]}
+    raise ValueError(f"unknown weight mode {mode!r}")
+
+
+def weighted_scores(covered, all_clusters, size, qs, cond, mode) -> dict[int, float]:
+    """question -> weighted coverage fraction for one condition."""
+    out = {}
+    for q in qs:
+        w = cluster_weights(all_clusters, size, q, mode)
+        den = sum(w.values())
+        if den <= 0:                       # no minority clusters on this question
+            continue
+        got = covered.get((q, cond), set())
+        out[q] = sum(w[cl] for cl in got if cl in w) / den
+    return out
+
+
+def paired_ci(a: dict[int, float], b: dict[int, float], n_boot: int = 10000,
+              seed: int = 0):
+    """Paired bootstrap over QUESTIONS of mean(a) - mean(b).
+
+    Paired on question id because the arms answer the same questions and the
+    per-question variance dwarfs the effect (the reason every absolute-score
+    comparison in this project is forbidden across runs).
+    """
+    import random
+    qs = sorted(set(a) & set(b))
+    if not qs:
+        return float("nan"), float("nan"), float("nan"), float("nan"), 0
+    d = [a[q] - b[q] for q in qs]
+    obs = st.mean(d)
+    rng = random.Random(seed)
+    means = []
+    for _ in range(n_boot):
+        s = [d[rng.randrange(len(d))] for _ in range(len(d))]
+        means.append(sum(s) / len(s))
+    means.sort()
+    lo = means[int(0.025 * n_boot)]
+    hi = means[int(0.975 * n_boot) - 1]
+    # Two-sided bootstrap p: twice the smaller tail on either side of zero. Both
+    # tails use >=/<= so a degenerate bootstrap (every resample identical, which
+    # happens when an arm ties the baseline on every question) counts in BOTH and
+    # returns p=1 rather than a spurious p=0.
+    below = sum(1 for m in means if m <= 0)
+    above = sum(1 for m in means if m >= 0)
+    p = min(1.0, 2.0 * min(below, above) / n_boot)
+    return obs, lo, hi, p, len(qs)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Per-cluster hit/miss by condition")
     ap.add_argument("--clusters", required=True,
@@ -54,6 +127,12 @@ def main():
     ap.add_argument("--baseline", default="baseline")
     ap.add_argument("--conditions", default=None,
                     help="comma list; default: everything except --baseline")
+    ap.add_argument("--weights", default="uniform,minority,invprev",
+                    help="comma list of weighting schemes to score under. "
+                         "uniform is the benchmark's own metric and is always "
+                         "the one to quote; the others are secondary.")
+    ap.add_argument("--boot", type=int, default=10000,
+                    help="paired bootstrap resamples for the CI; 0 = skip")
     args = ap.parse_args()
 
     covered, all_clusters, size = load(args.clusters)
@@ -90,6 +169,63 @@ def main():
     print("  recovering the minority end of what baseline dropped -- the thing")
     print("  OvertonBench exists to measure. At or above it, the arm is picking up")
     print("  the easy majority clusters baseline happened to skip.")
+
+    # --- 1b. the OTHER half of the ledger -----------------------------------
+    # Section 1 reports only what an arm ADDS. The score is gain - loss, and the
+    # loss column went uncomputed for the whole project: on the calibrated judge
+    # merge_v2 gains 0.28 clusters/q and loses 1.00, which is the entire reversal.
+    # Arms that tie on net turn out to have completely different ledgers (cover
+    # gains 70% more than merge_v2 and loses 3x as much), so "null" was wrong.
+    print(f"\n=== the full ledger (gain - loss vs {args.baseline}) ===")
+    print(f"  {'condition':<16}{'gain/q':>9}{'loss/q':>9}{'net/q':>9}"
+          f"{'net score':>11}{'prev gain':>11}{'prev loss':>11}")
+    for c in others:
+        g, l, tot, pg, pl = [], [], [], [], []
+        for q in qs:
+            b = covered.get((q, args.baseline), set())
+            x = covered.get((q, c), set())
+            if not x and not b:
+                continue
+            n_p = max(1, max(size.get((q, cl), 0) for cl in all_clusters[q]))
+            g.append(len(x - b))
+            l.append(len(b - x))
+            tot.append(len(all_clusters[q]))
+            pg += [size.get((q, cl), 0) / n_p for cl in x - b]
+            pl += [size.get((q, cl), 0) / n_p for cl in b - x]
+        if not tot:
+            continue
+        net = st.mean(g) - st.mean(l)
+        print(f"  {c:<16}{st.mean(g):>9.2f}{st.mean(l):>9.2f}{net:>9.2f}"
+              f"{net / st.mean(tot):>+11.3f}"
+              f"{(st.mean(pg) if pg else float('nan')):>11.3f}"
+              f"{(st.mean(pl) if pl else float('nan')):>11.3f}")
+    print("  net score reproduces the reported coverage delta for the arm.")
+    print("  prev gain << prev loss = the arm trades MAJORITY clusters for")
+    print("  MINORITY ones. Under uniform weighting that nets zero by")
+    print("  construction -- see the weighted scores below.")
+
+    # --- 1c. coverage under each weighting, with paired CIs -----------------
+    modes = [m.strip() for m in args.weights.split(",") if m.strip()]
+    for mode in modes:
+        base = weighted_scores(covered, all_clusters, size, qs, args.baseline, mode)
+        print(f"\n=== coverage, {mode} weighting ===")
+        print(f"  {'condition':<16}{'score':>8}{'delta':>9}"
+              f"{'95% CI':>20}{'p':>8}{'n':>5}")
+        print(f"  {args.baseline:<16}{(st.mean(base.values()) if base else float('nan')):>8.3f}")
+        for c in others:
+            arm = weighted_scores(covered, all_clusters, size, qs, c, mode)
+            if not arm:
+                continue
+            d, lo, hi, p, n = (paired_ci(arm, base, args.boot) if args.boot
+                               else (st.mean(arm) - st.mean(base), float("nan"),
+                                     float("nan"), float("nan"), len(arm)))
+            print(f"  {c:<16}{st.mean(arm.values()):>8.3f}{d:>+9.3f}"
+                  f"{f'[{lo:+.3f}, {hi:+.3f}]':>20}{p:>8.3f}{n:>5}")
+    print("  uniform is the benchmark's published metric -- quote that one.")
+    print("  minority/invprev say whether an arm's gain is concentrated in the")
+    print("  rare views, which uniform weighting cannot express. A delta that")
+    print("  grows from uniform to minority is the pluralism claim; one that")
+    print("  shrinks means the arm is picking up majority clusters.")
 
     # --- 2. do the arms find the SAME extra clusters? -----------------------
     if len(others) >= 2:
