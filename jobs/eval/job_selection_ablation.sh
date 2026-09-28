@@ -31,6 +31,7 @@
 #   Run:    sbatch jobs/eval/job_selection_ablation.sh
 #
 # Knobs: MODEL, TAU, SEED, MAXQ, MAXU, NROLL, KROLL, CONDS, EMB, FEATS,
+#        SKIPJUDGE (generate only; judge later together with an earlier run),
 #        DATASET, OUT, SCORES, TP, PORT.
 
 module load python/3.11 gcc cuda/13.2 arrow/24.0.0 opencv/4.13.0
@@ -117,6 +118,20 @@ echo "fork fallbacks (scout answers that got the baseline prompt):"
 grep -c "scout returned 0 forks" logs/sel_ablation_${SLURM_JOB_ID}.err || true
 echo "tag failures (injected answers missing <answer> tags):"
 grep -c "missing <answer> tags" logs/sel_ablation_${SLURM_JOB_ID}.err || true
+
+if [ "${SKIPJUDGE:-0}" = "1" ]; then
+    echo ""
+    echo "SKIPJUDGE=1: generated ${OUT}, no judge pass."
+    echo "Use this when the new arms must be judged TOGETHER with rows from an"
+    echo "earlier run: scores compare only WITHIN one judging pass, because"
+    echo "--max_users subsamples participants and a second pass draws a"
+    echo "different panel. Concatenate first, then judge once:"
+    echo "  cat <earlier>.jsonl ${OUT} > combined.jsonl"
+    echo "  RESP=combined.jsonl SCORES=<out>.csv MODEL=<judge> TP=2 MAXU=${MAXU} \\"
+    echo "    sbatch --export=ALL --gres=gpu:2 jobs/eval/job_judge_only.sh"
+    echo "Then: python scripts/analysis/cluster_overlap.py --clusters <out>_clusters.csv --boot 10000"
+    exit 0
+fi
 
 echo "=== stage 2: judge (one pass over every arm) ==="
 # --dump_clusters is not optional here: the score alone cannot say WHETHER the
