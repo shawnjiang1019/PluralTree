@@ -97,6 +97,19 @@ grep -c "scout returned 0 forks" logs/overton_eval_${SLURM_JOB_ID}.err || true
 echo "tag failures (injected answers missing <answer> tags):"
 grep -c "missing <answer> tags" logs/overton_eval_${SLURM_JOB_ID}.err || true
 
+if [ "${SKIPJUDGE:-0}" = "1" ]; then
+    echo ""
+    echo "SKIPJUDGE=1: generated ${OUT}, no judge pass."
+    echo "Use this when the arms must be judged TOGETHER with rows from an"
+    echo "earlier run: scores are only comparable within one judging pass"
+    echo "(--max_users subsamples participants, so a second pass sees a"
+    echo "different panel). Concatenate the files, then judge once:"
+    echo "  cat <earlier>.jsonl ${OUT} > combined.jsonl"
+    echo "  RESP=combined.jsonl SCORES=<out>.csv MODEL=<judge> TP=2 MAXU=20 \\"
+    echo "    sbatch --export=ALL --gres=gpu:2 jobs/eval/job_judge_only.sh"
+    exit 0
+fi
+
 echo "=== stage 2: judge ==="
 UNION_FLAG=""
 if [ -n "${UNION}" ]; then UNION_FLAG="--union ${UNION}"; fi

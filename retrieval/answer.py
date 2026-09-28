@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import sys
 import urllib.error
@@ -34,6 +35,15 @@ from retrieval.scout import (ScoredFork, ScoutConfig, describe_node, flat_forks,
 # div_only ablates the relevance guards (old pure-divergence scout).
 CONDITIONS: dict[str, ScoutConfig | None] = {
     "baseline": None,
+    # --- persona attribution ladder (see the block above _plain_merge_answer) --
+    "plain_merge": None,          # 3 plain drafts + the same merge, NO graph.
+    #        Isolates multi-sample assembly from every graph contribution.
+    "persona_self": None,         # the MODEL names the two opposed viewpoints.
+    #        Isolates the graph's subgroup SELECTION from the persona structure.
+    "persona_rand": ScoutConfig(tau=0.25, alpha=1.0),  # persona_merge with a
+    #        random retrieved fork as the anchor. Isolates the divergence
+    #        RANKING -- the first arm where it has a direct path to the output,
+    #        since personas condition each draft on ONE subgroup.
     "baseline_long": None,        # LENGTH CONTROL: baseline padded to ~650 words
     #        (merge_v2's p50 is 672). No retrieval, so a merge_v2 win over this
     #        arm is content; a tie says the gain was length.
@@ -308,7 +318,8 @@ MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
                                    "merge_v2_rand", "merge_v2_sem",
                                    "merge_v2_divrand", "merge_v2_flat",
                                    "merge_v2_jsdiv", "merge_v2_spread",
-                                   "merge_v2_cover", "merge_v2_brief"}
+                                   "merge_v2_cover", "merge_v2_brief",
+                                   "plain_merge", "persona_self", "persona_rand"}
 
 # Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
 RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
@@ -365,6 +376,14 @@ class MergeConfig:
     """
 
     n_drafts: int = 3
+    max_self_views: int = 4
+    #               persona_self only. persona_merge is structurally limited to
+    #               the two POLES of one axis; the model is not, and a question
+    #               with four live positions loses exactly the coverage the
+    #               benchmark measures if it is forced to two. 4 is a compute
+    #               cap (each view = one more draft call and a longer merge),
+    #               not a claim about how many perspectives exist. Set 2 for
+    #               strict draft-count parity with persona_merge.
     min_len_ratio: float = 1.0
     min_pos_ratio: float = 1.0
     min_depth_words: int = 20
@@ -1014,9 +1033,167 @@ PERSONA_INSTRUCTION = (
 )
 
 
+# ATTRIBUTION LADDER for persona_merge (q38: +0.060 vs baseline, +0.144 vs
+# merge_v2). persona_merge changes ONE thing against merge_v2 -- drafts vary by
+# SUBGROUP instead of by INSTRUCTION -- but it still rides the whole retrieval
+# stack, so its win has three possible sources. These arms separate them:
+#
+#   plain_merge    3 plain drafts, temp 0.7, no graph at all -> how much is just
+#                  sampling several times and assembling? The measured
+#                  across-sample headroom is +0.15 (union@8 vs 1), so this is a
+#                  cheap partial harvest of it with zero retrieval.
+#   persona_self   the MODEL names two opposed viewpoints, then one draft each
+#                  -> does the graph's subgroup selection beat the model's own
+#                  guess at what the disagreement is?
+#   persona_rand   persona_merge with a RANDOM retrieved fork as the anchor
+#                  instead of forks[0] -> does the divergence RANKING matter?
+#                  Every previous selection ablation (divrand, jsdiv, cover,
+#                  spread) ran on merge_v2's draft scheme, where all drafts see
+#                  every subgroup and the anchor choice barely reaches the
+#                  output. Personas condition each draft on ONE subgroup, so
+#                  this is the first arm where ranking has a direct path.
+#
+# Read as a ladder: baseline -> plain_merge -> persona_self -> persona_rand ->
+# persona_merge, each rung adding one factor.
+
+# Length here is not cosmetic: this is the persona_self analogue of
+# persona_context, which hands its drafts a demographic label AND that group's
+# real answer percentages. A one-line slogan would give persona_self a THINNER
+# vantage point than persona_merge gets, biasing the arm against the model and
+# in favour of the graph -- in the opposite direction to the extra selection
+# call. Two biases with opposite signs are worse than one, because the result
+# then has no readable direction. So: say who holds it and why, and match the
+# richness rather than the brevity.
+PERSONA_SELF_SELECT = (
+    "Name the genuinely DISTINCT perspectives that real people hold on the "
+    "question below. Each must conflict with the others -- not a rephrasing of "
+    "another, and not a stronger or weaker version of one already listed.\n"
+    "List as many as genuinely exist and no more: some questions have two "
+    "sides, others have several.\n"
+    "For each one, say what the view is, roughly who holds it, and the "
+    "consideration that drives it.\n"
+    "Put each perspective on ONE line -- no line breaks inside a perspective, "
+    "since each line becomes a separate vantage point. No numbering, no "
+    "preamble, no commentary."
+)
+
+# Not PERSONA_INSTRUCTION: that one opens "You are shown how one specific group
+# of people actually answered a survey question, with their real response
+# percentages", which is false here and would tell the model there are numbers
+# it cannot see.
+PERSONA_SELF_INSTRUCTION = (
+    "You are given one perspective on a question. Write the most thoughtful "
+    "answer to the question that argues from that perspective, and the reasons "
+    "someone holding it would give.\n"
+    "Commit to that view. Do not hedge, do not present opposing positions, and "
+    "do not mention the perspective, this instruction, or that you were "
+    "assigned a viewpoint -- write the answer itself, as someone holding that "
+    "view would argue it."
+)
+
+
+def _plain_prompt(question: str) -> list[dict]:
+    """The baseline arm's exact messages. Written out rather than routed through
+    build_prompt(question, None, ...) so these arms cannot drift if the no-fork
+    branch there changes."""
+    return [{"role": "system", "content": BASELINE_INSTRUCTION},
+            {"role": "user", "content": question}]
+
+
+def _plain_merge_answer(question: str, base_url: str, model: str,
+                        cfg: MergeConfig = MergeConfig(),
+                        chat_fn=None) -> tuple[str, dict]:
+    """N independent plain drafts at temp 0.7, merged. NO graph content.
+
+    The control the persona result needs most: if this reaches persona_merge,
+    the win is multi-sample assembly and the subgroups are decoration.
+    Temperature matters -- at 0 the drafts are near-duplicates and the merge has
+    nothing to assemble, which would understate the arm.
+    """
+    chat_fn = chat_fn or chat
+    n = max(1, min(cfg.n_drafts, len(DRAFT_SPECS)))
+    drafts, labels = [], []
+    for k in range(n):
+        raw = chat_fn(base_url, model, _plain_prompt(question),
+                      temperature=0.7, max_tokens=2048)
+        text, _ = extract_answer(raw)
+        if text.strip():
+            drafts.append(text.strip()); labels.append(f"plain{k + 1}")
+    merged, info = merge_drafts(question, drafts, base_url, model, cfg=cfg,
+                                chat_fn=chat_fn, labels=labels)
+    info["n_personas"] = 0
+    parts = {"draft_a": drafts[0] if drafts else "",
+             "draft_b": drafts[1] if len(drafts) > 1 else "", **info}
+    return merged, parts
+
+
+def _persona_self_answer(question: str, base_url: str, model: str,
+                         cfg: MergeConfig = MergeConfig(),
+                         chat_fn=None) -> tuple[str, dict]:
+    """The MODEL picks the personas. persona_merge's structure, no graph.
+
+    One selection call, then one draft per named viewpoint, then the same merge.
+
+    NOT compute-matched, in two ways, both recorded per row rather than hidden:
+    the selection call is extra (``n_self_calls``), and the model names as many
+    perspectives as it sees rather than being pinned to persona_merge's two
+    poles (``n_personas``, capped by ``cfg.max_self_views``). So a win here is
+    "the model's own viewpoints, with as many drafts as it asks for" -- rerun at
+    ``max_self_views=2`` before reading the gap as a statement about WHO chose
+    the viewpoints.
+    """
+    chat_fn = chat_fn or chat
+    raw_sel = chat_fn(base_url, model,
+                      [{"role": "system", "content": PERSONA_SELF_SELECT},
+                       {"role": "user", "content": f"Question: {question}"}],
+                      # Generous: a truncated final line is not a parse error,
+                      # it is a HALF-STATED perspective that a draft then argues
+                      # from. Cheap to avoid, expensive to notice afterwards.
+                      temperature=0.7, max_tokens=1024)
+    sel, _ = extract_answer(raw_sel)
+    # The model ignores "no numbering" often enough to matter; strip bullets and
+    # enumerators, and drop fragments too short to be a stated perspective.
+    views = [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", ln).strip()
+             for ln in (sel or "").splitlines() if ln.strip()]
+    # The model names as many perspectives as it thinks exist; max_self_views is
+    # a COMPUTE cap, not a claim about how many there are. Each extra view is
+    # another generation call and a longer merge, and n_views is stored per row
+    # so a coverage difference can be regressed on it afterwards.
+    views = [v for v in views if len(v.split()) >= 3][: max(1, cfg.max_self_views)]
+
+    drafts, labels = [], []
+    # Draft 1 is the plain baseline, as in persona_merge -- the strongest single
+    # condition measured, so it is not traded for one more persona.
+    raw = chat_fn(base_url, model, _plain_prompt(question),
+                  temperature=0.7, max_tokens=2048)
+    text, _ = extract_answer(raw)
+    if text.strip():
+        drafts.append(text.strip()); labels.append("plain")
+    for k, v in enumerate(views, 1):
+        msgs = [{"role": "system", "content": PERSONA_SELF_INSTRUCTION},
+                {"role": "user",
+                 "content": f"Perspective: {v}\n\nQuestion: {question}"}]
+        budget = _draft_budget(msgs, 2048, cfg)
+        if budget == 0:
+            continue
+        raw = chat_fn(base_url, model, msgs, temperature=0.7, max_tokens=budget)
+        text, _ = extract_answer(raw)
+        if text.strip():
+            drafts.append(text.strip()); labels.append(f"self{k}")
+
+    merged, info = merge_drafts(question, drafts, base_url, model, cfg=cfg,
+                                chat_fn=chat_fn, labels=labels)
+    info["n_personas"] = len(views)
+    info["self_views"] = views
+    info["n_self_calls"] = 1
+    parts = {"draft_a": drafts[0] if drafts else "",
+             "draft_b": drafts[1] if len(drafts) > 1 else "", **info}
+    return merged, parts
+
+
 def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str,
                           cfg: MergeConfig = MergeConfig(),
-                          chat_fn=None) -> tuple[str, dict]:
+                          chat_fn=None, anchor_mode: str = "top") -> tuple[str, dict]:
     """merge_v2's machinery, drafts diversified by SUBGROUP instead of instruction.
 
     merge_v2 varies the INSTRUCTION across drafts (plain / scout / distributional)
@@ -1035,7 +1212,19 @@ def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str
     """
     chat_fn = chat_fn or chat
     n = max(1, min(cfg.n_drafts, len(DRAFT_SPECS)))
-    personas = pick_personas(forks[0], graph, n - 1) if forks else []
+    # anchor_mode="random" (persona_rand) draws uniformly from the SAME retrieved
+    # pool instead of taking the top-scored fork, so the arm isolates the
+    # divergence RANKING and nothing else -- same relevance gate, same graph,
+    # same spectrum logic, same merge. Not filtered to forks with a usable
+    # spectrum: persona_merge does not filter either (it takes forks[0] and
+    # falls back when it has <3 leaves), and filtering here would match on
+    # fallback rate while breaking the comparison. Compare n_personas across the
+    # two arms before reading the delta.
+    anchor_fork = None
+    if forks:
+        anchor_fork = (forks[random.randrange(len(forks))]
+                       if anchor_mode == "random" else forks[0])
+    personas = pick_personas(anchor_fork, graph, n - 1) if anchor_fork else []
 
     drafts, labels = [], []
     # Draft 1 is the plain baseline -- the strongest single condition measured
@@ -1067,6 +1256,7 @@ def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str
     merged, info = merge_drafts(question, drafts, base_url, model, cfg=cfg,
                                 chat_fn=chat_fn, labels=labels)
     info["n_personas"] = len(personas)
+    info["anchor_mode"] = anchor_mode
     parts = {"draft_a": drafts[0] if drafts else "",
              "draft_b": drafts[1] if len(drafts) > 1 else "", **info}
     return merged, parts
@@ -1258,10 +1448,17 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
         prompt = "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
         return _pack(prompt, prompt)
     if condition in MULTI_PASS_CONDITIONS:
-        if condition == "persona_merge":
+        if condition in ("persona_merge", "persona_rand"):
             merged, parts = _persona_merge_answer(
                 question, forks, graph, base_url, model,
-                merge_cfg or MergeConfig(), chat_fn)
+                merge_cfg or MergeConfig(), chat_fn,
+                anchor_mode="random" if condition == "persona_rand" else "top")
+        elif condition == "plain_merge":
+            merged, parts = _plain_merge_answer(
+                question, base_url, model, merge_cfg or MergeConfig(), chat_fn)
+        elif condition == "persona_self":
+            merged, parts = _persona_self_answer(
+                question, base_url, model, merge_cfg or MergeConfig(), chat_fn)
         elif condition in ("merge_v2", "merge_v2_rand", "merge_v2_sem",
                            "merge_v2_divrand", "merge_v2_flat"):
             # merge_v2_rand belongs HERE, not in the `else`. It fell through to
@@ -1306,7 +1503,8 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             # union gain toward zero. Without the field the v11 run could not say
             # how many rows actually tested the condition.
             for k in ("merge_fallback", "merge_fail", "merge_stats", "labels",
-                      "draft_traces", "n_personas"):
+                      "draft_traces", "n_personas", "anchor_mode",
+                      "self_views", "n_self_calls"):
                 if k in parts:
                     trace[k] = parts[k]
             if rand_stats is not None:
@@ -1479,6 +1677,7 @@ def _selftest() -> None:
     assert len(calls) == 1 and out == draft_a and not parts["merge_fallback"], parts
 
     _persona_selftest()
+    _ladder_selftest()
     _selftest_random_fork()
     _semantic_guard_selftest()
     _ablation_selftest()
@@ -1490,6 +1689,115 @@ def _selftest() -> None:
           f"{s_short['merged_positions']}pos -> FALLBACK (short)")
     print(f"  collapsed : {s_wall['merged_words']}w/{s_wall['merged_positions']}pos "
           f"-> FALLBACK (positions; a length-only guard passes this)")
+
+
+def _ladder_selftest() -> None:
+    """The three attribution arms: call counts, prompt wiring, anchor variation.
+
+    What would silently invalidate the ladder and is invisible at runtime:
+    plain_merge drifting off the baseline prompt (then it is not a no-graph
+    control), persona_self keeping a bulleted fragment as a "perspective" (then
+    the draft argues from "2)"), and persona_rand never actually varying the
+    anchor (then it is persona_merge under another name). All three asserted.
+    """
+    BODY = " ".join(["position one matters a great deal to the people who hold it"] * 4)
+
+    def _stub(sel_text: str):
+        calls: list = []
+
+        def chat(base_url, model, msgs, temperature=0.0, max_tokens=None):
+            calls.append(msgs)
+            head = msgs[0]["content"]
+            if head == PERSONA_SELF_SELECT:
+                return f"<answer>{sel_text}</answer>"
+            if head == MERGE_INSTRUCTION_V2:
+                return "<answer>" + "\n\n".join(
+                    f"{BODY} variant {i}" for i in range(6)) + "</answer>"
+            return f"<answer>{BODY}\n\n{BODY} second\n\n{BODY} third</answer>"
+        return chat, calls
+
+    cfg = MergeConfig(n_drafts=3)
+
+    chat, calls = _stub("")
+    _, parts = _plain_merge_answer("Q?", "u", "m", cfg, chat)
+    assert len(calls) == 4, f"3 drafts + 1 merge, got {len(calls)}"
+    assert parts["labels"] == ["plain1", "plain2", "plain3"], parts["labels"]
+    assert all(c[0]["content"] == BASELINE_INSTRUCTION for c in calls[:3]), \
+        "plain_merge drafts must use the baseline prompt verbatim"
+    assert not parts["merge_fallback"], parts["merge_fail"]
+
+    THREE = ("- People should always repay a debt promptly\n"
+             "2) The friendship matters more than the money does\n"
+             "Lending money to a friend is a mistake from the start")
+    chat, calls = _stub(THREE)
+    _, parts = _persona_self_answer("Q?", "u", "m", cfg, chat)
+    # Three views named -> three persona drafts. The model is NOT pinned to
+    # persona_merge's two poles; that is the point of the arm.
+    assert len(calls) == 6, f"1 select + 1 plain + 3 persona + 1 merge, got {len(calls)}"
+    assert parts["n_personas"] == 3 and parts["n_self_calls"] == 1
+    assert parts["self_views"][0].startswith("People"), parts["self_views"]
+    assert parts["self_views"][1].startswith("The friendship"), parts["self_views"]
+    assert parts["labels"] == ["plain", "self1", "self2", "self3"], parts["labels"]
+    assert "Perspective: People" in calls[2][1]["content"]
+
+    # max_self_views is a compute cap, not a parse limit: same reply, 2 drafts.
+    chat2, calls2 = _stub(THREE)
+    _, capped = _persona_self_answer("Q?", "u", "m",
+                                     replace(cfg, max_self_views=2), chat2)
+    assert capped["n_personas"] == 2, capped["self_views"]
+    assert len(calls2) == 5, f"cap must cut draft calls too, got {len(calls2)}"
+
+    chat, _ = _stub("ok\nno")          # fragments are not perspectives
+    _, parts = _persona_self_answer("Q?", "u", "m", cfg, chat)
+    assert parts["n_personas"] == 0 and parts["labels"] == ["plain"], parts["labels"]
+
+    # persona_rand: two anchors, distinguishable by the subgroup names rendered
+    # into the persona drafts.
+    class _G:
+        children_indices = {0: [1, 2, 3, 4, 5], 10: [11, 12, 13, 14, 15]}
+        id_to_entity = {**{i: f"op:qA:PARTY:gA{i}" for i in range(6)},
+                        **{i: f"op:qB:PARTY:gB{i}" for i in range(10, 16)}}
+        opinion_texts = {i: ["Agree", "Disagree"]
+                         for i in list(range(1, 6)) + list(range(11, 16))}
+        opinion_dist = {**{i: [1.0 - (i - 1) / 4.0, (i - 1) / 4.0] for i in range(1, 6)},
+                        **{i: [1.0 - (i - 11) / 4.0, (i - 11) / 4.0] for i in range(11, 16)}}
+        entity_text = {}
+
+    class _F:
+        w, relevance, top_pairs = 1.0, 0.9, []
+
+        def __init__(self, a, ba, bb):
+            self.anchor, self.branch_a, self.branch_b = a, ba, bb
+
+    forks = [_F(0, 1, 5), _F(10, 11, 15)]
+
+    def _which(mode: str, seed: int):
+        random.seed(seed)
+        seen: list[str] = []
+
+        def chat(base_url, model, msgs, **kw):
+            if msgs[0]["content"] == PERSONA_INSTRUCTION:
+                seen.append(msgs[1]["content"])
+            return "<answer>" + ("word " * 200) + "</answer>"
+        _, p = _persona_merge_answer("Q?", forks, _G(), "u", "m", cfg, chat,
+                                     anchor_mode=mode)
+        return {"A" if "gA" in s else "B" for s in seen}, p
+
+    for s in range(6):
+        w, p = _which("top", s)
+        assert w == {"A"} and p["anchor_mode"] == "top", f"top leaked: {w}"
+    hit: set[str] = set()
+    for s in range(20):
+        w, p = _which("random", s)
+        assert len(w) == 1, f"one anchor per row, got {w}"
+        assert p["n_personas"] == 2, "fallback rate must match persona_merge"
+        hit |= w
+    assert hit == {"A", "B"}, f"persona_rand never varied the anchor: {hit}"
+
+    print("  ladder    : plain_merge 3+1 on the baseline prompt; persona_self "
+          "strips bullets (3 views -> 6 calls, cut by max_self_views) and "
+          "degrades to plain on fragments; "
+          "persona_rand varies the anchor, 2 personas either way")
 
 
 def _ablation_selftest() -> None:
