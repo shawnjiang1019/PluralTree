@@ -83,6 +83,40 @@ def compute_rows(clusters_csv: str, contrasts: list[tuple[str, str, str]],
     return rows
 
 
+def compute_scores(clusters_csv: str, arms: list[tuple[str, str]],
+                   weight: str = "uniform", boot: int = 10000,
+                   seed: int = 0) -> list[dict]:
+    """Absolute coverage per arm: mean over questions, with a bootstrap interval.
+
+    The interval resamples questions for ONE arm, so it is NOT paired. Two arms'
+    intervals can overlap while their paired difference is significant -- the
+    paired comparison is the delta plot, and this figure is only the anchor that
+    says what the deltas are deltas OF. Rows reuse the delta keys (delta = the
+    score) so plot_panels draws both kinds.
+    """
+    import random
+    covered, all_clusters, size = load(clusters_csv)
+    present = {c for _, c in covered}
+    qs = sorted(all_clusters)
+    rng = random.Random(seed)
+    rows = []
+    for arm, label in arms:
+        if arm not in present:
+            raise SystemExit(f"condition {arm!r} not in {clusters_csv} "
+                             f"(has: {', '.join(sorted(present))})")
+        vals = list(weighted_scores(covered, all_clusters, size, qs, arm,
+                                    weight).values())
+        n = len(vals)
+        mean = sum(vals) / n
+        means = sorted(sum(vals[rng.randrange(n)] for _ in range(n)) / n
+                       for _ in range(boot))
+        rows.append({"label": label, "arm": arm, "reference": "", "weight": weight,
+                     "delta": mean, "lo": means[int(0.025 * boot)],
+                     "hi": means[int(0.975 * boot) - 1], "p": float("nan"),
+                     "n": n})
+    return rows
+
+
 def write_csv(rows: list[dict], path: str) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["panel", "label", "arm", "reference",
@@ -99,7 +133,8 @@ def _fmt_p(p: float) -> str:
 
 
 def plot_panels(panels: list[tuple[str, list[dict]]], out: str, xlabel: str,
-                width_in: float = 3.3, show_p: bool = False) -> None:
+                width_in: float = 3.3, show_p: bool = False,
+                kind: str = "delta", ref_arm: str | None = None) -> None:
     """Stacked forest panels on ONE shared x-axis; total width ``width_in``.
 
     Each panel is (title, rows). Panels come from separate judging passes (e.g.
@@ -138,6 +173,8 @@ def plot_panels(panels: list[tuple[str, list[dict]]], out: str, xlabel: str,
     span = max(hi_all, 0) - min(lo_all, 0)
     pad = 0.08 * span if span > 0 else 0.05
     xmin, xmax = min(lo_all, 0) - pad, max(hi_all, 0) + pad
+    if kind == "score":                    # magnitudes: the axis starts at 0
+        xmin, xmax = 0.0, min(1.0, hi_all + 0.08 * hi_all)
 
     axes, notes = [], []
     y_top = height_in - top_in
@@ -151,11 +188,21 @@ def plot_panels(panels: list[tuple[str, list[dict]]], out: str, xlabel: str,
 
         n = len(rows)
         ys = list(range(n))[::-1]                   # first contrast on top
-        ax.axvline(0, color=ZERO, lw=0.8, ls=(0, (3, 2)), zorder=1)
+        if kind == "score":
+            # Dotted line at the reference arm's score: the deltas in the
+            # companion figure are distances from this line.
+            ref = [r for r in rows if r["arm"] == ref_arm]
+            if ref:
+                ax.axvline(ref[0]["delta"], color=ZERO, lw=0.8,
+                           ls=(0, (1, 1.5)), zorder=1)
+        else:
+            ax.axvline(0, color=ZERO, lw=0.8, ls=(0, (3, 2)), zorder=1)
         for y, r in zip(ys, rows):
             ax.plot([r["lo"], r["hi"]], [y, y], color=SERIES, lw=2,
                     solid_capstyle="round", zorder=2)
-            sig = r["lo"] > 0 or r["hi"] < 0
+            # Filled/hollow encodes "interval excludes zero", which only means
+            # something for a delta. Scores are always filled.
+            sig = kind == "score" or r["lo"] > 0 or r["hi"] < 0
             ax.plot(r["delta"], y, marker="o", ms=6.5, mew=1.6, zorder=3,
                     mfc=SERIES if sig else SURFACE, mec=SERIES)
 
@@ -174,6 +221,9 @@ def plot_panels(panels: list[tuple[str, list[dict]]], out: str, xlabel: str,
             ax.spines[side].set_visible(False)
         ax.spines["bottom"].set_color(GRID)
         ax.spines["bottom"].set_visible(last)
+        if kind == "score":
+            from matplotlib.ticker import FuncFormatter
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0%}"))
         if last:
             ax.set_xlabel(xlabel, color=TEXT_SECONDARY)
         if title:
@@ -183,10 +233,14 @@ def plot_panels(panels: list[tuple[str, list[dict]]], out: str, xlabel: str,
         # Delta [CI] column, in text ink -- never the series colour. p lives in
         # the CSV by default; the filled/hollow marker carries significance.
         for y, r in zip(ys, rows):
-            txt = f"{r['delta']:+.3f}\n[{r['lo']:+.3f}, {r['hi']:+.3f}]"
-            txt = txt.replace("-", "−")          # true minus, as on the axis
-            if show_p:
-                txt += f"\n{_fmt_p(r['p'])}"
+            if kind == "score":
+                txt = (f"{r['delta']:.1%}\n"
+                       f"[{r['lo'] * 100:.1f}, {r['hi'] * 100:.1f}]")
+            else:
+                txt = f"{r['delta']:+.3f}\n[{r['lo']:+.3f}, {r['hi']:+.3f}]"
+                txt = txt.replace("-", "−")      # true minus, as on the axis
+                if show_p:
+                    txt += f"\n{_fmt_p(r['p'])}"
             notes.append(ax.annotate(
                 txt, xy=(1.0, y), xycoords=("axes fraction", "data"),
                 xytext=(5, 0), textcoords="offset points", va="center",
@@ -284,6 +338,25 @@ def _selftest(outdir: str) -> None:
     plot_panels(panels, out2, "Δ coverage vs baseline (paired, 95% CI)")
     print(f"selftest two-panel OK -> {out2}")
 
+    # Absolute scores from the same two files: a score panel's differences must
+    # reproduce the delta panel exactly, since both are means over one question set.
+    arms = [("baseline", "baseline"), ("merge_v2", "merge_v2"),
+            ("persona_merge", "persona_merge")]
+    spanels = []
+    for name in judge_probs:
+        pth = os.path.join(outdir, f"_selftest_clusters_{name}.csv")
+        spanels.append((f"{name.capitalize()} judge",
+                        compute_scores(pth, arms, boot=2000)))
+    for (_, srows), (_, drows) in zip(spanels, panels):
+        sc = {r["arm"]: r["delta"] for r in srows}
+        for d in drows:
+            got = sc[d["arm"]] - sc["baseline"]
+            assert abs(got - d["delta"]) < 1e-9, (d["arm"], got, d["delta"])
+    out3 = os.path.join(outdir, "_selftest_scores_by_judge.png")
+    plot_panels(spanels, out3, "Clusters covered (95% CI)", kind="score",
+                ref_arm="baseline")
+    print(f"selftest scores OK (differences reproduce the deltas) -> {out3}")
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Main-result forest plot")
@@ -308,6 +381,11 @@ def main() -> int:
                     help="figure width in inches (3.3 = one ACL column)")
     ap.add_argument("--show_p", action="store_true",
                     help="print p under each interval (always in the CSV)")
+    ap.add_argument("--absolute", action="store_true",
+                    help="plot each arm's own coverage (%%) instead of paired "
+                         "deltas. --conditions lists the arms to show, baseline "
+                         "included; --reference gets a dotted line. Intervals are "
+                         "per-arm, NOT paired: use the delta plot for tests.")
     ap.add_argument("--out", default="docs/figures/main_result.pdf")
     ap.add_argument("--selftest", nargs="?", const=".", metavar="OUTDIR")
     args = ap.parse_args()
@@ -318,7 +396,12 @@ def main() -> int:
     if not args.clusters and not args.panel:
         ap.error("--clusters or --panel is required (or pass --selftest)")
 
-    if args.contrasts:
+    if args.absolute:
+        arms = parse_pairs(args.conditions)
+        if not arms:
+            ap.error("--absolute needs --conditions listing the arms to show")
+        contrasts = []
+    elif args.contrasts:
         contrasts = []
         for pair, label in parse_pairs(args.contrasts):
             arm, sep, ref = pair.partition("-")
@@ -343,22 +426,32 @@ def main() -> int:
 
     panels, flat = [], []
     for title, path in specs:
-        rows = compute_rows(path, contrasts, args.weight, args.boot)
+        rows = (compute_scores(path, arms, args.weight, args.boot) if args.absolute
+                else compute_rows(path, contrasts, args.weight, args.boot))
         for r in rows:
             r["panel"] = title
         panels.append((title, rows))
         flat += rows
 
+    xlabel = args.xlabel
+    if args.absolute and xlabel == ap.get_default("xlabel"):
+        xlabel = "Clusters covered (95% CI)"
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    plot_panels(panels, args.out, args.xlabel, args.width, args.show_p)
+    plot_panels(panels, args.out, xlabel, args.width, args.show_p,
+                kind="score" if args.absolute else "delta",
+                ref_arm=args.reference)
     csv_out = os.path.splitext(args.out)[0] + ".csv"
     write_csv(flat, csv_out)
     for title, rows in panels:
         if title:
             print(f"[{title}]")
         for r in rows:
-            print(f"  {r['label']:32} {r['delta']:+.3f} [{r['lo']:+.3f}, "
-                  f"{r['hi']:+.3f}] {_fmt_p(r['p'])}  n={r['n']}")
+            if args.absolute:
+                print(f"  {r['label']:32} {r['delta']:.1%} "
+                      f"[{r['lo']:.1%}, {r['hi']:.1%}]  n={r['n']}")
+            else:
+                print(f"  {r['label']:32} {r['delta']:+.3f} [{r['lo']:+.3f}, "
+                      f"{r['hi']:+.3f}] {_fmt_p(r['p'])}  n={r['n']}")
     print(f"-> {args.out}\n-> {csv_out}")
     return 0
 
