@@ -1,0 +1,102 @@
+% Persona pipeline, worked example.
+% Preamble needs:  \usepackage{tikz}  \usetikzlibrary{arrows.meta,calc}
+% Include in figure*:  \input{figures/persona_pipeline}
+%
+% To change the example, edit ONLY the block below. Current values are real:
+% OvertonBench Q1, its top retrieved fork in v11 (Pew ATP item on China, split by
+% ideology), and the subgroups' measured answer distributions. Axis positions
+% use the method's projection t = <p - p_A, v>/|v|^2, v = p_B - p_A.
+% Bar colours: dataviz palette slots 1-3, validated all-pairs; values are printed
+% beside each bar because slot 3 is under 3:1 contrast on white.
+% ---------------------------------------------------------------------- example
+\def\ppQuestion{Is Russia an ally of the US, or an adversary?}
+\def\ppItem{Is China a partner, competitor or enemy of the US?}
+\def\ppSplit{by ideology}
+\def\ppOptA{partner}\def\ppOptB{competitor}\def\ppOptC{enemy}
+% rows: y / label / optA% / optB% / optC%
+\def\ppRows{-2.75/Very liberal/15/72/13,
+            -3.20/Moderate/10/59/31,
+            -3.65/Very conservative/6/28/66}
+% axis: t / label (selected endpoints are drawn separately below)
+\def\ppMid{0.33/moderate}
+\def\ppLeft{very liberal}\def\ppRight{very conservative}
+\def\ppLeftAxis{very\\liberal}\def\ppRightAxis{very\\conservative}  % 2-line axis labels
+% ------------------------------------------------------------------------------
+\definecolor{optP}{HTML}{2A78D6}
+\definecolor{optC}{HTML}{EB6834}
+\definecolor{optE}{HTML}{1BAF7A}
+\definecolor{ink}{HTML}{0B0B0B}
+\definecolor{ink2}{HTML}{52514E}
+\definecolor{rule}{HTML}{C9C8C3}
+
+\begin{tikzpicture}[
+  font=\footnotesize, x=1cm, y=1cm, >={Stealth[length=2mm]},
+  box/.style={draw=rule, rounded corners=2pt, fill=white, align=left,
+              inner sep=4pt, text=ink, anchor=north west},
+  stage/.style={font=\small\bfseries, text=ink, anchor=west},
+  flow/.style={->, draw=ink2, line width=0.6pt},
+]
+
+% ---------------------------------------------------------------- 1. retrieve
+\node[stage] at (0,0.4) {1\;\; Retrieve};
+\node[box, text width=4.2cm] (q) at (0,0) {\emph{\ppQuestion}};
+\node[box, text width=4.2cm, minimum height=3.3cm] (fork) at (0,-1.0) {};
+\node[anchor=north west, text=ink, align=left, text width=4.1cm]
+  at ($(fork.north west)+(0.06,-0.05)$) {%
+  \textbf{Top fork}\; {\color{ink2}\ppSplit}\\[1pt]\emph{\ppItem}};
+\draw[flow] (q.south) -- (fork.north);
+
+\foreach \y/\lab/\a/\b/\c in \ppRows {
+  \node[anchor=east, text=ink, font=\scriptsize] at (1.62,\y) {\lab};
+  \fill[optP] (1.68,\y-0.11) rectangle ++(0.017*\a,0.22);
+  \fill[optC] (1.68+0.017*\a,\y-0.11) rectangle ++(0.017*\b,0.22);
+  \fill[optE] (1.68+0.017*\a+0.017*\b,\y-0.11) rectangle ++(0.017*\c,0.22);
+  \draw[white, line width=0.8pt] (1.68+0.017*\a,\y-0.11) -- ++(0,0.22);
+  \draw[white, line width=0.8pt] (1.68+0.017*\a+0.017*\b,\y-0.11) -- ++(0,0.22);
+  \node[anchor=west, text=ink2, font=\scriptsize] at (3.4,\y) {\a/\b/\c};
+}
+\node[anchor=north west, text=ink2, font=\scriptsize] at (0.05,-3.85) {%
+  \textcolor{optP}{\rule{5pt}{5pt}} \ppOptA\;\;
+  \textcolor{optC}{\rule{5pt}{5pt}} \ppOptB\;\;
+  \textcolor{optE}{\rule{5pt}{5pt}} \ppOptC\;\;(\%)};
+
+% ------------------------------------------------------------ 2. opinion axis
+\node[stage] at (4.75,0.4) {2\;\; Opinion axis};
+\def\ax{5.3}\def\axlen{2.3}\def\ay{-3.2}
+\draw[ink2, line width=0.7pt] (\ax,\ay) -- (\ax+\axlen,\ay);
+\foreach \t/\lab in \ppMid {
+  \fill[ink2] (\ax+\axlen*\t,\ay) circle (2.1pt);
+  \node[above=3pt, font=\scriptsize, text=ink2] at (\ax+\axlen*\t,\ay) {\lab};
+}
+\foreach \pos in {0, 1} {
+  \fill[ink] (\ax+\axlen*\pos,\ay) circle (2.5pt);
+  \draw[ink, line width=0.9pt] (\ax+\axlen*\pos,\ay) circle (4.8pt);
+}
+% endpoint labels run INWARD from each end, clear of the outgoing arrows
+\node[anchor=north west, font=\scriptsize\bfseries, text=ink, align=left]
+  at (\ax-0.2,\ay-0.2) {\ppLeftAxis};
+\node[anchor=north east, font=\scriptsize\bfseries, text=ink, align=right]
+  at (\ax+\axlen+0.2,\ay-0.2) {\ppRightAxis};
+\node[anchor=north, text=ink2, font=\scriptsize] at (\ax+\axlen/2,-4.05)
+  {endpoints $\rightarrow$ personas};
+\draw[flow] (fork.east |- 0,\ay) -- (\ax-0.2,\ay);
+
+% ---------------------------------------------------------------- 3. drafts
+\node[stage] at (8.25,0.4) {3\;\; Drafts};
+\node[box, text width=2.35cm] (d1) at (8.25,-0.22) {\textbf{Plain}};
+\node[box, text width=2.35cm] (d2) at (8.25,-1.85) {\textbf{Persona}\\ \ppLeft};
+\node[box, text width=2.35cm] (d3) at (8.25,-3.15) {\textbf{Persona}\\ \ppRight};
+
+\draw[flow] (q.east) -- (q.east -| d1.west);
+\draw[flow] (\ax,\ay+0.17) |- (d2.west);
+\draw[flow] (\ax+\axlen+0.17,\ay) -- (7.95,\ay) |- (d3.west);
+
+% ----------------------------------------------------------------- 4. merge
+\node[stage] at (11.3,0.4) {4\;\; Merge};
+\node[box, text width=2.1cm] (m) at (11.3,-1.2) {%
+  \textbf{Merge}\\{\color{ink2}\scriptsize keep every position; no summarising}};
+\node[box, text width=2.1cm, line width=0.9pt, draw=ink] (ans) at (11.3,-2.95)
+  {\textbf{One answer}};
+\foreach \d in {d1,d2,d3} \draw[flow] (\d.east) -- (m.west);
+\draw[flow] (m.south) -- (ans.north);
+\end{tikzpicture}

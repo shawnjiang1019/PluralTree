@@ -114,11 +114,27 @@ def main():
                     # 'response'; the rest is for observing retrieval -> triage ->
                     # answer: 'fork_context' = what the scout injected, 'think' =
                     # how the model triaged it, 'raw' = the full generation.
+                    #
+                    # RETRIEVED vs INJECTED are not the same thing and used to be
+                    # conflated here. The persona arms retrieve forks to SELECT
+                    # subgroups from, then show each draft one subgroup and never
+                    # the fork block; storing the block as 'fork_context' made
+                    # those rows look like the model had been handed the forks
+                    # and picked from them, which is the merge_v2/expand design,
+                    # not the persona one. 'fork_context' is now what a prompt
+                    # actually contained, 'fork_context_retrieved' is what the
+                    # scout returned either way -- coverage_funnel needs the
+                    # latter to ask whether a cluster was retrievable at all.
                     row = {"question_id": qid, "question": question,
                            "condition": cond, "rollout": rollout,
                            "response": resp, "raw": trace["raw"],
                            "think": trace["think"],
                            "fork_context": trace["fork_context"],
+                           "fork_context_retrieved":
+                               trace.get("fork_context_retrieved",
+                                         trace["fork_context"]),
+                           "fork_context_injected":
+                               trace.get("fork_context_injected", True),
                            "n_forks": trace["n_forks"]}
                     # multi-pass conditions (merge) also carry their drafts, so a
                     # merge that LOSES coverage can be diagnosed against them.

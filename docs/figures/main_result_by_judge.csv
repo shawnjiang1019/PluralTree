@@ -1,0 +1,5 @@
+panel,label,arm,reference,weight,delta,lo,hi,p,n
+Original judge (Qwen2.5-72B),merge_v2,merge_v2,baseline,uniform,0.0783,0.0253,0.1347,0.0026,60
+Original judge (Qwen2.5-72B),persona_merge,persona_merge,baseline,uniform,0.0746,0.0265,0.1264,0.0020,60
+Calibrated judge (Qwen3.8-27B),merge_v2,merge_v2,baseline,uniform,-0.0837,-0.1506,-0.0168,0.0162,60
+Calibrated judge (Qwen3.8-27B),persona_merge,persona_merge,baseline,uniform,0.0599,0.0082,0.1112,0.0242,60

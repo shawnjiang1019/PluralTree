@@ -32,6 +32,7 @@ successor), **PROPOSED** (designed, never run — no numbers), **BACKGROUND**
 | [measurement.tex](measurement.tex) | CURRENT | what the numbers identify: attenuation, validity, noise floors, inference |
 | [grpo_method.tex](grpo_method.tex) | CURRENT | the RL objective, including the group-diversity variant and its gate |
 | [vital_task.tex](vital_task.tex) | CURRENT | the VITAL secondary task: data, scoring, the length cap, valid comparisons |
+| [persona_experiment.tex](persona_experiment.tex) | CURRENT | persona-conditioned multi-draft merging: the method, the ablation ladder, and what each outcome licenses (written before the controls reported) |
 
 ## Data and graphs
 

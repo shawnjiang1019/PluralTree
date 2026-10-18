@@ -1491,9 +1491,21 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             merged, parts = _merge_answer(question, forks, graph, base_url,
                                           model, full_dist)
         if with_trace:
+            # `ctx` is the fork block answer() renders for EVERY condition, but
+            # the persona arms never put it in a prompt: each of their drafts
+            # sees one subgroup (persona_context) or one named viewpoint, and
+            # never the fork list. Storing it unqualified made persona_merge
+            # rows look like the model had been handed the forks and chosen from
+            # them, which is the merge_v2/expand design, not this one. Record it
+            # under a name that says it was not injected.
+            _shown = condition not in ("persona_merge", "persona_rand",
+                                       "persona_self", "plain_merge")
             trace = {"raw": parts["raw_merge"],
                      "think": extract_think(parts["raw_merge"]),
-                     "fork_context": ctx, "n_forks": len(forks or []),
+                     "fork_context": ctx if _shown else "",
+                     "fork_context_retrieved": ctx,
+                     "fork_context_injected": _shown,
+                     "n_forks": len(forks or []),
                      "draft_a": parts["draft_a"],
                      "draft_b": parts["draft_b"]}
             # merge_v2 only: whether the guard fired (the rate is the finding).

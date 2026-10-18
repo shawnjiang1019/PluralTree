@@ -1,0 +1,456 @@
+% Persona-conditioned multi-draft merging: method and experiment design.
+% Companion to docs/methodology.tex (the retrieval method) and
+% docs/measurement.tex (what the numbers mean). Results that motivate it:
+% docs/findings_2026_09_20.md sections 11-15.
+% Code: retrieval/answer.py (_persona_merge_answer, _persona_self_answer,
+% _plain_merge_answer, pick_personas, spectrum_leaves),
+% scripts/analysis/cluster_overlap.py, jobs/eval/job_selection_ablation.sh.
+% Standalone: pdflatex docs/persona_experiment.tex
+
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\setlength{\emergencystretch}{3em}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{Persona-Conditioned Multi-Draft Merging:\\Method and Experiment Design}
+\author{}
+\date{2026-09-28}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We evaluate whether conditioning each of several drafts on a \emph{different
+survey subgroup}, then losslessly merging them, improves the viewpoint coverage
+of a single answer. The method is compared against a plain answer, against an
+instruction-varied merge over the same retrieved context, and against three
+controls that remove one ingredient each: the graph's subgroup selection, the
+divergence ranking, and all graph content. We state the design before the
+controls have reported, and we state in advance what each outcome licenses.
+\end{abstract}
+
+\section{Motivation}
+
+A single LLM answer to a contested question tends to articulate the majority
+position and mention, at most, a gesture toward alternatives. Benchmarks in the
+Overton tradition score an answer by how many of a population's distinct
+viewpoint clusters it covers well enough that members of that cluster would rate
+it highly.
+
+Our prior method (\emph{merge\_v2}) retrieves divergent subgroup pairs from a
+viewpoint knowledge graph, writes several drafts that all see the same retrieved
+context under different instructions, and merges them. Under a judge calibrated
+against human ratings it is \emph{worse} than a plain answer on four of five
+archived runs ($-0.075$ to $-0.108$ coverage, $p \le .016$), and no component of
+it---hierarchy, curvature, divergence ranking, anchor spread, coverage-greedy
+selection---is distinguishable from its own ablation.
+
+The decomposition explains why. Writing coverage as a ledger against the plain
+answer, merge\_v2 \emph{gains} $0.37$ clusters per question and \emph{loses}
+$0.91$, and what it loses is more prevalent than what it gains. It trades
+majority coverage for minority coverage, and the benchmark weights all clusters
+equally, so the trade nets negative by construction.
+
+One arm does not behave this way. Conditioning each draft on a different
+subgroup---\emph{persona\_merge}---gains $0.72$ and loses $0.36$, with gains and
+losses at the same prevalence ($0.499$ vs.\ $0.504$). It adds without shedding.
+It beats the plain answer under both judges we have used ($+0.075$, $p = .002$;
+$+0.060$, $p = .024$), making it the only arm whose sign survives the judge
+swap, and it does so while producing answers $6.6\times$ longer than the plain
+answer under a judge that penalises length.
+
+That result rests on one generation run and on an arm that still uses the entire
+retrieval stack. This document specifies the method precisely and sets out the
+experiment that determines which of its ingredients is responsible.
+
+\section{Problem statement}
+
+\subsection{Overton coverage}
+
+Let $q$ be a contested question and $U_q$ the population polled on it. A
+partition $\mathcal{C}_q = \{c_1, \ldots, c_{K_q}\}$ of $U_q$ into
+\emph{viewpoint clusters} groups participants who hold substantively the same
+position. Each participant $u$ rates a candidate answer $y$ on a five-point
+scale, $r(u, y) \in \{1, \ldots, 5\}$, according to how well $y$ represents
+their own view.
+
+\begin{definition}[Representation]
+A cluster $c$ is \emph{properly represented} by $y$ when its members endorse the
+answer on average:
+\[
+  \mathrm{cov}(c, y) \;=\; \mathbf{1}\!\left[\; \frac{1}{|c|}
+  \sum_{u \in c} r(u, y) \;\ge\; \theta \;\right], \qquad \theta = 4 .
+\]
+\end{definition}
+
+\begin{definition}[Overton coverage]
+For weights $w_c > 0$,
+\[
+  S_w(y, q) \;=\; \frac{\sum_{c \in \mathcal{C}_q} w_c \,\mathrm{cov}(c, y)}
+                       {\sum_{c \in \mathcal{C}_q} w_c},
+\]
+and the task is to choose a policy $\pi : q \mapsto y$ maximising
+$\mathbb{E}_{q}\bigl[S_w(\pi(q), q)\bigr]$. The benchmark's own metric is
+$w_c \equiv 1$; we also report $w_c = \mathbf{1}[|c| < \tfrac{1}{2}\max_j |c_j|]$
+and $w_c \propto |c|^{-1}$ as exploratory secondaries.
+\end{definition}
+
+\begin{remark}[Representation is self-certified]
+The criterion is endorsement by the cluster's own members, not semantic
+similarity between $y$ and a canonical statement of the cluster's position. An
+answer that \emph{names} a position without articulating it can score high on
+similarity and still fail $\theta$; we measure this directly, and a
+position-naming condition scored $0.072$.
+\end{remark}
+
+\begin{remark}[One answer, not a set]
+$\pi$ emits a single string. The union over $k$ independent samples,
+$\max_c$ taken sample-wise, upper-bounds what any single answer can achieve,
+and that bound is loose: unioning eight samples of one model exceeds a single
+sample by $+0.15$ coverage. The difficulty of the task is entirely in
+compressing that union into one answer, not in generating diverse content.
+\end{remark}
+
+\subsection{The coverage ledger}
+
+Maximising $S_w$ against a reference answer $y_0$ is not the same as adding
+covered clusters, because coverage is not monotone in the content added. Define
+\[
+  G(y) = \{c : \mathrm{cov}(c,y) = 1,\ \mathrm{cov}(c,y_0) = 0\}, \qquad
+  L(y) = \{c : \mathrm{cov}(c,y) = 0,\ \mathrm{cov}(c,y_0) = 1\},
+\]
+the clusters gained and lost. Then exactly
+\[
+  S_w(y) - S_w(y_0) \;=\;
+  \frac{\sum_{c \in G(y)} w_c \;-\; \sum_{c \in L(y)} w_c}
+       {\sum_{c \in \mathcal{C}_q} w_c}.
+\]
+Both terms must be reported. An intervention can move several times as much
+mass as another in both directions and tie it on net, and reporting $G$ alone
+makes the two indistinguishable.
+
+Under $w_c \equiv 1$ the prevalences of $G$ and $L$ are irrelevant: recovering a
+cluster held by $5\%$ of the population exactly offsets dropping one held by
+$60\%$. This is the structural reason a method that trades majority
+representation for minority representation cannot profit under the benchmark's
+own metric, however well it performs the trade.
+
+\subsection{Why the trade is forced}
+
+The following is a model, not a measurement, and is offered because it accounts
+for the observed ledgers. Suppose cluster $c$ requires $d_c$ words of genuine
+articulation before its members endorse the answer, that $y$ allocates
+$\ell_c(y)$ words to position $c$, and that the effective rating declines in the
+total length $L(y) = \sum_c \ell_c(y)$ through dilution. Then
+\[
+  \mathrm{cov}(c, y) \approx \mathbf{1}\bigl[\ell_c(y) \ge d_c\bigr]
+  \cdot \mathbf{1}\bigl[L(y) \le \Lambda\bigr],
+\]
+and maximising $S_w$ becomes a $0$--$1$ knapsack: select a subset
+$T \subseteq \mathcal{C}_q$ maximising $\sum_{c \in T} w_c$ subject to
+$\sum_{c \in T} d_c \le \Lambda$.
+
+Two consequences match what we observe. First, an answer cannot add a position
+without either lengthening or taking words from another position, so $G$ and $L$
+are coupled and gains are not free. Second, under uniform $w$ the optimum is
+greedy on $d_c$, which favours positions that are cheap to articulate; there is
+no term rewarding the recovery of rare views, so any prevalence-aware method is
+optimising something the metric does not score. The empirical quantity standing
+in for $\Lambda$ is judge-specific, which is why judge choice and length
+are treated as first-order concerns (Sections~ef{sec:eval}
+and~ef{sec:confounds}) rather than as robustness checks.
+
+\section{Method}
+
+\subsection{The viewpoint graph}
+
+Let $G$ be a graph whose leaves are \emph{subgroup opinion nodes}. A leaf
+$\ell$ names a demographic group (e.g.\ an ideology or age band) and carries
+that group's empirical answer distribution $p_\ell \in \Delta^{m-1}$ over the
+$m$ options of one survey item. Internal nodes are survey items; a leaf's parent
+is the item it answers.
+
+\begin{definition}[Fork]
+A fork is a triple $f = (a, A, B)$: an anchor item $a$ and two of its children
+$A, B$ whose distributions differ. Forks are scored
+\[
+  s(f) \;=\; \max\bigl(\mathrm{rel}(q, a),\, 0\bigr)^{\alpha} \cdot W(p_A, p_B),
+\]
+where $\mathrm{rel}(q,a)$ is the similarity of the anchor to the user's question
+$q$, gated at $\tau$, and $W$ is a Wasserstein distance whose ground cost comes
+from a hyperbolic embedding of $G$. Forks are returned in decreasing $s$.
+\end{definition}
+
+\subsection{The opinion axis}
+
+Given a fork $f = (a, A, B)$, let $L(a)$ be the children of $a$ carrying
+distributions. If $|L(a)| < 3$ the anchor has no usable spectrum and the method
+degrades to a plain answer (Section~\ref{sec:fallback}). Otherwise define the
+pole-to-pole direction $v = p_B - p_A$ and the scalar coordinate
+\[
+  t(\ell) \;=\; \frac{\langle p_\ell - p_A,\; v\rangle}{\lVert v \rVert^2},
+\]
+so that $t(A) = 0$ and $t(B) = 1$. Sorting $L(a)$ by $t$ orders the subgroups
+along a genuine opinion axis rather than an arbitrary index. Note that a
+subgroup may satisfy $t < 0$ or $t > 1$: the extremes of the sorted list are not
+necessarily $A$ and $B$.
+
+\subsection{Persona selection}
+
+Given a budget of $k$ personas, take the two endpoints of the sorted axis, then
+repeatedly split the widest remaining gap. Endpoints first because they are
+furthest apart and therefore most likely to make the drafts disagree, which is
+the only thing the merge can harvest; the middle next because an audit of
+non-pole subgroups found $68\%$ of them lie genuinely between the poles rather
+than being blends of them. At the default $k = 2$ the selection is exactly the
+two endpoints.
+
+\subsection{Draft generation}
+
+With $n$ drafts total:
+
+\begin{itemize}
+\item \textbf{Draft 1} is a plain answer: the bare instruction \emph{``Answer
+the question thoughtfully and concisely''} with no retrieved content. It is
+identical to the baseline arm, and is kept because the plain answer is the
+strongest single condition we have measured; trading it for one more persona
+trades the best draft for a marginal one.
+\item \textbf{Drafts $2 \ldots n$} each receive exactly one subgroup, rendered
+as its label and its real answer percentages (options below $5\%$ suppressed),
+followed by the question. The instruction asks the model to argue the question
+as that group would, to commit to the view without hedging, to present no other
+group's position, and not to mention the group, the survey, or the instruction.
+\end{itemize}
+
+All drafts are sampled at temperature $0.7$.
+
+\begin{remark}
+The anchor is a \emph{related} survey item, not the benchmark question. A
+persona is therefore ``the view of a group that answered a neighbouring question
+this way,'' not that group's answer to the question being asked. This is a
+source of topic drift and is one of the things the controls in
+Section~\ref{sec:controls} separate.
+\end{remark}
+
+\subsection{Merging}
+
+A single call assembles the drafts: one paragraph per distinct position, each
+carried at the length of the draft that explained it best, with disagreeing
+positions neither collapsed nor reconciled.
+
+A guard rejects compression. Writing $W_m, P_m$ for the merged answer's words
+and positions (paragraphs of at least $20$ words) and $W_d, P_d$ for the maxima
+over drafts, the merge is accepted iff $W_m \ge W_d$ and $P_m \ge P_d$;
+otherwise the drafts are concatenated verbatim. An earlier merge without this
+guard lost to the plain answer by summarising, so the fallback rate is reported
+as a measure of how often the model cannot merge losslessly.
+
+\subsection{Degradation}
+\label{sec:fallback}
+
+When the anchor has fewer than three subgroups with distributions, no personas
+are selected and the arm emits the plain draft alone. Such a row is a baseline
+answer wearing the condition's name, and dilutes the measured effect toward
+zero. The number of personas actually used is recorded per row so that the
+dilution can be quantified and, if needed, the effect re-estimated on treated
+rows only.
+
+\section{Experiment design}
+\label{sec:controls}
+
+persona\_merge holds five things at once: multi-sample generation, a merge,
+viewpoint-conditioned drafts, real survey distributions, and a relevance- and
+divergence-ranked anchor. The following arms remove one ingredient each, forming
+a ladder in which the gap between consecutive rungs isolates one factor.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llll}
+\toprule
+Arm & Drafts & Viewpoints chosen by & Isolates \\
+\midrule
+\texttt{baseline}      & 1 & ---            & --- \\
+\texttt{plain\_merge}   & $n$ plain, $T{=}0.7$ & --- & multi-draft assembly \\
+\texttt{persona\_self}  & $1 + v$ & the model     & the graph's selection \\
+\texttt{persona\_rand}  & $1 + k$ & random anchor & the divergence ranking \\
+\texttt{persona\_merge} & $1 + k$ & top-ranked anchor & (full method) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{plain\_merge.} $n$ independent samples of the plain answer at
+temperature $0.7$, assembled by the same merge. No graph content of any kind.
+This is the control with the most at stake: the measured headroom from unioning
+$8$ samples of one model against $1$ is $+0.15$, larger than any arm difference
+we have recorded and stable across the judge swap. persona\_merge is three
+samples plus a merge, so a large part of its effect could be that alone.
+
+\paragraph{persona\_self.} The model is asked to name the genuinely distinct
+perspectives on the question---what each view is, roughly who holds it, and the
+consideration driving it---one per line, as many as it judges to exist. Each
+named perspective then conditions one draft, under an instruction matched to the
+graph version. This replaces the graph's subgroup selection with the model's own
+guess while holding the draft structure fixed.
+
+Two asymmetries are deliberate and recorded rather than removed. The selection
+call is extra compute, and the arm is not pinned to the graph's two poles: it
+uses as many viewpoints as it names, up to a compute cap. Both are logged per
+row, so a win can be re-estimated at matched viewpoint count. The perspectives
+are stated at comparable richness to the graph's rendering (who holds the view,
+not only what it is), because a one-line slogan would hand this arm a thinner
+vantage point than the graph gives, biasing the comparison in the opposite
+direction to the compute advantage. Two biases of opposite sign would leave the
+result with no readable direction.
+
+\paragraph{persona\_rand.} Identical to persona\_merge except the anchor is
+drawn uniformly from the retrieved forks rather than taken as the top-scored
+one. Same relevance gate, same graph, same axis construction, same merge. This
+is the first arm in which the divergence ranking has a direct path to the
+output: under instruction-varied merging every draft sees every subgroup, so
+which fork ranked first barely propagates, whereas here the anchor determines
+which two subgroups the drafts argue from.
+
+Anchors are not filtered to those with usable spectra, because persona\_merge
+does not filter either; filtering would match the arms on fallback rate while
+breaking the comparison. Fallback rates are compared post hoc instead.
+
+\section{Evaluation}
+\label{sec:eval}
+
+\paragraph{Benchmark.} $60$ contested questions, each with a population
+partitioned into viewpoint clusters. A judge predicts, for each participant, the
+$1$--$5$ rating that participant would give the answer; a cluster counts as
+covered when its members' mean predicted rating is at least $4$. An arm's score
+on a question is the fraction of that question's clusters it covers. To bound
+cost, $20$ participants are sampled per question.
+
+\paragraph{Judge.} Judge choice is not a detail here: it reverses conclusions.
+Two judges were compared on the axes that matter for this metric. Against
+held-out human ratings, the first shows a length bias rising from $+0.147$ to
+$+0.333$ across length strata and marks $P(\text{rating} \ge 4) = 0.747$; the
+second shows $-0.017$ and $0.647$, against human values of $\approx 0$ and
+$0.650$. We therefore report the second, and report the first only to show which
+conclusions are judge-dependent. Judges are run with reasoning disabled and
+ratings parsed strictly, because a leaked reasoning trace containing a digit
+would otherwise be read as a rating.
+
+\paragraph{Primary metric.} Uniform cluster coverage, the benchmark's own
+definition, is what we quote.
+
+\paragraph{Secondary metrics, declared exploratory.} Uniform weighting counts a
+view held by $5\%$ of participants exactly as much as one held by $60\%$. Since
+the mechanism under test is a prevalence trade, we also report coverage
+restricted to clusters below half the size of the question's largest, and
+coverage weighted by inverse relative prevalence. These were adopted after
+seeing uniform results and are reported as exploratory; they are not used to
+support a primary claim.
+
+\paragraph{Decomposition.} Because the score is a difference of two quantities
+that move independently, we report, against a stated reference arm: clusters
+gained per question, clusters lost per question, and the mean relative
+prevalence of each set. An arm's net score is reproduced exactly by this
+decomposition. Reporting gains alone---as we initially did---conceals arms that
+tie on net while moving several times as much mass in both directions.
+
+\paragraph{Inference.} All comparisons are paired on question. For each arm we
+compute a per-question coverage difference against the reference, then bootstrap
+$10{,}000$ resamples \emph{over questions}, reporting the $2.5$th and $97.5$th
+percentiles. Questions, not clusters, are the resampling unit: clusters within a
+question share one answer and one difficulty, so treating them as independent
+would inflate the sample size roughly fivefold. The reported $p$ is the
+inversion of that interval and carries no information the interval does not.
+
+\paragraph{Stated limitations of the inference.} No correction is applied for
+multiple comparisons, and each run yields several arm~$\times$~weighting tests;
+we note which results would survive a family-wise correction. The intervals
+capture question-sampling variance only: judge error is not propagated, and
+comparisons \emph{across} judges have no interval at all. Minority-weighted
+comparisons run on the subset of questions possessing a minority cluster, a
+slightly different question set from the uniform comparisons.
+
+\section{Controls on confounds}
+\label{sec:confounds}
+
+\paragraph{Length.} The judge penalises length, and arm lengths differ by an
+order of magnitude, so length is reported per arm and any ordering is checked
+for monotonicity in it. In the run motivating this design, score was
+\emph{not} monotone in length: the winning arm was longer than a losing one and
+$6.6\times$ longer than the plain answer it beat. A length artifact cannot
+produce a non-monotone ordering, but per-question length regressions within arm
+remain the stronger test and are reported where available.
+
+\paragraph{Compute.} Arms differ in calls per answer. Counts are stated with
+every result, and any arm that wins while spending more is re-run at matched
+budget before the size of its advantage is interpreted.
+
+\paragraph{Sampling.} All arms within a comparison use the same number of
+rollouts, since the judge unions coverage over rollouts and an arm with fewer
+samples would be scored on a smaller union. Random-anchor arms in particular
+need more than one draw per question, or the selection rule is confounded with
+the luck of the draw.
+
+\paragraph{One judging pass.} Participant subsampling means a second judging run
+draws a different panel and shifts absolute scores. Arms are therefore judged
+together in a single pass, and scores from separate passes are never compared.
+
+\section{What each outcome licenses}
+
+\begin{itemize}
+\item \textbf{plain\_merge $\approx$ persona\_merge.} The effect is multi-sample
+assembly. Neither the graph nor the personas contribute, and the remaining arms
+answer a question that no longer matters. This is the outcome that would most
+change the project's direction.
+
+\item \textbf{persona\_self $\approx$ persona\_merge.} The graph's contribution
+is structural, not informational: what matters is that drafts are assigned
+opposing viewpoints, and the model already knows what the disagreement is. Real
+subgroup distributions add nothing beyond prompting the model to take sides.
+
+\item \textbf{persona\_merge $>$ persona\_self.} Empirical subgroup
+distributions carry viewpoint information the model does not generate
+unprompted. This would be the first direct evidence in this project that the
+graph contributes \emph{content}.
+
+\item \textbf{persona\_rand $\approx$ persona\_merge.} Relevance and divergence
+ranking do not matter even where they have a direct path to the output,
+consistent with every selection ablation to date, and the scout reduces to a
+source of arbitrary opposed subgroups.
+
+\item \textbf{persona\_merge $>$ persona\_rand.} The ranking does work, and
+previously null selection ablations were null because the instruction-varied
+draft scheme could not transmit the anchor choice---not because the ranking is
+uninformative.
+\end{itemize}
+
+A replication of persona\_merge itself is obtained as a by-product, since it is
+regenerated alongside the controls; its current support is a single generation
+run scored by two judges.
+
+\section{Threats to validity}
+
+The benchmark separates systems but not samples of one system: a judge ranking
+eight samples of a single model against an independent second pass of itself
+achieves $0.507$ and $0.328$ concordance under the two judges, at or below
+chance. Any per-sample selection or reward signal is therefore unvalidatable on
+this benchmark, which bounds what these results can be extended to.
+
+Coverage deltas are sensitive to judge strictness in a way that is not captured
+by any interval reported here: the share of clusters reached by no arm moves
+from $20\%$ to $47\%$ on judge choice alone. Absolute coverage should not be
+compared across judges, and we do not.
+
+Finally, all cluster attributions are set arithmetic over judge verdicts.
+Nothing here verifies that a cluster covered by an injected arm was covered
+\emph{because of} the injected content; a longer, more discursive answer may
+reach it incidentally. Establishing that link requires tracing retrieved content
+through drafts into the final answer, which is instrumented but not yet run.
+
+\end{document}

@@ -1,0 +1,422 @@
+\documentclass[11pt]{article}
+
+% Change "review" to "final" to generate the final (sometimes called camera-ready) version.
+% Change to "preprint" to generate a non-anonymous version with page numbers.
+\usepackage[review]{acl}
+
+% Standard package includes
+\usepackage{times}
+\usepackage{latexsym}
+
+% For proper rendering and hyphenation of words containing Latin characters (including in bib files)
+\usepackage[T1]{fontenc}
+% For Vietnamese characters
+% \usepackage[T5]{fontenc}
+% See https://www.latex-project.org/help/documentation/encguide.pdf for other character sets
+
+% This assumes your files are encoded as UTF8
+\usepackage[utf8]{inputenc}
+
+% This is not strictly necessary, and may be commented out,
+% but it will improve the layout of the manuscript,
+% and will typically save some space.
+\usepackage{microtype}
+
+% This is also not strictly necessary, and may be commented out.
+% However, it will improve the aesthetics of text in
+% the typewriter font.
+\usepackage{inconsolata}
+
+%Including images in your LaTeX document requires adding
+%additional package(s)
+\usepackage{graphicx}
+
+% If the title and author information does not fit in the area allocated, uncomment the following
+%
+%\setlength\titlebox{<dim>}
+%
+% and set <dim> to something 5cm or larger.
+
+\title{Commit, Then Merge: Subgroup-Conditioned Drafts\\for Overton-Pluralistic Answers}
+
+% Author information can be set in various styles:
+% For several authors from the same institution:
+% \author{Author 1 \and ... \and Author n \\
+%         Address line \\ ... \\ Address line}
+% if the names do not fit well on one line use
+%         Author 1 \\ {\bf Author 2} \\ ... \\ {\bf Author n} \\
+% For authors from different institutions:
+% \author{Author 1 \\ Address line \\  ... \\ Address line
+%         \And  ... \And
+%         Author n \\ Address line \\ ... \\ Address line}
+% To start a separate ``row'' of authors use \AND, as in
+% \author{Author 1 \\ Address line \\  ... \\ Address line
+%         \AND
+%         Author 2 \\ Address line \\ ... \\ Address line \And
+%         Author 3 \\ Address line \\ ... \\ Address line}
+
+\author{First Author \\
+  Affiliation / Address line 1 \\
+  Affiliation / Address line 2 \\
+  Affiliation / Address line 3 \\
+  \texttt{email@domain} \\\And
+  Second Author \\
+  Affiliation / Address line 1 \\
+  Affiliation / Address line 2 \\
+  Affiliation / Address line 3 \\
+  \texttt{email@domain} \\}
+
+%\author{
+%  \textbf{First Author\textsuperscript{1}},
+%  \textbf{Second Author\textsuperscript{1,2}},
+%  \textbf{Third T. Author\textsuperscript{1}},
+%  \textbf{Fourth Author\textsuperscript{1}},
+%\\
+%  \textbf{Fifth Author\textsuperscript{1,2}},
+%  \textbf{Sixth Author\textsuperscript{1}},
+%  \textbf{Seventh Author\textsuperscript{1}},
+%  \textbf{Eighth Author \textsuperscript{1,2,3,4}},
+%\\
+%  \textbf{Ninth Author\textsuperscript{1}},
+%  \textbf{Tenth Author\textsuperscript{1}},
+%  \textbf{Eleventh E. Author\textsuperscript{1,2,3,4,5}},
+%  \textbf{Twelfth Author\textsuperscript{1}},
+%\\
+%  \textbf{Thirteenth Author\textsuperscript{3}},
+%  \textbf{Fourteenth F. Author\textsuperscript{2,4}},
+%  \textbf{Fifteenth Author\textsuperscript{1}},
+%  \textbf{Sixteenth Author\textsuperscript{1}},
+%\\
+%  \textbf{Seventeenth S. Author\textsuperscript{4,5}},
+%  \textbf{Eighteenth Author\textsuperscript{3,4}},
+%  \textbf{Nineteenth N. Author\textsuperscript{2,5}},
+%  \textbf{Twentieth Author\textsuperscript{1}}
+%\\
+%\\
+%  \textsuperscript{1}Affiliation 1,
+%  \textsuperscript{2}Affiliation 2,
+%  \textsuperscript{3}Affiliation 3,
+%  \textsuperscript{4}Affiliation 4,
+%  \textsuperscript{5}Affiliation 5
+%\\
+%  \small{
+%    \textbf{Correspondence:} \href{mailto:email@domain}{email@domain}
+%  }
+%}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+A single answer to a contested question tends to articulate the majority
+position and gesture at the rest. We study two ways of feeding retrieved survey
+data into an answer built from several drafts and a lossless merge. In the
+first, every draft sees all retrieved viewpoints and the model decides what to
+foreground. In the second, a fixed rule assigns each draft a single survey
+subgroup, and the draft argues that subgroup's view without hedging. Each is
+compared against the same drafting and merging with no retrieved data, so that
+any gain can be credited to the survey data rather than to drafting and merging
+themselves. We evaluate by how many viewpoint clusters a single answer properly
+represents.
+\end{abstract}
+
+\section{Method}
+
+\subsection{Viewpoint graph}
+
+We build the graph from population survey data, in our experiments the Pew
+American Trends Panel: 1{,}492 questions, each answered by 58 demographic
+subpopulations. The graph is a tree. Its leaves are \emph{opinion leaves}, one
+for each subgroup's answers to one question; a leaf records, for instance, how
+self-described conservatives answered a question on trust in government, as a
+distribution $p_\ell$ over that question's answer options. Leaves sit under the
+demographic axis they belong to (party, age, religion, and so on), axes under
+their survey question, and questions under topics and subtopics. The survey
+provides no topics of its own, so we obtain them by clustering the question
+texts.
+
+\paragraph{Embedding.} We embed every node in the Poincar\'e ball
+$\mathbb{B}^d_c = \{x \in \mathbb{R}^d : c\lVert x\rVert^2 < 1\}$, the model of
+hyperbolic space with curvature $-c$. Hyperbolic space suits trees because
+volume grows exponentially with radius, as the number of nodes grows with depth,
+so a hierarchy embeds without crowding its lower levels. The ball carries the
+geodesic distance
+\begin{equation}
+  d_c(x, y) = \tfrac{2}{\sqrt{c}}\,
+  \operatorname{artanh}\!\bigl(\sqrt{c}\,\lVert (-x) \oplus_c y \rVert\bigr),
+\end{equation}
+where $\oplus_c$ is M\"obius addition, the ball's analogue of translation.
+
+A tree-recurrent encoder $\phi$ maps each node to the ball, building $\phi(v)$
+from $v$'s own text features and the embeddings of its children. Each edge type
+$\rho$ (parent--child, axis membership, and so on) has a learned vector
+$r_\rho \in \mathbb{B}^d_c$, and a triple $(s, \rho, o)$ is scored by translating
+the subject by the relation and measuring distance to the object,
+\begin{equation}
+  f(s, \rho, o) = -\,d_c\bigl(\phi(s) \oplus_c r_\rho,\ \phi(o)\bigr),
+\end{equation}
+so a higher score means a shorter edge. We train $\phi$ and the $r_\rho$ by a
+margin ranking objective over the tree's edge set $E$: for each true edge we draw
+$K$ corrupted negatives $\mathcal{N}(s,\rho,o)$ by replacing an endpoint, and
+minimise
+\begin{equation}
+  \mathcal{L} = \!\!\sum_{(s,\rho,o)\in E}\ \sum_{(s',\rho,o')\in \mathcal{N}}
+  \!\!\bigl[\, \gamma + f(s',\rho,o') - f(s,\rho,o) \,\bigr]_+ ,
+\end{equation}
+with margin $\gamma$ and $[\cdot]_+ = \max(0, \cdot)$. The objective pulls each
+node within $\gamma$ of its true neighbours in $d_c$ and pushes corrupted pairs
+apart, so related subgroups come to lie close on the ball. We verify the fit
+with structural measures: whether depth tracks radius, and tree distance tracks
+geodesic distance.
+
+\subsection{Retrieval}
+
+Retrieval looks for places in the graph where subgroups disagree. A \emph{fork}
+$f = (a, A, B)$ is an anchor node $a$ with two children $A, B$ whose subtrees
+answer differently. It is scored
+\begin{equation}
+  s(f) = \max\bigl(\mathrm{rel}(q, a),\, 0\bigr)^{\alpha}\; W(A, B).
+\end{equation}
+
+\emph{Relevance} $\mathrm{rel}(q, a) = \cos\!\bigl(\psi(q), \psi(a)\bigr)$ is the
+cosine similarity between sentence embeddings $\psi$ of the question and the
+anchor text, and anchors with $\mathrm{rel}(q,a) < \tau$ are discarded.
+Relevance is measured in text space rather than on the ball: the question is not
+a graph node and so has no hyperbolic coordinate.
+
+\emph{Divergence} $W(A, B)$ is a Wasserstein distance between the two branches,
+each taken as the cloud of its subtree nodes. Let $\{x_i\}_{i=1}^{n}$ and
+$\{y_j\}_{j=1}^{m}$ be the nodes under $A$ and $B$, embedded on the ball as
+$\phi(x_i), \phi(y_j)$, and give them question-conditioned masses
+\begin{equation}
+  a_i = \frac{e^{\mathrm{rel}(q, x_i)/\beta}}{\sum_{i'} e^{\mathrm{rel}(q, x_{i'})/\beta}},
+  \qquad
+  b_j = \frac{e^{\mathrm{rel}(q, y_j)/\beta}}{\sum_{j'} e^{\mathrm{rel}(q, y_{j'})/\beta}},
+\end{equation}
+so on-topic nodes carry the weight. Then
+\begin{equation}
+  W(A, B) = \min_{\pi \in \Pi(a, b)}\ \sum_{i=1}^{n} \sum_{j=1}^{m}
+            \pi_{ij}\, d_c\bigl(\phi(x_i), \phi(y_j)\bigr),
+\end{equation}
+where $\Pi(a, b) = \{\pi \ge 0 : \pi\mathbf{1} = a,\ \pi^\top\mathbf{1} = b\}$ is
+the set of transport plans with those marginals. The ground cost is the geodesic
+$d_c$, so $W$ is the least mass-weighted geodesic displacement needed to move one
+branch's opinion cloud onto the other's: large when the branches sit far apart on
+the learned manifold. Relevance and divergence thus use different geometries by
+design---text-space similarity to judge topicality, hyperbolic distance to judge
+disagreement.
+
+A high score marks a relevant anchor whose branches genuinely diverge. Retrieval
+returns the surviving forks in decreasing $s$, and both methods below use it
+unchanged.
+
+\subsection{Overview}
+
+Both methods write three drafts and merge them into one answer. The first draft
+is always a plain answer with no retrieved content; the methods differ only in
+how the other two drafts are built, described next. Sampling and merging are
+shared, and described in Section~\ref{sec:merge}. As a control, we also run the
+same pipeline with three plain drafts and no retrieved content at all, which we
+call \emph{plain merge}.
+
+\subsection{Instruction-varied drafts}
+
+In the first method (\textsc{merge\_v2}), drafts~2 and~3 each receive
+\emph{every} retrieved fork, and differ in how the forks are rendered. Draft~2
+sees each fork as its two contrasting subgroups with their answer
+distributions; draft~3 sees each fork's full spectrum of subgroups. Both are
+told that the retrieved context is incomplete and may be irrelevant, to judge
+which perspectives bear on the question, and to cover the full range of
+positions people hold, including ones absent from the context, without
+averaging disagreement into a consensus.
+
+Each draft therefore holds all retrieved viewpoints at once, and the model
+decides which to foreground and how to balance them. Variation between drafts
+comes from rendering and sampling, not from assigning them different content.
+
+\subsection{Subgroup-conditioned drafts}
+
+In the second method (\textsc{persona\_merge}), drafts~2 and~3 each receive
+exactly one subgroup, chosen by a fixed rule from the top-ranked fork. Only
+that fork is used.
+
+\paragraph{Opinion axis.} Given the top fork $f = (a, A, B)$, let $L(a)$ be the
+children of $a$ that carry distributions. Define the pole-to-pole direction
+$v = p_B - p_A$ and the scalar coordinate
+\begin{equation}
+  t(\ell) \;=\; \frac{\langle\, p_\ell - p_A,\; v \,\rangle}
+                     {\lVert v \rVert^{2}},
+\end{equation}
+so that $t(A) = 0$ and $t(B) = 1$. Sorting $L(a)$ by $t$ places the subgroups on
+an opinion axis. A subgroup may fall outside the segment, with $t < 0$ or
+$t > 1$, so the extremes of the sorted list need not be $A$ and $B$.
+
+\paragraph{Persona selection.} Personas are selected by rule, not by the model:
+we take the two endpoints of the sorted axis, and for larger budgets repeatedly
+split the widest remaining gap. Endpoints come first because they lie furthest
+apart and are likeliest to make the drafts disagree, which is the only thing a
+merge can harvest. With two persona drafts the selection is exactly the two
+endpoints.
+
+We treat the fork as prior knowledge supplied to the model. Left alone, a model
+answers from its own implicit sense of which views exist, and that sense favours
+the majority. The fork instead supplies an empirical prior over viewpoints: the
+subgroups $L(a)$, their measured distributions $p_\ell$, and their positions on
+the axis. Each persona draft is then conditioned on one support point
+$\ell_k$ of this prior,
+\begin{equation}
+  y_k \sim P_M\bigl(\,\cdot \mid q,\ \ell_k\bigr),
+  \qquad \ell_k \in L(a),
+\end{equation}
+where $P_M$ is the model's generation distribution. Selection depends only on a
+subgroup's position on the axis, not on how many people share its view, so a
+minority position can receive its own draft as readily as a majority one.
+
+\paragraph{Draft prompt.} Each persona draft receives its subgroup rendered as
+the group's label and real answer percentages, with options below $5\%$
+suppressed, followed by the question. The instruction asks the model to argue
+the question as that group would, to commit to the view without hedging, to
+present no other group's position, and not to mention the group, the survey,
+or the instruction. A draft sees its assigned subgroup and nothing else: not
+the fork list, not the ranking, and not the other draft's subgroup.
+
+The anchor is a survey item related to the question, not the question itself,
+so a persona is the view of a group that answered a neighbouring item in a
+particular way. This is a source of topic drift that the first method shares,
+since it retrieves the same forks.
+
+\subsection{Sampling and merging}
+\label{sec:merge}
+
+\paragraph{Sampling.} The three drafts are sampled independently at temperature
+$0.7$, so no draft sees another. Draft~1 is a plain answer to the question,
+identical to a single-answer baseline; we keep it because the plain answer is
+the strongest single condition we measure. In the persona method the draft set
+is
+\begin{equation}
+  y_1 \sim P_M(\,\cdot \mid q\,), \qquad
+  y_k \sim P_M(\,\cdot \mid q,\ \ell_k\,), \quad k = 2, 3,
+\end{equation}
+a plain draft alongside two drafts conditioned on opposite ends of the prior.
+Each draft covers some viewpoints well, and because they are sampled apart, they
+tend to cover different ones.
+
+\paragraph{Merging.} A single further call assembles the drafts into one answer.
+The model is asked to act as an editor, not an author: one paragraph per
+distinct position, each carried at the length of the draft that explained it
+best, and disagreeing positions kept apart rather than reconciled into a middle
+view. The aim is to keep the union of what the drafts cover.
+
+Models tend to summarise when asked to combine texts, and summarising loses
+exactly the positions a merge is meant to keep. We therefore check the output.
+Writing $W_m, P_m$ for the merged answer's words and positions (paragraphs of at
+least $20$ words), and $W_d, P_d$ for the largest values over the drafts, the
+merge is accepted only if $W_m \ge W_d$ and $P_m \ge P_d$. Otherwise the drafts
+are concatenated as they stand. Each method thus costs four model calls per
+answer: three drafts and one merge.
+
+\paragraph{Degradation.} When the top anchor carries fewer than three subgroups
+with distributions, no axis can be built, no personas are selected, and the
+persona method emits the plain draft alone. The instruction-varied method
+degrades the same way when retrieval returns no forks. The number of drafts
+actually used is recorded per answer, so the resulting dilution toward the
+baseline can be measured.
+
+\section{Experimental design}
+
+We run four conditions (Table~\ref{tab:conditions}) and make three comparisons.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lll}
+\hline
+Condition & Drafts 2--3 see & Calls \\
+\hline
+baseline                & ---                 & 1 \\
+plain merge             & nothing             & 4 \\
+\textsc{merge\_v2}      & all retrieved forks & 4 \\
+\textsc{persona\_merge} & one subgroup each   & 4 \\
+\hline
+\end{tabular}
+\caption{Conditions. The last three share the plain first draft, the sampling,
+the merge, the guard, and the call count; they differ only in what drafts~2
+and~3 see.}
+\label{tab:conditions}
+\end{table}
+
+\paragraph{Does drafting and merging help?} Plain merge against the baseline.
+Plain merge samples the model three times and merges the samples, with no
+retrieved data. Independent samples of one model cover noticeably different
+viewpoints, so this step may help on its own, and it has to be measured before
+any gain is credited to the survey data.
+
+\paragraph{Does the survey data help?} Each method against plain merge. The two
+are matched on everything except what drafts~2 and~3 see: nothing, or retrieved
+survey data delivered in that method's way. The difference is therefore the
+contribution of the survey data, given the same drafting and merging.
+
+We do not compare the two methods with each other. They differ in several
+respects at once (how many retrieved forks they use, how much of that data each
+draft sees, and whether the model or a fixed rule picks each draft's viewpoint),
+so a direct comparison would not isolate any one of them. Each is instead read
+against the same no-data control.
+
+\paragraph{Scoring.} Each question $q$ comes with its surveyed population
+partitioned into viewpoint clusters $\mathcal{C}_q$. A judge predicts the rating
+$r(u, y) \in \{1, \dots, 5\}$ that participant $u$ would give answer $y$, and a
+cluster is \emph{properly represented} when its members endorse the answer on
+average:
+\begin{equation}
+  \mathrm{cov}(c, y) = \mathbf{1}\!\left[\,
+    \tfrac{1}{|c|}\textstyle\sum_{u \in c} r(u, y) \ge \theta \,\right],
+  \qquad \theta = 4 .
+\end{equation}
+The score of an answer is the fraction of the question's clusters it represents,
+\begin{equation}
+  S_w(y, q) = \frac{\sum_{c \in \mathcal{C}_q} w_c\, \mathrm{cov}(c, y)}
+                   {\sum_{c \in \mathcal{C}_q} w_c},
+\end{equation}
+and a condition is scored by $S_w$ averaged over questions. The criterion is
+endorsement by a cluster's own members, not similarity to a canonical statement
+of its view: naming a position does not represent the people who hold it. We
+take $w_c \equiv 1$, the benchmark's own weighting, as the primary metric, and
+report $w_c \propto |c|^{-1}$ and a minority restriction as declared-exploratory
+secondaries, since uniform weighting counts a view held by a twentieth of the
+population exactly as much as one held by a majority.
+
+\paragraph{Judge.} The judge stands in for the surveyed population, so we use
+the one whose predicted ratings behave most like human ones. Humans' ratings
+barely vary with answer length and endorse about $65\%$ of answers; of two
+candidate judges, one rated longer answers increasingly favourably and endorsed
+about $75\%$, while the other showed almost no length preference and endorsed
+about $65\%$. We use the latter, and flag any result that depends on this
+choice.
+
+\paragraph{Reporting.} A coverage difference is a difference of two independent
+quantities: clusters gained relative to the reference and clusters lost. We
+report both, together with the mean prevalence of each set, because conditions
+that tie on the net score can move several times as much mass in each direction.
+We also report answer length per condition, since the two methods produce
+answers of different lengths and the judge is length-sensitive.
+
+\paragraph{Inference.} All comparisons are paired by question. We bootstrap over
+questions, not clusters, since clusters within a question share one answer and
+one difficulty; we report percentile intervals, and treat the associated
+$p$-values as an inversion of those intervals rather than as independent
+evidence. Every condition is judged in a single pass, since participant
+subsampling makes scores from separate passes incomparable.
+
+% Bibliography entries for the entire Anthology, followed by custom entries
+%\bibliography{custom,anthology-overleaf-1,anthology-overleaf-2}
+
+% Custom bibliography entries only
+\bibliography{custom}
+
+\appendix
+
+\section{Example Appendix}
+\label{sec:appendix}
+
+This is an appendix.
+
+\end{document}

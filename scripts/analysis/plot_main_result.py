@@ -13,14 +13,14 @@ judging passes incomparable, so this script refuses to mix files.
 
     # current data: every arm against the plain answer, calibrated judge
     python scripts/analysis/plot_main_result.py \
-        --clusters overton_scores_v11_q38_clusters.csv --reference baseline \
+        --clusters overton_scores_v11_q38.csv --reference baseline \
         --conditions "merge_v2=merge_v2,persona_merge=persona_merge" \
         --out docs/figures/main_result.pdf
 
     # the paper's design, once plain_merge has been generated and judged with
     # the others: drafting vs baseline, then each method vs plain merge
     python scripts/analysis/plot_main_result.py \
-        --clusters overton_scores_lad_q38_clusters.csv \
+        --clusters overton_scores_lad_q38.csv \
         --contrasts "plain_merge-baseline=Plain merge vs baseline,\
 merge_v2-plain_merge=merge_v2 vs plain merge,\
 persona_merge-plain_merge=persona_merge vs plain merge" \
@@ -62,20 +62,58 @@ def parse_pairs(spec: str) -> list[tuple[str, str]]:
     return out
 
 
+def _is_cluster_dump(path: str) -> bool:
+    with open(path, newline="", encoding="utf-8") as f:
+        return "cluster" in (csv.DictReader(f).fieldnames or [])
+
+
+def score_source(path: str, metric: str, weight: str):
+    """-> (present_conditions, fn(cond) -> {question_id: score}).
+
+    WHICH NUMBER: the judge's scores CSV carries, per question, both
+      coverage        mean over rollouts of ONE answer's coverage (OvertonScore,
+                      the benchmark's metric; metric="within")
+      union_coverage  a cluster counts if ANY rollout covers it (metric="union")
+    The --dump_clusters file stores only the UNION set per (question, arm) --
+    judge_overtonbench.py builds `covered` as set().union(*per_resp) -- so it can
+    give union@K but never within-answer coverage. Plotting a cluster dump as if
+    it were the benchmark score overstated both levels and gaps (merge_v2 +7.8
+    union@3 against the +5-6 within-answer headline). Hence the guard below.
+    """
+    if _is_cluster_dump(path):
+        if metric == "within":
+            raise SystemExit(
+                f"{path} is a cluster dump: it holds union@K sets only, not "
+                f"within-answer coverage. Pass the judge's scores CSV (the file "
+                f"without _clusters), or --metric union to plot union@K on purpose.")
+        covered, all_clusters, size = load(path)
+        qs = sorted(all_clusters)
+        return ({c for _, c in covered},
+                lambda c: weighted_scores(covered, all_clusters, size, qs, c, weight))
+    if weight != "uniform":
+        raise SystemExit("--weight minority/invprev needs per-cluster sets, which "
+                         "only the cluster dump has (and those are union@K).")
+    col = "coverage" if metric == "within" else "union_coverage"
+    by: dict[str, dict[int, float]] = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            by.setdefault(r["condition"], {})[int(r["question_id"])] = float(r[col])
+    return set(by), lambda c: by.get(c, {})
+
+
 def compute_rows(clusters_csv: str, contrasts: list[tuple[str, str, str]],
-                 weight: str = "uniform", boot: int = 10000) -> list[dict]:
+                 weight: str = "uniform", boot: int = 10000,
+                 metric: str = "within") -> list[dict]:
     """contrasts: [(arm, reference, label)] -> one row per contrast, paired on question."""
-    covered, all_clusters, size = load(clusters_csv)
-    present = {c for _, c in covered}
-    qs = sorted(all_clusters)
+    present, scores = score_source(clusters_csv, metric, weight)
     rows = []
     for arm, ref, label in contrasts:
         for c in (arm, ref):
             if c not in present:
                 raise SystemExit(f"condition {c!r} not in {clusters_csv} "
                                  f"(has: {', '.join(sorted(present))})")
-        a = weighted_scores(covered, all_clusters, size, qs, arm, weight)
-        b = weighted_scores(covered, all_clusters, size, qs, ref, weight)
+        a = scores(arm)
+        b = scores(ref)
         d, lo, hi, p, n = paired_ci(a, b, boot)
         rows.append({"label": label, "arm": arm, "reference": ref,
                      "weight": weight, "delta": d, "lo": lo, "hi": hi,
@@ -85,7 +123,7 @@ def compute_rows(clusters_csv: str, contrasts: list[tuple[str, str, str]],
 
 def compute_scores(clusters_csv: str, arms: list[tuple[str, str]],
                    weight: str = "uniform", boot: int = 10000,
-                   seed: int = 0) -> list[dict]:
+                   seed: int = 0, metric: str = "within") -> list[dict]:
     """Absolute coverage per arm: mean over questions, with a bootstrap interval.
 
     The interval resamples questions for ONE arm, so it is NOT paired. Two arms'
@@ -95,17 +133,14 @@ def compute_scores(clusters_csv: str, arms: list[tuple[str, str]],
     score) so plot_panels draws both kinds.
     """
     import random
-    covered, all_clusters, size = load(clusters_csv)
-    present = {c for _, c in covered}
-    qs = sorted(all_clusters)
+    present, scores = score_source(clusters_csv, metric, weight)
     rng = random.Random(seed)
     rows = []
     for arm, label in arms:
         if arm not in present:
             raise SystemExit(f"condition {arm!r} not in {clusters_csv} "
                              f"(has: {', '.join(sorted(present))})")
-        vals = list(weighted_scores(covered, all_clusters, size, qs, arm,
-                                    weight).values())
+        vals = list(scores(arm).values())
         n = len(vals)
         mean = sum(vals) / n
         means = sorted(sum(vals[rng.randrange(n)] for _ in range(n)) / n
@@ -292,7 +327,7 @@ def _selftest(outdir: str) -> None:
     contrasts = [("plain_merge", "baseline", "Plain merge vs baseline"),
                  ("merge_v2", "plain_merge", "merge_v2 vs plain merge"),
                  ("persona_merge", "plain_merge", "persona_merge vs plain merge")]
-    rows = compute_rows(path, contrasts, boot=2000)
+    rows = compute_rows(path, contrasts, boot=2000, metric="union")
     by = {r["arm"]: r for r in rows}
     assert by["persona_merge"]["lo"] > 0, by["persona_merge"]      # clearly positive
     assert by["merge_v2"]["hi"] < 0, by["merge_v2"]                # clearly negative
@@ -328,7 +363,8 @@ def _selftest(outdir: str) -> None:
                         w.writerow([q, cond, i, s, int(rng.random() < pr[i])])
         jrows = compute_rows(pth, [("merge_v2", "baseline", "merge_v2 vs baseline"),
                                    ("persona_merge", "baseline",
-                                    "persona_merge vs baseline")], boot=2000)
+                                    "persona_merge vs baseline")], boot=2000,
+                             metric="union")
         panels.append((f"{name.capitalize()} judge", jrows))
     old = {r["arm"]: r for r in panels[0][1]}
     new = {r["arm"]: r for r in panels[1][1]}
@@ -346,7 +382,7 @@ def _selftest(outdir: str) -> None:
     for name in judge_probs:
         pth = os.path.join(outdir, f"_selftest_clusters_{name}.csv")
         spanels.append((f"{name.capitalize()} judge",
-                        compute_scores(pth, arms, boot=2000)))
+                        compute_scores(pth, arms, boot=2000, metric="union")))
     for (_, srows), (_, drows) in zip(spanels, panels):
         sc = {r["arm"]: r["delta"] for r in srows}
         for d in drows:
@@ -356,6 +392,32 @@ def _selftest(outdir: str) -> None:
     plot_panels(spanels, out3, "Clusters covered (95% CI)", kind="score",
                 ref_arm="baseline")
     print(f"selftest scores OK (differences reproduce the deltas) -> {out3}")
+
+    # within-answer: the benchmark's metric, read from a scores CSV.
+    spath = os.path.join(outdir, "_selftest_scores.csv")
+    with open(spath, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["condition", "question_id", "coverage", "union_coverage",
+                    "positions_per_answer", "n_rollouts", "n_clusters"])
+        for q in range(60):
+            base = 0.4 + 0.2 * rng.random()
+            w.writerow(["baseline", q, base, base + 0.1, 2, 3, 5])
+            w.writerow(["persona_merge", q, base + 0.05, base + 0.2, 2, 3, 5])
+    wrow = compute_rows(spath, [("persona_merge", "baseline", "p")], boot=2000)[0]
+    assert abs(wrow["delta"] - 0.05) < 1e-9, wrow          # reads `coverage`
+    urow = compute_rows(spath, [("persona_merge", "baseline", "p")], boot=2000,
+                        metric="union")[0]
+    assert abs(urow["delta"] - 0.10) < 1e-9, urow          # reads `union_coverage`
+    # A cluster dump holds union sets only; asking it for within must refuse.
+    try:
+        compute_rows(os.path.join(outdir, "_selftest_clusters_old.csv"),
+                     [("merge_v2", "baseline", "m")], boot=10)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("cluster dump accepted for within-answer coverage")
+    print("selftest metric OK: within reads `coverage`, union reads "
+          "`union_coverage`, a cluster dump is refused for within")
 
 
 def main() -> int:
@@ -371,6 +433,11 @@ def main() -> int:
                     help="'arm=Label,...' each compared against --reference")
     ap.add_argument("--contrasts", default="",
                     help="'arm-ref=Label,...' explicit pairs; overrides --conditions")
+    ap.add_argument("--metric", default="within", choices=["within", "union"],
+                    help="within = the benchmark's OvertonScore (mean over "
+                         "rollouts of one answer's coverage), read from the "
+                         "judge's scores CSV. union = a cluster counts if ANY "
+                         "rollout covers it (union@K); a cluster dump gives only this.")
     ap.add_argument("--weight", default="uniform",
                     choices=["uniform", "minority", "invprev"],
                     help="uniform is the benchmark's metric and the one to lead with")
@@ -426,16 +493,25 @@ def main() -> int:
 
     panels, flat = [], []
     for title, path in specs:
-        rows = (compute_scores(path, arms, args.weight, args.boot) if args.absolute
-                else compute_rows(path, contrasts, args.weight, args.boot))
+        rows = (compute_scores(path, arms, args.weight, args.boot,
+                               metric=args.metric) if args.absolute
+                else compute_rows(path, contrasts, args.weight, args.boot,
+                                  metric=args.metric))
         for r in rows:
             r["panel"] = title
         panels.append((title, rows))
         flat += rows
 
+    # Defaults always NAME the metric: a union@K figure must never read as the
+    # benchmark's within-answer score.
     xlabel = args.xlabel
-    if args.absolute and xlabel == ap.get_default("xlabel"):
-        xlabel = "Clusters covered (95% CI)"
+    if xlabel == ap.get_default("xlabel"):
+        if args.metric == "union":
+            xlabel = ("Clusters covered by any rollout (union@K)" if args.absolute
+                      else "Δ union@K coverage vs reference (paired 95% CI)")
+        else:
+            xlabel = ("Clusters covered per answer (95% CI)" if args.absolute
+                      else "Δ coverage per answer vs reference (paired 95% CI)")
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     plot_panels(panels, args.out, xlabel, args.width, args.show_p,
                 kind="score" if args.absolute else "delta",
