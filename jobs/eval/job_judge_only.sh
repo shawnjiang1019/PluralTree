@@ -48,6 +48,24 @@ ROLL_ARG=""
 PORT="${PORT:-8000}"
 TP="${TP:-4}"
 VLLM="${VLLM:-vllm}"
+# Reasoning judges (gpt-oss, DeepSeek-R1 distills, Qwen3 with thinking ON):
+#   REASONING_PARSER=<vLLM parser for the model family>  JUDGE_REASONING=1
+# The parser makes vLLM return the thinking and the final answer separately;
+# JUDGE_REASONING=1 makes the judge read ONLY the final answer and raises its
+# reply cap to 2048 (override with JUDGE_MAXTOK). Validate with the same
+# settings you score with.
+REASONING_PARSER="${REASONING_PARSER:-}"
+JUDGE_REASONING="${JUDGE_REASONING:-0}"
+JUDGE_MAXTOK="${JUDGE_MAXTOK:-}"
+SERVE_EXTRA=""
+JUDGE_EXTRA=""
+[ -n "${REASONING_PARSER}" ] && SERVE_EXTRA="--reasoning-parser ${REASONING_PARSER}"
+[ "${JUDGE_REASONING}" = "1" ] && JUDGE_EXTRA="--reasoning"
+[ -n "${JUDGE_MAXTOK}" ] && JUDGE_EXTRA="${JUDGE_EXTRA} --max_tokens ${JUDGE_MAXTOK}"
+if [ "${JUDGE_REASONING}" = "1" ] && [ -z "${REASONING_PARSER}" ]; then
+    echo "JUDGE_REASONING=1 needs REASONING_PARSER: without it the thinking and"
+    echo "the rating arrive mixed in one field and every rating is lost."; exit 1
+fi
 
 [ -f "${RESP}" ] || { echo "MISSING ${RESP} in $(pwd)"; exit 1; }
 echo "RESP=${RESP}  SCORES=${SCORES}  MODEL=${MODEL}  MAXU=${MAXU}"
@@ -55,7 +73,7 @@ echo "rows: $(grep -c . "${RESP}")"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 "${VLLM}" serve "${MODEL}" --port "${PORT}" --tensor-parallel-size "${TP}" \
-    --max-model-len 8192 > "logs/vllm_${SLURM_JOB_ID}.log" 2>&1 &
+    --max-model-len 8192 ${SERVE_EXTRA} > "logs/vllm_${SLURM_JOB_ID}.log" 2>&1 &
 VLLM_PID=$!
 trap 'kill ${VLLM_PID} 2>/dev/null' EXIT
 
@@ -74,7 +92,7 @@ python -u -m evaluation.overton.judge_overtonbench --score "${RESP}" \
     --max_users "${MAXU}" --k_rollouts "${KROLL}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     --out "${SCORES}" --seed "${SEED}" \
-    --dump_clusters "${CLUSTERS}" ${ROLL_ARG} \
+    --dump_clusters "${CLUSTERS}" ${ROLL_ARG} ${JUDGE_EXTRA} \
     || { echo "JUDGING FAILED"; exit 1; }
 
 echo ""

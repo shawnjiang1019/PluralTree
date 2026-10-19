@@ -47,6 +47,18 @@ TP="${TP:-4}"                    # tensor parallel = GPUs requested above
 MAXLEN="${MAXLEN:-8192}"
 GPUUTIL="${GPUUTIL:-0.90}"
 VLLM_EXTRA="${VLLM_EXTRA:-}"     # e.g. --kv-cache-dtype fp8
+# Reasoning judges: same knobs as job_judge_only.sh -- validate with exactly
+# the settings you will score with.
+REASONING_PARSER="${REASONING_PARSER:-}"
+JUDGE_REASONING="${JUDGE_REASONING:-0}"
+JUDGE_MAXTOK="${JUDGE_MAXTOK:-}"
+JUDGE_EXTRA=""
+[ -n "${REASONING_PARSER}" ] && VLLM_EXTRA="${VLLM_EXTRA} --reasoning-parser ${REASONING_PARSER}"
+[ "${JUDGE_REASONING}" = "1" ] && JUDGE_EXTRA="--reasoning"
+[ -n "${JUDGE_MAXTOK}" ] && JUDGE_EXTRA="${JUDGE_EXTRA} --max_tokens ${JUDGE_MAXTOK}"
+if [ "${JUDGE_REASONING}" = "1" ] && [ -z "${REASONING_PARSER}" ]; then
+    echo "JUDGE_REASONING=1 needs REASONING_PARSER (see job_judge_only.sh)"; exit 1
+fi
 # MEMORY: bf16 72B is ~145GB of weights. 4x A100-40GB = 160GB total, ~144GB
 # usable at 0.90 util -> does NOT fit before any KV cache. To run bf16 72B:
 #     sbatch --gres=gpu:8 --nodes=1 ... TP=8      (if 8-GPU nodes exist)
@@ -81,5 +93,5 @@ if [ "${AGG}" = "1" ]; then FLAGS="${FLAGS} --validate_aggregate --agg_max_users
 
 python -m evaluation.overton.judge_overtonbench ${FLAGS} \
     --within_n "${WITHIN}" \
-    --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
+    --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" ${JUDGE_EXTRA} \
     || { echo "VALIDATION FAILED (see .err)"; exit 1; }
