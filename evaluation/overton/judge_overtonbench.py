@@ -85,10 +85,31 @@ def judge_messages(question: str, perspective: str,
 _PARSE_FAIL: dict[str, int] = {}
 
 
+# Judge-call settings, set once from the command line in main() so the four
+# predict() call sites need no extra arguments.
+#   max_tokens  8 fits a bare digit. A reasoning judge needs ~1000-2000: with 8
+#               it is cut off mid-thought and never reaches a rating.
+#   reasoning   let the model think and read ONLY its final answer. Needs the
+#               vLLM server started with the model's --reasoning-parser, or the
+#               thinking and the answer arrive mixed in one field.
+JUDGE_CFG = {"max_tokens": 8, "reasoning": False}
+
+
 def predict(base_url: str, model: str, messages: list[dict]) -> float | None:
     """1-5 integer from the judge, or None if unparseable."""
-    out = chat(base_url, model, messages, temperature=0.0, max_tokens=8)
+    out = chat(base_url, model, messages, temperature=0.0,
+               max_tokens=JUDGE_CFG["max_tokens"],
+               reasoning_fallback=not JUDGE_CFG["reasoning"])
     s = (out or "").strip()
+    if JUDGE_CFG["reasoning"] and not s:
+        # Final answer empty: the model ran out of tokens while still thinking
+        # (or the server has no reasoning parser). Never rated, never guessed.
+        _PARSE_FAIL["no_final_answer"] = _PARSE_FAIL.get("no_final_answer", 0) + 1
+        if _PARSE_FAIL["no_final_answer"] in (1, 10, 100, 1000):
+            print(f"  warning: reasoning judge gave no final answer "
+                  f"({_PARSE_FAIL['no_final_answer']} so far) -- raise --max_tokens "
+                  f"or check the server's --reasoning-parser", file=sys.stderr)
+        return None
     # STRICT FIRST. A reasoning model whose thinking is not disabled returns prose
     # in `content` (measured: "We need answer user's request: ..."), and a bare
     # re.search would happily read a rating out of it -- silent corruption across
@@ -741,11 +762,23 @@ def main():
                          "generated with eval_overtonbench --n_rollouts")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="overton_scores.csv")
+    ap.add_argument("--max_tokens", type=int, default=None,
+                    help="judge reply cap. Default 8 (a bare digit); with "
+                         "--reasoning the default becomes 2048")
+    ap.add_argument("--reasoning", action="store_true",
+                    help="reasoning judge: let it think, read ONLY its final "
+                         "answer, count replies with no final answer. Serve the "
+                         "model with vLLM's --reasoning-parser for its family, "
+                         "and validate with the same setting you score with.")
     args = ap.parse_args()
     if not (args.validate or args.within_n or args.validate_aggregate
             or args.human_reliability or args.score):
         ap.error("pass --validate / --within_n N / --validate_aggregate / "
                  "--human_reliability / --score RESPONSES_JSONL")
+    JUDGE_CFG["reasoning"] = args.reasoning
+    JUDGE_CFG["max_tokens"] = args.max_tokens or (2048 if args.reasoning else 8)
+    print(f"judge: {args.model}  reasoning={JUDGE_CFG['reasoning']}  "
+          f"max_tokens={JUDGE_CFG['max_tokens']}")
 
     idx = load_index(args.split)
     print(f"index: {len(idx)} (question, participant) entries")
@@ -762,6 +795,12 @@ def main():
         score(idx, args.score, args.base_url, args.model,
               args.max_users, args.seed, args.out, args.k_rollouts, args.union,
               args.dump_clusters, args.dump_rollouts)
+    if _PARSE_FAIL:
+        # Unrated calls are dropped, not guessed. Report them so a judge that
+        # failed silently on many calls cannot pass as a clean run.
+        print(f"\nunrated judge calls: {dict(_PARSE_FAIL)}  "
+              f"(no_final_answer = reasoning cut off or no reasoning parser; "
+              f"prose = a reply that was not a rating)")
 
 
 if __name__ == "__main__":

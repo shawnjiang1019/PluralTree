@@ -191,6 +191,12 @@ def summarise(rows: list[dict], reference: str | None, boot: int) -> None:
     if FALLBACK_SPLIT:
         print("  !! regex sentence splitting was used: not strictly comparable.")
 
+    # eval_vital tags conditions ("plain_merge@vk"); accept the bare name too.
+    if reference and reference not in by:
+        tagged = [c for c in by if c.split("@")[0] == reference]
+        reference = tagged[0] if len(tagged) == 1 else reference
+    if reference and reference in by:
+        length_adjusted(rows, reference, boot=min(boot, 2000))
     if reference and reference in by:
         from cluster_overlap import paired_ci
         per = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -204,6 +210,61 @@ def summarise(rows: list[dict], reference: str | None, boot: int) -> None:
                 continue
             d, lo, hi, p, n = paired_ci(avg[c], avg[reference], boot)
             print(f"  {c:18} {d:+.3f} [{lo:+.3f}, {hi:+.3f}]  p={p:.3f}  n={n}")
+
+
+def length_adjusted(rows: list[dict], reference: str, boot: int = 2000,
+                    seed: int = 0) -> None:
+    """Condition differences AT EQUAL LENGTH: score ~ condition + log(1+sentences).
+
+    This scorer rewards sentence count (VITAL sec. 4.6), and the arms differ
+    several-fold in length, so raw differences mostly measure length. One
+    pooled slope on log sentence count, plus a level per condition: the level
+    differences are "how much better at the same length". Bootstrap resamples
+    SITUATIONS (all of a situation's rows together).
+
+    Caveat printed with the result: arms that barely overlap in length (a
+    4-sentence baseline vs a 42-sentence long answer) are compared by
+    extrapolating the fitted curve, so trust adjacent-length pairs more.
+    """
+    import numpy as np
+    import random
+    ok = [r for r in rows if not math.isnan(r["score"])]
+    conds = sorted({r["condition"] for r in ok})
+    ci = {c: i for i, c in enumerate(conds)}
+
+    def fit(rs):
+        X = np.zeros((len(rs), len(conds) + 1))
+        y = np.array([r["score"] for r in rs])
+        for k, r in enumerate(rs):
+            X[k, ci[r["condition"]]] = 1.0
+            X[k, -1] = math.log1p(r["n_sentences"])
+        beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+        return beta
+
+    beta = fit(ok)
+    byq = collections.defaultdict(list)
+    for r in ok:
+        byq[r["question_id"]].append(r)
+    qs = list(byq)
+    rng = random.Random(seed)
+    boots = []
+    for _ in range(boot):
+        rs = [r for q in (qs[rng.randrange(len(qs))] for _ in qs) for r in byq[q]]
+        if len({r["condition"] for r in rs}) == len(conds):
+            boots.append(fit(rs))
+    B = np.array(boots)
+    print(f"\n  LENGTH-ADJUSTED vs {reference} (score ~ condition + "
+          f"log(1+sentences); slope {beta[-1]:+.3f} per log-sentence)")
+    for c in conds:
+        if c == reference:
+            continue
+        d = beta[ci[c]] - beta[ci[reference]]
+        dd = np.sort(B[:, ci[c]] - B[:, ci[reference]])
+        lo, hi = dd[int(0.025 * len(dd))], dd[int(0.975 * len(dd)) - 1]
+        p = min(1.0, 2 * min((dd <= 0).mean(), (dd >= 0).mean()))
+        print(f"  {c:18} {d:+.3f} [{lo:+.3f}, {hi:+.3f}]  p={p:.3f}")
+    print("  = difference at EQUAL sentence count. Arms far apart in length are "
+          "compared by extrapolation; trust adjacent-length pairs most.")
 
 
 def score_rows(responses: list[str], targets: dict, nli, conditions=None) -> list[dict]:
@@ -298,10 +359,26 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--boot", type=int, default=10000)
     ap.add_argument("--out", default="vital_nli_scores.csv")
+    ap.add_argument("--from_csv", default=None,
+                    help="re-summarise an existing --out CSV; no NLI, no GPU")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         _selftest()
+        return 0
+    if args.from_csv:
+        rows = []
+        with open(args.from_csv, encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                rows.append({"question_id": r["question_id"],
+                             "condition": r["condition"],
+                             "rollout": int(r["rollout"]),
+                             "score": float(r["score"]),
+                             "n_values": int(r["n_values"]),
+                             "n_sentences": int(r["n_sentences"]),
+                             "n_words": int(r["n_words"]),
+                             "empty": int(r["empty"])})
+        summarise(rows, args.reference, args.boot)
         return 0
     if not args.responses:
         ap.error("--responses is required (or --selftest)")

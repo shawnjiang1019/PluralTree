@@ -11,7 +11,7 @@ paired_ci), so the plot shows exactly what that script prints. Everything must
 come from ONE cluster dump: participant subsampling makes scores from separate
 judging passes incomparable, so this script refuses to mix files.
 
-    # current data: every arm against the plain answer, calibrated judge
+    # current data: every arm against the plain answer, Qwen3.8-27B judge
     python scripts/analysis/plot_main_result.py \
         --clusters overton_scores_v11_q38.csv --reference baseline \
         --conditions "merge_v2=merge_v2,persona_merge=persona_merge" \

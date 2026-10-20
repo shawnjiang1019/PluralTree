@@ -172,7 +172,7 @@ def main():
 
     # --- 1b. the OTHER half of the ledger -----------------------------------
     # Section 1 reports only what an arm ADDS. The score is gain - loss, and the
-    # loss column went uncomputed for the whole project: on the calibrated judge
+    # loss column went uncomputed for the whole project: on the Qwen3.8-27B judge
     # merge_v2 gains 0.28 clusters/q and loses 1.00, which is the entire reversal.
     # Arms that tie on net turn out to have completely different ledgers (cover
     # gains 70% more than merge_v2 and loses 3x as much), so "null" was wrong.

@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import re
@@ -44,6 +45,11 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #        random retrieved fork as the anchor. Isolates the divergence
     #        RANKING -- the first arm where it has a direct path to the output,
     #        since personas condition each draft on ONE subgroup.
+    "persona_js": ScoutConfig(tau=0.25, alpha=1.0),  # persona_merge with the
+    #        anchor chosen by the TRUE Jensen-Shannon divergence between the two
+    #        personas' answer distributions instead of the embedding's W. The
+    #        ceiling for divergence ranking: no embedding ranks disagreement
+    #        better than the data it was trained on.
     "baseline_long": None,        # LENGTH CONTROL: baseline padded to ~650 words
     #        (merge_v2's p50 is 672). No retrieval, so a merge_v2 win over this
     #        arm is content; a tie says the gain was length.
@@ -319,7 +325,8 @@ MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
                                    "merge_v2_divrand", "merge_v2_flat",
                                    "merge_v2_jsdiv", "merge_v2_spread",
                                    "merge_v2_cover", "merge_v2_brief",
-                                   "plain_merge", "persona_self", "persona_rand"}
+                                   "plain_merge", "persona_self", "persona_rand",
+                                   "persona_js"}
 
 # Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
 RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
@@ -461,8 +468,16 @@ def extract_think(text: str) -> str:
 # ---------------------------------------------------------------------------
 def chat(base_url: str, model: str, messages: list[dict], *,
          temperature: float = 0.0, max_tokens: int = 1024,
-         top_p: float | None = None, timeout: float = 120.0) -> str:
-    """One chat-completions call against a vLLM/OpenAI-compatible endpoint."""
+         top_p: float | None = None, timeout: float = 120.0,
+         reasoning_fallback: bool = True) -> str:
+    """One chat-completions call against a vLLM/OpenAI-compatible endpoint.
+
+    reasoning_fallback=False returns ONLY the final answer (`content`), never the
+    reasoning, even when the answer is empty. A judge needs that: a model that
+    runs out of tokens mid-thought leaves `content` empty, and falling back to
+    the reasoning would let a digit mentioned while thinking ("maybe a 3...")
+    be read as the rating.
+    """
     payload = {"model": model, "messages": messages,
                "temperature": temperature, "max_tokens": max_tokens}
     if top_p is not None:
@@ -498,6 +513,8 @@ def chat(base_url: str, model: str, messages: list[dict], *,
     # the thinking in `reasoning_content` and can leave `content` null, which used
     # to surface as a None return and a crash three frames later.
     msg = out["choices"][0]["message"]
+    if not reasoning_fallback:
+        return msg.get("content") or ""
     return msg.get("content") or msg.get("reasoning_content") or ""
 
 
@@ -519,6 +536,18 @@ def fork_context(fork: ScoredFork, graph, k: int = 1) -> str:
 def _leaf_vec(graph, nid):
     d = getattr(graph, "opinion_dist", {}).get(nid)
     return d if d else None
+
+
+def _js(p, q, eps: float = 1e-12) -> float:
+    """Jensen-Shannon divergence in bits, in [0, 1]."""
+    sp, sq = sum(p) or 1.0, sum(q) or 1.0
+    p = [x / sp for x in p]
+    q = [x / sq for x in q]
+    m = [(a + b) / 2 for a, b in zip(p, q)]
+
+    def _kl(a, b):
+        return sum(x * math.log2((x + eps) / (y + eps)) for x, y in zip(a, b) if x > 0)
+    return 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
 
 
 def fork_context_full(fork: ScoredFork, graph, k: int = 1,
@@ -1220,10 +1249,30 @@ def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str
     # falls back when it has <3 leaves), and filtering here would match on
     # fallback rate while breaking the comparison. Compare n_personas across the
     # two arms before reading the delta.
-    anchor_fork = None
+    # anchor_mode="js" (persona_js) scores every retrieved fork by the JS
+    # divergence between the two subgroups pick_personas would hand the drafts
+    # -- the pair that actually reaches the prompt -- and takes the max. Forks
+    # with no usable spectrum cannot be scored; if none can, it falls back to
+    # forks[0] exactly as persona_merge would. This filtering lowers the
+    # fallback rate relative to persona_merge, so compare n_personas too.
+    anchor_fork, anchor_js, anchor_rank = None, None, None
     if forks:
-        anchor_fork = (forks[random.randrange(len(forks))]
-                       if anchor_mode == "random" else forks[0])
+        if anchor_mode == "random":
+            anchor_rank = random.randrange(len(forks))
+        elif anchor_mode == "js":
+            scored = []
+            for i, f in enumerate(forks):
+                pair = pick_personas(f, graph, 2)
+                if len(pair) == 2:
+                    scored.append((_js(_leaf_vec(graph, pair[0]),
+                                       _leaf_vec(graph, pair[1])), -i, i))
+            if scored:
+                anchor_js, _, anchor_rank = max(scored)
+            else:
+                anchor_rank = 0
+        else:
+            anchor_rank = 0
+        anchor_fork = forks[anchor_rank]
     personas = pick_personas(anchor_fork, graph, n - 1) if anchor_fork else []
 
     drafts, labels = [], []
@@ -1257,6 +1306,9 @@ def _persona_merge_answer(question: str, forks, graph, base_url: str, model: str
                                 chat_fn=chat_fn, labels=labels)
     info["n_personas"] = len(personas)
     info["anchor_mode"] = anchor_mode
+    info["anchor_rank"] = anchor_rank      # 0 = the scout's top fork
+    if anchor_js is not None:
+        info["anchor_js"] = anchor_js
     parts = {"draft_a": drafts[0] if drafts else "",
              "draft_b": drafts[1] if len(drafts) > 1 else "", **info}
     return merged, parts
@@ -1448,11 +1500,12 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
         prompt = "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
         return _pack(prompt, prompt)
     if condition in MULTI_PASS_CONDITIONS:
-        if condition in ("persona_merge", "persona_rand"):
+        if condition in ("persona_merge", "persona_rand", "persona_js"):
             merged, parts = _persona_merge_answer(
                 question, forks, graph, base_url, model,
                 merge_cfg or MergeConfig(), chat_fn,
-                anchor_mode="random" if condition == "persona_rand" else "top")
+                anchor_mode={"persona_rand": "random",
+                             "persona_js": "js"}.get(condition, "top"))
         elif condition == "plain_merge":
             merged, parts = _plain_merge_answer(
                 question, base_url, model, merge_cfg or MergeConfig(), chat_fn)
@@ -1499,7 +1552,8 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             # them, which is the merge_v2/expand design, not this one. Record it
             # under a name that says it was not injected.
             _shown = condition not in ("persona_merge", "persona_rand",
-                                       "persona_self", "plain_merge")
+                                       "persona_js", "persona_self",
+                                       "plain_merge")
             trace = {"raw": parts["raw_merge"],
                      "think": extract_think(parts["raw_merge"]),
                      "fork_context": ctx if _shown else "",
@@ -1516,6 +1570,7 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
             # how many rows actually tested the condition.
             for k in ("merge_fallback", "merge_fail", "merge_stats", "labels",
                       "draft_traces", "n_personas", "anchor_mode",
+                      "anchor_rank", "anchor_js",
                       "self_views", "n_self_calls"):
                 if k in parts:
                     trace[k] = parts[k]
@@ -1806,10 +1861,23 @@ def _ladder_selftest() -> None:
         hit |= w
     assert hit == {"A", "B"}, f"persona_rand never varied the anchor: {hit}"
 
+    # persona_js: fork A's subgroups barely differ, fork B's are opposite, so
+    # the JS anchor must be B even though the scout ranked A first.
+    _G.opinion_dist = {**{i: [0.6 - 0.05 * (i - 1), 0.4 + 0.05 * (i - 1)]
+                          for i in range(1, 6)},
+                       **{i: [1.0 - (i - 11) / 4.0, (i - 11) / 4.0]
+                          for i in range(11, 16)}}
+    w, p = _which("js", 0)
+    assert w == {"B"} and p["anchor_rank"] == 1, f"js picked {w}"
+    assert abs(p["anchor_js"] - 1.0) < 1e-6, p["anchor_js"]
+    assert p["n_personas"] == 2
+    assert abs(_js([0.5, 0.5], [0.5, 0.5])) < 1e-9
+
     print("  ladder    : plain_merge 3+1 on the baseline prompt; persona_self "
           "strips bullets (3 views -> 6 calls, cut by max_self_views) and "
           "degrades to plain on fragments; "
-          "persona_rand varies the anchor, 2 personas either way")
+          "persona_rand varies the anchor, 2 personas either way; "
+          "persona_js takes the max-JS persona pair")
 
 
 def _ablation_selftest() -> None:
