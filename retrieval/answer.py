@@ -466,6 +466,11 @@ def extract_think(text: str) -> str:
 # ---------------------------------------------------------------------------
 # LLM client (OpenAI-compatible, stdlib only)
 # ---------------------------------------------------------------------------
+# finish_reason of every chat() call made while answer() runs, in call order;
+# None outside answer(), so judge calls and other callers record nothing.
+_FINISH_LOG: list[str] | None = None
+
+
 def chat(base_url: str, model: str, messages: list[dict], *,
          temperature: float = 0.0, max_tokens: int = 1024,
          top_p: float | None = None, timeout: float = 120.0,
@@ -512,6 +517,10 @@ def chat(base_url: str, model: str, messages: list[dict], *,
     # Reasoning models split the reply: with a reasoning parser enabled, vLLM puts
     # the thinking in `reasoning_content` and can leave `content` null, which used
     # to surface as a None return and a crash three frames later.
+    # Record why generation stopped ("length" = hit max_tokens) while answer()
+    # is collecting; it was never read before, so capped answers went unnoticed.
+    if _FINISH_LOG is not None:
+        _FINISH_LOG.append(out["choices"][0].get("finish_reason") or "")
     msg = out["choices"][0]["message"]
     if not reasoning_fallback:
         return msg.get("content") or ""
@@ -1422,12 +1431,33 @@ def _pack_skip(with_trace: bool, with_raw: bool):
     return ("", "") if with_raw else ""
 
 
-def answer(question: str, condition: str, *, graph=None, h_all=None,
-           text_feat=None, manifold=None, base_url: str = "",
-           model: str = "", dry_run: bool = False, q_emb=None,
-           cfg: ScoutConfig | None = None, with_raw: bool = False,
-           with_trace: bool = False, merge_cfg: MergeConfig | None = None,
-           chat_fn=None):
+def answer(question: str, condition: str, *, with_trace: bool = False,
+           **kwargs):
+    """_answer() plus the stop reason of every model call it made.
+
+    With ``with_trace=True`` the trace gains ``finish_reasons`` (one per call,
+    in order: drafts, then merge) and ``truncated`` (any call stopped at
+    max_tokens). A truncated row is still written -- dropping it would bias the
+    arm -- but it is now visible and can be excluded or counted in analysis.
+    """
+    global _FINISH_LOG
+    _FINISH_LOG = []
+    try:
+        out = _answer(question, condition, with_trace=with_trace, **kwargs)
+    finally:
+        log, _FINISH_LOG = _FINISH_LOG, None
+    if with_trace and isinstance(out, tuple) and isinstance(out[1], dict):
+        out[1]["finish_reasons"] = log
+        out[1]["truncated"] = "length" in log
+    return out
+
+
+def _answer(question: str, condition: str, *, graph=None, h_all=None,
+            text_feat=None, manifold=None, base_url: str = "",
+            model: str = "", dry_run: bool = False, q_emb=None,
+            cfg: ScoutConfig | None = None, with_raw: bool = False,
+            with_trace: bool = False, merge_cfg: MergeConfig | None = None,
+            chat_fn=None):
     """Generate one answer under a condition; returns the prompt if dry_run.
 
     ``cfg`` overrides the condition's ScoutConfig (e.g. a recalibrated tau).
@@ -1582,7 +1612,11 @@ def answer(question: str, condition: str, *, graph=None, h_all=None,
         return (merged, parts["raw_merge"]) if with_raw else merged
     chat_fn = chat_fn or chat
     if not forks:
-        text = chat_fn(base_url, model, messages, temperature=0.7)
+        # 2048, not chat()'s default 1024: baseline_long asks for ~650 words and
+        # its median (748 words) sat at the old cap. Answers that finished under
+        # 1024 are unaffected, so baseline stays comparable with earlier runs.
+        text = chat_fn(base_url, model, messages, temperature=0.7,
+                       max_tokens=2048)
         return _pack(text, text)
     # Injected conditions think before answering — budget for both spans,
     # then keep only the <answer> span (the judge must not see the triage).

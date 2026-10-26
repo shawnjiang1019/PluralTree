@@ -57,6 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from retrieval.answer import chat
 
 EXAMPLE_CHARS = 800          # truncate few-shot responses to bound prompt size
+_TRUNC: dict[str, int] = {}  # judge prompts whose TARGET answer was cut
 
 JUDGE_SYSTEM = (
     "You predict how a specific survey participant would rate an AI response "
@@ -76,8 +77,18 @@ def judge_messages(question: str, perspective: str,
              "", "The participant's ratings of other responses:"]
     for resp, rating in examples:
         parts += [f"Response: {resp[:EXAMPLE_CHARS]}", f"Rating: {rating}", ""]
+    # Context safety: with no cut, an outlier answer could push the prompt past
+    # the server's window, and the HTTP 400 would kill an hours-long job. Trim
+    # only what cannot fit (~3 chars/token, conservative) and count it.
+    fixed = len(JUDGE_SYSTEM) + sum(len(p) for p in parts) + 200
+    room = (JUDGE_CFG["max_model_len"] - JUDGE_CFG["max_tokens"] - 64) * 3 - fixed
+    cap = JUDGE_CFG["target_chars"]
+    cap = min(cap, room) if cap else room
+    if len(target) > cap:
+        _TRUNC["targets"] = _TRUNC.get("targets", 0) + 1
+        target = target[:max(0, cap)]
     parts += ["Predict the participant's rating for this response:",
-              f"Response: {target[:2 * EXAMPLE_CHARS]}", "Rating:"]
+              f"Response: {target}", "Rating:"]
     return [{"role": "system", "content": JUDGE_SYSTEM},
             {"role": "user", "content": "\n".join(parts)}]
 
@@ -92,7 +103,13 @@ _PARSE_FAIL: dict[str, int] = {}
 #   reasoning   let the model think and read ONLY its final answer. Needs the
 #               vLLM server started with the model's --reasoning-parser, or the
 #               thinking and the answer arrive mixed in one field.
-JUDGE_CFG = {"max_tokens": 8, "reasoning": False}
+#   target_chars  cut the answer being rated to this many characters (0 = never).
+#               Was hard-coded to 1600 until 2026-10: harmless for short answers,
+#               but merged answers (400-750 words) were judged on a prefix.
+#               Pass --target_chars 1600 to reproduce earlier scores exactly.
+#   max_model_len must match `vllm serve --max-model-len` (job scripts: 8192).
+JUDGE_CFG = {"max_tokens": 8, "reasoning": False, "target_chars": 0,
+             "max_model_len": 8192}
 
 
 def predict(base_url: str, model: str, messages: list[dict]) -> float | None:
@@ -770,6 +787,13 @@ def main():
                          "answer, count replies with no final answer. Serve the "
                          "model with vLLM's --reasoning-parser for its family, "
                          "and validate with the same setting you score with.")
+    ap.add_argument("--target_chars", type=int, default=0,
+                    help="cut the answer being rated to N characters (0 = no "
+                         "cut). Runs before 2026-10 used 1600; pass it to "
+                         "reproduce them.")
+    ap.add_argument("--max_model_len", type=int, default=8192,
+                    help="the judge server's context window; answers that "
+                         "cannot fit are trimmed and counted, never sent")
     args = ap.parse_args()
     if not (args.validate or args.within_n or args.validate_aggregate
             or args.human_reliability or args.score):
@@ -777,8 +801,11 @@ def main():
                  "--human_reliability / --score RESPONSES_JSONL")
     JUDGE_CFG["reasoning"] = args.reasoning
     JUDGE_CFG["max_tokens"] = args.max_tokens or (2048 if args.reasoning else 8)
+    JUDGE_CFG["target_chars"] = args.target_chars
+    JUDGE_CFG["max_model_len"] = args.max_model_len
     print(f"judge: {args.model}  reasoning={JUDGE_CFG['reasoning']}  "
-          f"max_tokens={JUDGE_CFG['max_tokens']}")
+          f"max_tokens={JUDGE_CFG['max_tokens']}  "
+          f"target_chars={JUDGE_CFG['target_chars'] or 'no cut'}")
 
     idx = load_index(args.split)
     print(f"index: {len(idx)} (question, participant) entries")
@@ -801,6 +828,9 @@ def main():
         print(f"\nunrated judge calls: {dict(_PARSE_FAIL)}  "
               f"(no_final_answer = reasoning cut off or no reasoning parser; "
               f"prose = a reply that was not a rating)")
+    if _TRUNC:
+        print(f"judge prompts with a truncated target answer: "
+              f"{_TRUNC['targets']} (--target_chars {JUDGE_CFG['target_chars']})")
 
 
 if __name__ == "__main__":

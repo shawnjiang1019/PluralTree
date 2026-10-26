@@ -150,9 +150,15 @@ def main():
                     # reference and the check is computable from this file
                     # alone -- without it the selection ablation cannot be
                     # verified to have done anything.
+                    # finish_reasons/truncated: whether any call hit max_tokens.
+                    # anchor_*/self_*: the persona arms' diagnostics -- answer()
+                    # computed them but this list dropped them before writing.
                     for k in ("draft_a", "draft_b", "draft_traces", "merge_fallback",
                               "merge_fail", "merge_stats", "labels",
-                              "random_fork", "n_personas", "pair_select"):
+                              "random_fork", "n_personas", "pair_select",
+                              "anchor_mode", "anchor_rank", "anchor_js",
+                              "self_views", "n_self_calls",
+                              "finish_reasons", "truncated"):
                         if k in trace:
                             row[k] = trace[k]
                     # merge_v2_rand skips questions with no comparable unrelated
@@ -167,7 +173,8 @@ def main():
                     f.write(json.dumps(row) + "\n")
                     f.flush()
                     tag = f" r{rollout}" if args.n_rollouts > 1 else ""
-                    print(f"  Q{qid} [{cond}{tag}] {len(resp)} chars")
+                    cut = " TRUNCATED" if trace.get("truncated") else ""
+                    print(f"  Q{qid} [{cond}{tag}] {len(resp)} chars{cut}")
 
 
 if __name__ == "__main__":
