@@ -41,7 +41,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -59,6 +59,10 @@ RELATION_VOCAB: dict[str, int] = {
 @dataclass
 class OpinionQAGraph(GlobalOpinionGraph):
     """Same container; opinion_texts/opinion_dist inherited (features reuse)."""
+
+    # opinion node id -> the release's option_ordinal (scale position per
+    # option; all-equal = nominal). Absent for sources without it (ISSP, SubPOP).
+    opinion_ordinal: dict[int, list[float]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +124,22 @@ def _atp_options(info_row) -> list[str] | None:
     return opts or None
 
 
+def _atp_ordinal(info_row, n_options: int) -> list[float] | None:
+    """The release's ``option_ordinal``: scale position per kept option, or None.
+
+    Aligned with ``_atp_options`` (codes < 90, code order). Its encoding is the
+    OpinionQA authors' own: a neutral option listed last sits mid-scale (e.g.
+    [1, 2, 1.5]) and a nominal item has every value equal ([1, 1, 1, 1]).
+    """
+    import ast
+
+    try:
+        vals = [float(v) for v in ast.literal_eval(str(info_row.get("option_ordinal")))]
+    except (ValueError, SyntaxError, TypeError):
+        return None
+    return vals if len(vals) == n_options else None
+
+
 def parse_atp_dir(data_dir: str, attributes: list[str] | None = None,
                   min_group: int = 100) -> list[dict]:
     """SubPOP-format records derived from the raw Pew ATP wave CSVs.
@@ -162,6 +182,7 @@ def parse_atp_dir(data_dir: str, attributes: list[str] | None = None,
             options = _atp_options(row)
             if not options:
                 continue
+            ordinal = _atp_ordinal(row, len(options))
             answered = pd.DataFrame({"a": resp[qkey], "w": weight})
             for attr in attrs:
                 sub = answered.assign(g=resp[attr]).dropna()
@@ -178,7 +199,8 @@ def parse_atp_dir(data_dir: str, attributes: list[str] | None = None,
                         continue
                     out.append({"qkey": qkey, "question": q, "options": options,
                                 "attribute": attr, "group": str(group),
-                                "dist": [p / total for p in probs]})
+                                "dist": [p / total for p in probs],
+                                "ordinal": ordinal})
         print(f"  ATP {os.path.basename(wdir)}: cumulative {len(out)} records")
 
     n_q = len({r['qkey'] for r in out})
@@ -272,6 +294,7 @@ def _build_graph(
     entity_types: dict[int, str] = {}
     opinion_texts: dict[int, list[str]] = {}
     opinion_dist:  dict[int, list[float]] = {}
+    opinion_ordinal: dict[int, list[float]] = {}
 
     def add_entity(name: str, text: str, etype: str) -> int:
         if name not in entity_vocab:
@@ -317,6 +340,8 @@ def _build_graph(
                          f"{q[:160]} [{attr}={group}]", "opinion")
         opinion_texts[oid] = [f"{q} {opt}" for opt in rec["options"]]
         opinion_dist[oid] = rec["dist"]
+        if rec.get("ordinal"):
+            opinion_ordinal[oid] = rec["ordinal"]
         opinion_cells.append((oid, aid))
 
     # Deduplicate structural triples (topic/sub re-added per record).
@@ -386,6 +411,7 @@ def _build_graph(
         entity_types=entity_types,
         opinion_texts=opinion_texts,
         opinion_dist=opinion_dist,
+        opinion_ordinal=opinion_ordinal,
     )
 
 

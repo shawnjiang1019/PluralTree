@@ -656,23 +656,30 @@ def _js_bits(p: list[float], q: list[float]) -> float:
     return max(0.0, 0.5 * _kl(p, m) + 0.5 * _kl(q, m))
 
 
-def _emd_norm(p: list[float], q: list[float], cost: Tensor | None) -> float:
+def _emd_norm(p: list[float], q: list[float], cost: Tensor | None,
+              positions: list[float] | None = None) -> float:
     """Earth mover's distance over answer options, in [0, 1].
 
-    ``cost=None`` is the ordinal case: unit steps along the listed scale, which
-    in 1-D is the L1 distance between CDFs, divided by the max (m - 1). Otherwise
-    ``cost`` is an (m, m) ground cost already scaled to max 1.
+    ``cost=None`` is the ordinal case: options sit at ``positions`` on a line
+    (default: unit steps in listed order). In 1-D that is the integral of
+    |CDF_p - CDF_q| over the sorted positions, divided by the span so the far
+    ends are 1 apart. Otherwise ``cost`` is an (m, m) ground cost scaled to max 1.
     """
     m = len(p)
     if m < 2:
         return 0.0
     if cost is None:
+        pos = positions if positions is not None else list(range(m))
+        span = max(pos) - min(pos)
+        if span <= 0:
+            return 0.0
+        order = sorted(range(m), key=lambda k: pos[k])
         cp = cq = acc = 0.0
-        for a, b in zip(p[:-1], q[:-1]):
-            cp += a
-            cq += b
-            acc += abs(cp - cq)
-        return acc / (m - 1)
+        for k, nxt in zip(order[:-1], order[1:]):
+            cp += p[k]
+            cq += q[k]
+            acc += abs(cp - cq) * (pos[nxt] - pos[k])
+        return acc / span
     a = torch.tensor(p, dtype=torch.float64)
     b = torch.tensor(q, dtype=torch.float64)
     a, b = a / a.sum(), b / b.sum()
@@ -686,9 +693,9 @@ def _emd_norm(p: list[float], q: list[float], cost: Tensor | None) -> float:
 
 
 def axis_divergence(p: list[float], q: list[float], cost: Tensor | None,
-                    lam: float = 0.5) -> float:
+                    lam: float = 0.5, positions: list[float] | None = None) -> float:
     """lam * JS + (1 - lam) * EMD: how DIFFERENT and how FAR APART two answers are."""
-    return lam * _js_bits(p, q) + (1.0 - lam) * _emd_norm(p, q, cost)
+    return lam * _js_bits(p, q) + (1.0 - lam) * _emd_norm(p, q, cost, positions)
 
 
 _COST_CACHE: dict = {}
@@ -713,20 +720,33 @@ def _scale_order(options: list[str]) -> list[int] | None:
 
 
 def _option_cost(graph, leaf: int,
-                 model_name: str) -> tuple[Tensor | None, list[int] | None]:
-    """(ground cost, scale order) for one item's options.
+                 model_name: str) -> tuple[Tensor | None, list[float] | None]:
+    """(ground cost, scale positions) for one item's options.
 
-    Ordinal: (None, order) -- unit steps along the scale, with ``order`` the
-    permutation into scale order (None = as listed). Nominal options have no
-    order to measure along, so (cost, None) with the cost the cosine distance
-    between the option texts, scaled to max 1. Cached per (model, options) --
-    every axis of an item shares the same options.
+    Ordinal: (None, positions) -- options on a line, EMD along it. Nominal
+    options have no order to measure along, so (cost, None) with the cost the
+    cosine distance between the option texts, scaled to max 1.
+
+    The source of truth is the release's ``option_ordinal`` (graph
+    ``opinion_ordinal``): all-equal values mark a nominal item, anything else is
+    the authors' own scale (neutral options already mid-scale, e.g. 1.5). Only
+    graphs without it (ISSP, SubPOP) fall back to the keyword rule
+    (``is_ordinal`` + ``_scale_order``). The nominal cost is cached per
+    (model, options) -- every axis of an item shares the same options.
     """
     texts = graph.opinion_texts[leaf]
     pref = _opinion_prefix(texts)
     options = [t[len(pref):].strip() or t for t in texts]
-    if is_ordinal(options):
-        return None, _scale_order(options)
+    ordinal = getattr(graph, "opinion_ordinal", {}).get(leaf)
+    if ordinal and len(ordinal) == len(options):
+        if len(set(ordinal)) > 1:
+            return None, list(ordinal)
+    elif is_ordinal(options):
+        order = _scale_order(options) or list(range(len(options)))
+        pos = [0.0] * len(options)
+        for rank, k in enumerate(order):
+            pos[k] = float(rank)
+        return None, pos
     key = (model_name, tuple(options))
     if key not in _COST_CACHE:
         E = torch.stack([embed_question(o, model_name) for o in options])
@@ -790,14 +810,12 @@ def axis_forks(
             leaves = [c for c in leaves if len(dists[c]) == m]
             if len(leaves) < 2:
                 continue
-            cost, order = _option_cost(graph, leaves[0], cfg.embed_model)
-            vec = {c: ([dists[c][k] for k in order] if order else dists[c])
-                   for c in leaves}
+            cost, positions = _option_cost(graph, leaves[0], cfg.embed_model)
             best = None
             for i in range(len(leaves)):
                 for j in range(i + 1, len(leaves)):
-                    d = axis_divergence(vec[leaves[i]], vec[leaves[j]],
-                                        cost, cfg.lam)
+                    d = axis_divergence(dists[leaves[i]], dists[leaves[j]],
+                                        cost, cfg.lam, positions)
                     if best is None or d > best[0]:
                         best = (d, leaves[i], leaves[j])
             d, a, b = best
@@ -1110,6 +1128,19 @@ def _axis_selftest() -> None:
     assert _scale_order(["More", "Less", "About the same"]) == [0, 2, 1]
     assert _scale_order(["Better", "About the same", "Worse"]) is None
     assert _scale_order(["A lot", "Some", "Not much", "None"]) is None
+    # option_ordinal positions (WORLDDANGER-style: neutral listed last at 1.5)
+    pos = [1.0, 2.0, 1.5]
+    assert abs(_emd_norm([1, 0, 0], [0, 1, 0], None, pos) - 1.0) < 1e-9
+    assert abs(_emd_norm([1, 0, 0], [0, 0, 1], None, pos) - 0.5) < 1e-9
+    og = types.SimpleNamespace(
+        opinion_texts={0: ["Q? Safer", "Q? More dangerous", "Q? Neither"],
+                       1: ["Q? Protection", "Q? Hunting", "Q? Sport"]},
+        opinion_ordinal={0: pos, 1: [1.0, 1.0, 1.0]})
+    assert _option_cost(og, 0, "stub") == (None, pos), "release scale ignored"
+    stub = torch.tensor([[0, 1, .5], [1, 0, .5], [.5, .5, 0]])
+    _COST_CACHE[("stub", ("Protection", "Hunting", "Sport"))] = stub
+    c, p = _option_cost(og, 1, "stub")
+    assert p is None and c is stub, "all-equal option_ordinal must be nominal"
 
     # graph: root(0) -> item(1) -> axes 2 (ideology: opposed), 3 (age: agreeing)
     #        leaves 4,5,6 under 2; 7,8 under 3; item 9 is off-topic
