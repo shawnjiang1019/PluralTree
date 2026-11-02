@@ -29,8 +29,9 @@ import urllib.request
 from dataclasses import dataclass, replace
 
 from data.loaders.graphs import DATASETS, load_graph
-from retrieval.scout import (ScoredFork, ScoutConfig, describe_node, flat_forks,
-                            node_relevance, random_forks, scout, selection_stats)
+from retrieval.scout import (ScoredFork, ScoutConfig, axis_forks, describe_node,
+                            flat_forks, node_relevance, random_forks, scout,
+                            selection_stats)
 
 # Condition -> ScoutConfig overrides. baseline = no retrieval at all;
 # div_only ablates the relevance guards (old pure-divergence scout).
@@ -50,6 +51,11 @@ CONDITIONS: dict[str, ScoutConfig | None] = {
     #        personas' answer distributions instead of the embedding's W. The
     #        ceiling for divergence ranking: no embedding ranks disagreement
     #        better than the data it was trained on.
+    "persona_axis": ScoutConfig(tau=0.25, alpha=1.0),  # persona_merge with
+    #        GEOMETRY-FREE retrieval (scout.axis_forks): axis forks under the
+    #        most relevant items, ranked by rel(axis) x [0.5 JS + 0.5 EMD] on the
+    #        subgroups' real answers; the scored pair becomes the personas. Run
+    #        with --embed_model to cross it with the relevance encoder.
     "baseline_long": None,        # LENGTH CONTROL: baseline padded to ~650 words
     #        (merge_v2's p50 is 672). No retrieval, so a merge_v2 win over this
     #        arm is content; a tie says the gain was length.
@@ -326,7 +332,7 @@ MULTI_PASS_CONDITIONS: set[str] = {"merge", "merge_v2", "persona_merge",
                                    "merge_v2_jsdiv", "merge_v2_spread",
                                    "merge_v2_cover", "merge_v2_brief",
                                    "plain_merge", "persona_self", "persona_rand",
-                                   "persona_js"}
+                                   "persona_js", "persona_axis"}
 
 # Conditions whose fork is REPLACED by a matched irrelevant one after retrieval.
 RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
@@ -336,6 +342,10 @@ RANDOM_FORK_CONDITIONS: set[str] = {"merge_v2_rand"}
 # after it -- render, drafts, merge, guard -- is merge_v2's, so the arm isolates
 # the hierarchy rather than the pipeline.
 FLAT_RETRIEVAL_CONDITIONS: set[str] = {"merge_v2_flat"}
+
+# Conditions that retrieve axis forks by measured disagreement (scout.axis_forks)
+# instead of the Wasserstein scout. Same downstream path as persona_merge.
+AXIS_RETRIEVAL_CONDITIONS: set[str] = {"persona_axis"}
 
 
 @dataclass(frozen=True)
@@ -1483,7 +1493,8 @@ def _answer(question: str, condition: str, *, graph=None, h_all=None,
     sel_stats = None
     if cfg is not None:
         flat = condition in FLAT_RETRIEVAL_CONDITIONS
-        retrieve = flat_forks if flat else scout
+        axis = condition in AXIS_RETRIEVAL_CONDITIONS
+        retrieve = flat_forks if flat else axis_forks if axis else scout
         pool: dict = {}
         forks = retrieve(question, graph, h_all, text_feat, manifold,
                          cfg=cfg, q_emb=q_emb, stats=pool)
@@ -1494,8 +1505,9 @@ def _answer(question: str, condition: str, *, graph=None, h_all=None,
         # re-run. check_random_fork.py cannot serve here -- it asserts the
         # forks are LESS RELEVANT, which is true of merge_v2_rand's unrelated
         # anchor and false by construction of a same-anchor pair swap.
-        sel_stats = selection_stats(forks, "flat" if flat else cfg.pair_select,
-                                    pool, graph=graph)
+        sel_stats = selection_stats(
+            forks, "flat" if flat else "axis" if axis else cfg.pair_select,
+            pool, graph=graph)
         if not forks:
             print(f"warning: scout returned 0 forks (tau={cfg.tau}) — "
                   f"baseline prompt used for: {question[:60]}", file=sys.stderr)
@@ -1530,7 +1542,8 @@ def _answer(question: str, condition: str, *, graph=None, h_all=None,
         prompt = "\n\n".join(f"<{m['role']}>\n{m['content']}" for m in messages)
         return _pack(prompt, prompt)
     if condition in MULTI_PASS_CONDITIONS:
-        if condition in ("persona_merge", "persona_rand", "persona_js"):
+        if condition in ("persona_merge", "persona_rand", "persona_js",
+                         "persona_axis"):
             merged, parts = _persona_merge_answer(
                 question, forks, graph, base_url, model,
                 merge_cfg or MergeConfig(), chat_fn,
@@ -1582,8 +1595,8 @@ def _answer(question: str, condition: str, *, graph=None, h_all=None,
             # them, which is the merge_v2/expand design, not this one. Record it
             # under a name that says it was not injected.
             _shown = condition not in ("persona_merge", "persona_rand",
-                                       "persona_js", "persona_self",
-                                       "plain_merge")
+                                       "persona_js", "persona_axis",
+                                       "persona_self", "plain_merge")
             trace = {"raw": parts["raw_merge"],
                      "think": extract_think(parts["raw_merge"]),
                      "fork_context": ctx if _shown else "",

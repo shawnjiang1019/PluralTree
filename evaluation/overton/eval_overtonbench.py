@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import replace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -46,6 +47,9 @@ def main():
     ap.add_argument("--curvature", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--text_feat", default=None)
+    ap.add_argument("--embed_model", default="all-MiniLM-L6-v2",
+                    help="relevance encoder for the question AND node features "
+                         "(e.g. BAAI/bge-m3). Give it its own --text_feat cache.")
     ap.add_argument("--base_url", default="http://localhost:8000/v1")
     ap.add_argument("--model", required=True)
     ap.add_argument("--conditions", default="baseline,scout,div_only")
@@ -78,7 +82,15 @@ def main():
     if not isinstance(h_all, torch.Tensor):
         h_all = h_all["h_all"]
     manifold = PoincareBall(c=args.curvature)
-    text_feat = load_or_compute_text_feat(graph, args.dataset, args.text_feat)
+    text_feat = load_or_compute_text_feat(graph, args.dataset, args.text_feat,
+                                          model_name=args.embed_model)
+    # A cache built with another encoder loads fine and only fails (or worse,
+    # silently mis-ranks if widths happen to match) at the first relevance call.
+    probe = embed_question("probe", args.embed_model)
+    if text_feat.shape[1] != probe.shape[0]:
+        raise SystemExit(f"--text_feat is {text_feat.shape[1]}-d but "
+                         f"{args.embed_model} embeds to {probe.shape[0]}-d -- "
+                         f"pass this encoder's own feature cache.")
 
     questions = load_questions(args.split)
     if args.max_questions:
@@ -97,11 +109,14 @@ def main():
 
     with open(args.out, "a", encoding="utf-8") as f:
         for qid, question in questions:
-            q_emb = embed_question(question)          # shared across conditions
+            q_emb = embed_question(question, args.embed_model)  # shared across conditions
             for cond in conditions:
                 cfg = None
                 if cond == "scout" and args.tau is not None:
                     cfg = ScoutConfig(tau=args.tau, alpha=CONDITIONS["scout"].alpha)
+                if CONDITIONS[cond] is not None:
+                    # axis_forks embeds option texts with this model too
+                    cfg = replace(cfg or CONDITIONS[cond], embed_model=args.embed_model)
                 for rollout in range(args.n_rollouts):
                     if (qid, cond, rollout) in done:
                         continue

@@ -25,6 +25,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 
 import torch
@@ -80,6 +81,11 @@ class ScoutConfig:
     #   opposite: 1.00 forks/row vs merge_v2's 4.85, so volume moved with
     #   content and the arm measured nothing.
     pair_seed: int = 0         # seed folded into the per-(question, anchor) key
+    embed_model: str = MINILM  # relevance encoder: question AND node features
+    #   must come from the same model (text_feat is built with it), and
+    #   axis_forks uses it for the nominal-option ground cost.
+    lam: float = 0.5           # axis_forks divergence: lam*JS + (1-lam)*EMD.
+    #   Fixed a priori (2026-11-01), not tuned on OvertonBench coverage.
 
 
 def _rand_rank(question: str, fork: "ScoredFork", seed: int) -> float:
@@ -478,7 +484,7 @@ def scout(
     """
     cfg = cfg or ScoutConfig()
     if q_emb is None:
-        q_emb = embed_question(question)
+        q_emb = embed_question(question, cfg.embed_model)
     rel = node_relevance(q_emb, text_feat)
 
     anchors = (anchor_fn(question, graph, rel, cfg.max_anchors) if anchor_fn
@@ -552,7 +558,7 @@ def flat_forks(
     """
     cfg = cfg or ScoutConfig()
     if q_emb is None:
-        q_emb = embed_question(question)
+        q_emb = embed_question(question, cfg.embed_model)
     rel = node_relevance(q_emb, text_feat)
 
     per_fork = 2 * (1 + cfg.top_pairs)               # 2 poles + 2 per driver line
@@ -602,6 +608,211 @@ def flat_forks(
     if stats is not None:
         stats.update(anchor_pool=[], n_candidates=len(pool), pool_mean_w=None)
     return forks
+
+
+# ---------------------------------------------------------------------------
+# Axis retrieval (no geometry)
+# ---------------------------------------------------------------------------
+# Scale wording that marks an item's options as ORDERED. Pew lists scale options
+# in scale order, so for these items the listing position is a real distance.
+_SCALE_TOKENS = (
+    "strongly", "somewhat", "agree", "disagree", "great deal", "fair amount",
+    "not too", "not at all", "very", "extremely", "always", "often",
+    "sometimes", "rarely", "never", "more", "less", "about the same", "better",
+    "worse", "increase", "decrease", "a lot", "a little", "none", "some",
+    "most", "all of", "excellent", "good", "fair", "poor", "likely",
+    "unlikely", "favorable", "unfavorable", "satisfied", "dissatisfied",
+    "approve", "disapprove", "major", "minor", "too much", "too little",
+    "right amount", "support", "oppose", "confident", "worried", "important",
+)
+# Whole words only: substring matching read "Everyone" as "very", "Someone" as
+# "some", "Unfair" as "fair" and "Regardless" as "less", and called nominal
+# items scales.
+_SCALE_RE = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in _SCALE_TOKENS)
+                       + r")\b")
+
+
+def is_ordinal(options: list[str]) -> bool:
+    """True if the options form a scale (agreement, frequency, amount, ...).
+
+    All but at most one option must carry scale wording -- the exception lets a
+    trailing neutral/other option through. Two options are trivially ordered:
+    with one possible move, step-EMD and any cost give the same value.
+    """
+    if len(options) <= 2:
+        return True
+    hits = sum(bool(_SCALE_RE.search(o.lower())) for o in options)
+    return hits >= len(options) - 1
+
+
+def _js_bits(p: list[float], q: list[float]) -> float:
+    """Jensen-Shannon divergence, base 2, in [0, 1]."""
+    import math
+
+    m = [(a + b) / 2.0 for a, b in zip(p, q)]
+
+    def _kl(a, b):
+        return sum(x * math.log2(x / y) for x, y in zip(a, b) if x > 0.0 and y > 0.0)
+    return max(0.0, 0.5 * _kl(p, m) + 0.5 * _kl(q, m))
+
+
+def _emd_norm(p: list[float], q: list[float], cost: Tensor | None) -> float:
+    """Earth mover's distance over answer options, in [0, 1].
+
+    ``cost=None`` is the ordinal case: unit steps along the listed scale, which
+    in 1-D is the L1 distance between CDFs, divided by the max (m - 1). Otherwise
+    ``cost`` is an (m, m) ground cost already scaled to max 1.
+    """
+    m = len(p)
+    if m < 2:
+        return 0.0
+    if cost is None:
+        cp = cq = acc = 0.0
+        for a, b in zip(p[:-1], q[:-1]):
+            cp += a
+            cq += b
+            acc += abs(cp - cq)
+        return acc / (m - 1)
+    a = torch.tensor(p, dtype=torch.float64)
+    b = torch.tensor(q, dtype=torch.float64)
+    a, b = a / a.sum(), b / b.sum()
+    C = cost.to(torch.float64)
+    try:
+        import ot
+        return float(ot.emd2(a.numpy(), b.numpy(), C.numpy()))
+    except ImportError:
+        from evaluation.intrinsic.branch_divergence import _sinkhorn_cost
+        return _sinkhorn_cost(a.clamp_min(1e-12), b.clamp_min(1e-12), C)
+
+
+def axis_divergence(p: list[float], q: list[float], cost: Tensor | None,
+                    lam: float = 0.5) -> float:
+    """lam * JS + (1 - lam) * EMD: how DIFFERENT and how FAR APART two answers are."""
+    return lam * _js_bits(p, q) + (1.0 - lam) * _emd_norm(p, q, cost)
+
+
+_COST_CACHE: dict = {}
+_NEUTRAL_RE = re.compile(r"\b(?:about the same|neither|no difference|mixed|"
+                         r"neutral|in between|equally)\b")
+
+
+def _scale_order(options: list[str]) -> list[int] | None:
+    """Permutation putting a scale's neutral option in the middle, or None.
+
+    Pew often lists the midpoint LAST ("More / Less / About the same"), so the
+    listed order is not the scale order: step-EMD would call More and Less
+    adjacent and Same the far end. With exactly one neutral option on an
+    odd-length scale, it moves to the centre; anything else is left as listed.
+    """
+    m = len(options)
+    hits = [i for i, o in enumerate(options) if _NEUTRAL_RE.search(o.lower())]
+    if m < 3 or m % 2 == 0 or len(hits) != 1 or hits[0] == m // 2:
+        return None
+    rest = [i for i in range(m) if i != hits[0]]
+    return rest[: m // 2] + hits + rest[m // 2:]
+
+
+def _option_cost(graph, leaf: int,
+                 model_name: str) -> tuple[Tensor | None, list[int] | None]:
+    """(ground cost, scale order) for one item's options.
+
+    Ordinal: (None, order) -- unit steps along the scale, with ``order`` the
+    permutation into scale order (None = as listed). Nominal options have no
+    order to measure along, so (cost, None) with the cost the cosine distance
+    between the option texts, scaled to max 1. Cached per (model, options) --
+    every axis of an item shares the same options.
+    """
+    texts = graph.opinion_texts[leaf]
+    pref = _opinion_prefix(texts)
+    options = [t[len(pref):].strip() or t for t in texts]
+    if is_ordinal(options):
+        return None, _scale_order(options)
+    key = (model_name, tuple(options))
+    if key not in _COST_CACHE:
+        E = torch.stack([embed_question(o, model_name) for o in options])
+        E = E / E.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+        C = (1.0 - E @ E.T).clamp_min(0.0)
+        C.fill_diagonal_(0.0)
+        top = float(C.max())
+        _COST_CACHE[key] = C / top if top > 0 else C
+    return _COST_CACHE[key], None
+
+
+def axis_forks(
+    question: str,
+    graph,
+    h_all: Tensor,
+    text_feat: Tensor,
+    manifold,
+    cfg: ScoutConfig | None = None,
+    q_emb: Tensor | None = None,
+    stats: dict | None = None,
+) -> list[ScoredFork]:
+    """Forks at AXIS nodes, ranked by relevance x measured disagreement.
+
+    No geometry: ``h_all`` and ``manifold`` are accepted for signature parity
+    with ``scout`` and never read. Items are the ``cfg.max_anchors`` survey
+    questions most relevant to the question (gated at ``cfg.tau``); every
+    attribute axis under them is a candidate. Within an axis the fork is the
+    subgroup pair with the largest ``axis_divergence`` on their REAL answer
+    distributions, and
+
+        score = max(rel(axis), 0)^alpha * [lam * JS + (1 - lam) * EMD].
+
+    rel(axis) rather than rel(item): the axis text names the attribute, so two
+    axes of one item can rank differently against the same question.
+
+    ``spectrum = [a, b]`` makes persona selection use exactly the scored pair,
+    so the subgroups the drafts see are the ones the score chose.
+    """
+    del h_all, manifold
+    cfg = cfg or ScoutConfig()
+    if q_emb is None:
+        q_emb = embed_question(question, cfg.embed_model)
+    rel = node_relevance(q_emb, text_feat)
+    types = graph.entity_types
+    kids = graph.children_indices
+    dists = graph.opinion_dist
+
+    items = sorted((v for v, t in types.items()
+                    if t == "question" and float(rel[v]) >= cfg.tau),
+                   key=lambda v: float(rel[v]), reverse=True)[: cfg.max_anchors]
+
+    pool: list[ScoredFork] = []
+    for item in items:
+        for ax in kids[item]:
+            if types.get(ax) != "axis":
+                continue
+            leaves = [c for c in kids[ax] if c in dists]
+            if len(leaves) < 2:
+                continue
+            m = len(dists[leaves[0]])
+            leaves = [c for c in leaves if len(dists[c]) == m]
+            if len(leaves) < 2:
+                continue
+            cost, order = _option_cost(graph, leaves[0], cfg.embed_model)
+            vec = {c: ([dists[c][k] for k in order] if order else dists[c])
+                   for c in leaves}
+            best = None
+            for i in range(len(leaves)):
+                for j in range(i + 1, len(leaves)):
+                    d = axis_divergence(vec[leaves[i]], vec[leaves[j]],
+                                        cost, cfg.lam)
+                    if best is None or d > best[0]:
+                        best = (d, leaves[i], leaves[j])
+            d, a, b = best
+            r = float(rel[ax])
+            pool.append(ScoredFork(
+                anchor=ax, branch_a=a, branch_b=b, w=d, relevance=r,
+                score=max(r, 0.0) ** cfg.alpha * d,
+                nodes_a=[a], nodes_b=[b], top_pairs=[(a, b, d)],
+                spectrum=[a, b]))
+
+    if stats is not None:
+        stats.update(anchor_pool=list(items), n_candidates=len(pool),
+                     pool_mean_w=(sum(f.w for f in pool) / len(pool))
+                     if pool else None)
+    return sorted(pool, key=lambda f: f.score, reverse=True)[: cfg.top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -804,8 +1015,14 @@ def format_for_prompt(forks: list[ScoredFork], graph, width: int = 90) -> str:
 # ---------------------------------------------------------------------------
 # Text-feature cache
 # ---------------------------------------------------------------------------
-def load_or_compute_text_feat(graph, dataset: str, path: str | None) -> Tensor:
-    """Node features in MiniLM space, cached to ``path`` (they are slow to build)."""
+def load_or_compute_text_feat(graph, dataset: str, path: str | None,
+                              model_name: str = MINILM) -> Tensor:
+    """Node features in ``model_name`` space, cached to ``path`` (slow to build).
+
+    The cache does not record its model, so give each embedder its own path
+    (feats_opinionqa.pt vs feats_opinionqa_bge.pt); the caller checks the width
+    against the question embedding.
+    """
     import os
 
     if path and os.path.exists(path):
@@ -826,10 +1043,10 @@ def load_or_compute_text_feat(graph, dataset: str, path: str | None) -> Tensor:
     # culturalbench's builder, which expects a different graph shape.
     if dataset in ("globalopinionqa", "opinionqa", "issp"):
         from data.loaders.globalopinionqa import compute_features
-        feat = compute_features(graph).cpu()
+        feat = compute_features(graph, model_name=model_name).cpu()
     else:
         from data.loaders.culturalbench import compute_text_embeddings
-        feat = compute_text_embeddings(graph).cpu()
+        feat = compute_text_embeddings(graph, model_name=model_name).cpu()
     if path:
         torch.save(feat, path)
     return feat
@@ -868,6 +1085,64 @@ def _toy_graph(n_anchors: int = 2, n_kids: int = 4):
         opinion_texts={v: ["Q yes", "Q no"] for v in leaves},
         opinion_dist={v: [0.5, 0.5] for v in leaves})
     return g, torch.randn(n, 8) * 0.1, feat, torch.tensor([1.0, 0.0, 0.0, 0.0]), leaves
+
+
+def _axis_selftest() -> None:
+    """axis_forks on a hand-built item: no encoder, no geometry, no endpoint."""
+    import types
+
+    # divergence pieces
+    assert _js_bits([1, 0, 0], [1, 0, 0]) == 0.0
+    assert abs(_js_bits([1, 0], [0, 1]) - 1.0) < 1e-9
+    near, far = [0, 1, 0, 0], [0, 0, 0, 1]
+    assert abs(_emd_norm([1, 0, 0, 0], near, None) - 1 / 3) < 1e-9
+    assert abs(_emd_norm([1, 0, 0, 0], far, None) - 1.0) < 1e-9
+    # same JS, different distance: the combined score must separate them
+    assert axis_divergence([1, 0, 0, 0], far, None) > \
+        axis_divergence([1, 0, 0, 0], near, None)
+    assert is_ordinal(["Strongly agree", "Agree", "Disagree", "Strongly disagree"])
+    assert not is_ordinal(["The economy", "Health care", "Immigration", "Crime"])
+    assert not is_ordinal(["Everyone should vote", "Only citizens",
+                           "Someone else decides"]), "substring match is back"
+    assert not is_ordinal(["Unfair to workers", "Goods are cheaper",
+                           "Regardless of cost"]), "substring match is back"
+    # neutral listed last moves to the middle; already-centred scales stay put
+    assert _scale_order(["More", "Less", "About the same"]) == [0, 2, 1]
+    assert _scale_order(["Better", "About the same", "Worse"]) is None
+    assert _scale_order(["A lot", "Some", "Not much", "None"]) is None
+
+    # graph: root(0) -> item(1) -> axes 2 (ideology: opposed), 3 (age: agreeing)
+    #        leaves 4,5,6 under 2; 7,8 under 3; item 9 is off-topic
+    opts = ["Strongly agree", "Agree", "Disagree", "Strongly disagree"]
+    texts = [f"Q? {o}" for o in opts]
+    kids = [[1, 9], [2, 3], [4, 5, 6], [7, 8], [], [], [], [], [], [10], [11],
+            [12, 13], [], []]
+    dist = {4: [0.7, 0.2, 0.1, 0.0], 5: [0.3, 0.4, 0.2, 0.1],
+            6: [0.0, 0.1, 0.2, 0.7], 7: [0.4, 0.3, 0.2, 0.1],
+            8: [0.35, 0.35, 0.2, 0.1], 12: [1, 0, 0, 0], 13: [0, 0, 0, 1]}
+    etype = {0: "root", 1: "question", 2: "axis", 3: "axis", 9: "question",
+             10: "axis", 11: "axis"}
+    etype.update({v: "opinion" for v in dist})
+    g = types.SimpleNamespace(children_indices=kids, opinion_dist=dist,
+                              opinion_texts={v: texts for v in dist},
+                              entity_types=etype)
+    feat = torch.zeros(14, 2)
+    feat[:, 1] = 1.0                       # everything off-topic ...
+    for v in (1, 2, 3):
+        feat[v] = torch.tensor([1.0, 0.2])  # ... except item 1 and its axes
+    q = torch.tensor([1.0, 0.0])
+    cfg = ScoutConfig(tau=0.25, alpha=1.0, top_k=5)
+    st: dict = {}
+    forks = axis_forks("Q?", g, None, feat, None, cfg=cfg, q_emb=q, stats=st)
+    assert st["anchor_pool"] == [1], "off-topic item passed the gate"
+    assert [f.anchor for f in forks] == [2, 3], "opposed axis must outrank agreeing"
+    assert {forks[0].branch_a, forks[0].branch_b} == {4, 6}, "not the max pair"
+    assert forks[0].spectrum == [forks[0].branch_a, forks[0].branch_b]
+    shut = replace(cfg, tau=1.01)
+    assert axis_forks("Q?", g, None, feat, None, cfg=shut, q_emb=q) == []
+    print(f"  axis       : top axis {forks[0].anchor} pair "
+          f"({forks[0].branch_a},{forks[0].branch_b}) D={forks[0].w:.3f}; "
+          f"agreeing axis D={forks[1].w:.3f}")
 
 
 def _selftest() -> None:
@@ -1027,6 +1302,8 @@ def _selftest() -> None:
     assert scout("which fork helps?", g, h, feat, None, cfg=shut, q_emb=q) == []
     assert flat_forks("which fork helps?", g, h, feat, None,
                       cfg=shut, q_emb=q) == [], "flat ignored the relevance gate"
+
+    _axis_selftest()
 
     print("scout self-test OK")
     print(f"  pair_select: maxw {key(f_max)} vs random {key(f_rnd)} "

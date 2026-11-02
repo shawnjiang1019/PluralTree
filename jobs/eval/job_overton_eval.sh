@@ -60,7 +60,18 @@ UNION="${UNION:-}"              # cross-condition union groups, e.g.
 PORT="${PORT:-8000}"
 TP="${TP:-4}"
 VLLM="${VLLM:-vllm}"                     # pluraltree-env's vllm (already activated)
-echo "MODEL=${MODEL} TAU=${TAU} MAXQ=${MAXQ} MAXU=${MAXU} EMB=${EMB} DATASET=${DATASET}"
+EMBED="${EMBED:-all-MiniLM-L6-v2}"       # relevance encoder, e.g. BAAI/bge-m3.
+                                         # Give it its own FEATS file.
+echo "MODEL=${MODEL} TAU=${TAU} MAXQ=${MAXQ} MAXU=${MAXU} EMB=${EMB} DATASET=${DATASET} EMBED=${EMBED} FEATS=${FEATS}"
+
+# Stage 0: build the node-feature cache on the GPU BEFORE vLLM takes it. The
+# generation client runs with CUDA hidden, and encoding ~100k nodes with a
+# large encoder (bge-m3) on CPU takes hours.
+if [ ! -f "${FEATS}" ]; then
+    echo "=== stage 0: building ${FEATS} with ${EMBED} ==="
+    python -c "from data.loaders.graphs import load_graph; from retrieval.scout import load_or_compute_text_feat; g = load_graph('${DATASET}', split_seed=${SEED}, leakage_safe=True); f = load_or_compute_text_feat(g, '${DATASET}', '${FEATS}', model_name='${EMBED}'); print('features', tuple(f.shape))" \
+        || { echo "FEATURE BUILD FAILED (see .err)"; exit 1; }
+fi
 
 "${VLLM}" serve "${MODEL}" --port "${PORT}" --tensor-parallel-size "${TP}" \
     --max-model-len 8192 > logs/vllm_${SLURM_JOB_ID}.log 2>&1 &
@@ -87,6 +98,7 @@ export CUDA_VISIBLE_DEVICES=""
 echo "=== stage 1: generate ==="
 python -m evaluation.overton.eval_overtonbench \
     --embeddings "${EMB}" --text_feat "${FEATS}" --dataset "${DATASET}" \
+    --embed_model "${EMBED}" \
     --curvature 0.5 --tau "${TAU}" --seed "${SEED}" \
     --conditions "${CONDS}" --n_rollouts "${NROLL}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
