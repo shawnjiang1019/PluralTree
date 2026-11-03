@@ -109,16 +109,35 @@ def embed_questions(items: list[dict]):
     return np.asarray(E)
 
 
-def related(i: int, country: str, items: list[dict], E, max_sim: float):
+def question_split(n_items: int, seed: int = 42,
+                   fracs: tuple[float, float] = (0.35, 0.08)) -> dict[str, list[int]]:
+    """Question-level train/val/test partition (35/8/57, the Cao et al. 2025
+    protocol that Wu et al. 2026 follow). Every country instance of a question
+    lands in one split. Same proportions and seed as theirs, but not their
+    exact partition: that depends on their RNG and their 2,088-question set.
+    """
+    idx = list(range(n_items))
+    random.Random(seed).shuffle(idx)
+    n_tr, n_va = int(n_items * fracs[0]), int(n_items * fracs[1])
+    return {"train": idx[:n_tr], "val": idx[n_tr:n_tr + n_va],
+            "test": idx[n_tr + n_va:]}
+
+
+def related(i: int, country: str, items: list[dict], E, max_sim: float,
+            allowed: set[int] | None = None):
     """Most similar OTHER question that has data for `country`, below max_sim.
 
     Excludes the question itself and near-duplicates (cos >= max_sim): the
-    grounding must be a neighbouring item, never the answer key.
+    grounding must be a neighbouring item, never the answer key. ``allowed``
+    restricts grounding to those questions -- the training split under the
+    question-disjoint protocol, so no test question's answers are ever shown.
     """
     sims = E @ E[i]
     best, best_s = None, -2.0
     for j, s in enumerate(sims):
         if j == i or s >= max_sim or country not in items[j]["dists"]:
+            continue
+        if allowed is not None and j not in allowed:
             continue
         if s > best_s:
             best, best_s = j, float(s)
@@ -184,12 +203,26 @@ def js_similarity(p: list[float], q: list[float]) -> float:
     return 1.0 - math.sqrt(max(0.0, jsd))
 
 
+# Wu et al. (2026, App. N) and Feng et al. report the JS DISTANCE with natural
+# logs. sqrt(JSD_ln) = sqrt(ln 2 * JSD_bits), so theirs = sqrt(ln 2) * ours.
+LN_DIST = math.sqrt(math.log(2))
+
+
+def jsd_ln(sim: float) -> float:
+    """A row's ``sim`` (1 - base-2 JS distance) as the natural-log JS distance."""
+    return LN_DIST * (1.0 - sim)
+
+
 # ----------------------------------------------------------------------- run
 def run(items, E, base_url, model, *, max_questions, max_countries, max_sim,
-        seed, out_path, llm=None):
+        seed, out_path, llm=None, eval_idx: list[int] | None = None,
+        ground_idx: set[int] | None = None, split: str = "all"):
+    """``eval_idx`` = questions to score (default all); ``ground_idx`` = the
+    questions grounding may draw from (default all). The disjoint protocol
+    passes the test and train splits."""
     llm = llm or (lambda msgs, n: chat_logprobs(base_url, model, msgs, n))
     rng = random.Random(seed)
-    order = list(range(len(items)))
+    order = list(eval_idx) if eval_idx is not None else list(range(len(items)))
     rng.shuffle(order)
     order = order[:max_questions] if max_questions else order
     rows = []
@@ -206,7 +239,7 @@ def run(items, E, base_url, model, *, max_questions, max_countries, max_sim,
             for c in countries:
                 if max_countries and kept >= max_countries:
                     break
-                j, s = related(i, c, items, E, max_sim)
+                j, s = related(i, c, items, E, max_sim, ground_idx)
                 if j is None:                  # no neighbour -> no grounded arm;
                     continue                   # skip so every pair is complete
                 kept += 1
@@ -224,7 +257,7 @@ def run(items, E, base_url, model, *, max_questions, max_countries, max_sim,
                     row = {"qid": it["qid"], "country": c, "condition": cond,
                            "sim": js_similarity(d, true), "dist": d, "true": true,
                            "letter_mass": m, "related_qid": items[j]["qid"],
-                           "related_cos": s}
+                           "related_cos": s, "split": split}
                     rows.append(row)
                     f.write(json.dumps(row) + "\n")
             if n_q % 25 == 0:
@@ -251,6 +284,15 @@ def summarise(rows, boot: int = 10000):
         if a in avg and b in avg:
             d, lo, hi, p, n = paired_ci(avg[a], avg[b], boot)
             print(f"  {a} - {b:8} {d:+.4f} [{lo:+.4f}, {hi:+.4f}]  p={p:.3f}")
+    # Their table's number: natural-log JS DISTANCE, macro-averaged over
+    # (question, country) instances, not per question first. 'label' is the
+    # analogue of their Direct Prompting (national identity only).
+    print("\n  INSTANCE-LEVEL JSD  (natural-log JS distance, lower is better; "
+          "comparable in units to Wu et al. 2026 Tables 1-2)")
+    for c in ("none", "label", "grounded"):
+        sub = [jsd_ln(r["sim"]) for r in rows if r["condition"] == c]
+        if sub:
+            print(f"  {c:10} {st.mean(sub):.4f}   n_instances={len(sub)}")
     lm = [r["letter_mass"] for r in rows]
     print(f"  letter mass: mean {st.mean(lm):.3f}, min {min(lm):.3f} "
           f"(share of first-token probability on a valid option letter)")
@@ -319,6 +361,22 @@ def _selftest() -> None:
     l = [r["sim"] for r in rows if r["condition"] == "label"]
     assert st.mean(g) > st.mean(l), "grounding on a correlated item must help the stub"
     assert all(r["related_qid"] != r["qid"] for r in rows), "never ground on itself"
+
+    # disjoint protocol: splits partition the questions, and grounding only
+    # ever comes from training questions
+    sp = question_split(100, 42)
+    assert sorted(sp["train"] + sp["val"] + sp["test"]) == list(range(100))
+    assert (len(sp["train"]), len(sp["val"]), len(sp["test"])) == (35, 8, 57)
+    assert question_split(100, 42) == sp, "split must be deterministic"
+    j, _ = related(0, "X", items, E, 0.9, allowed={2})
+    assert j is None, "grounding left the allowed (training) set"
+    with tempfile.TemporaryDirectory() as dd:
+        rows_d = run(items[:2], E[:2], "", "", max_questions=0, max_countries=0,
+                     max_sim=0.9, seed=0, out_path=os.path.join(dd, "d.jsonl"),
+                     llm=stub, eval_idx=[0], ground_idx={1}, split="disjoint")
+    assert {r["qid"] for r in rows_d} == {0} and \
+        {r["related_qid"] for r in rows_d} == {1}, "eval/ground sets leaked"
+    assert abs(jsd_ln(0.0) - math.sqrt(math.log(2))) < 1e-12
     print("eval_goqa self-test OK: letter merging, JS similarity, self/near-duplicate "
           "exclusion, complete pairs, grounded > label on correlated items")
 
@@ -334,6 +392,11 @@ def main() -> int:
     ap.add_argument("--max_sim", type=float, default=0.9,
                     help="exclude grounding neighbours at or above this cosine")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--split", choices=["all", "disjoint"], default="all",
+                    help="disjoint = question-level 35/8/57 split (Cao et al. "
+                         "protocol): score test questions only, ground on "
+                         "training questions only")
+    ap.add_argument("--split_seed", type=int, default=42)
     ap.add_argument("--boot", type=int, default=10000)
     ap.add_argument("--out", default="goqa_steer.jsonl")
     ap.add_argument("--summarise_only", action="store_true",
@@ -352,9 +415,18 @@ def main() -> int:
     items = load_items(args.source)
     print(f"  {len(items)} GlobalOpinionQA items (source={args.source})")
     E = embed_questions(items)
+    eval_idx = ground_idx = None
+    if args.split == "disjoint":
+        sp = question_split(len(items), args.split_seed)
+        eval_idx, ground_idx = sp["test"], set(sp["train"])
+        n_inst = sum(len(items[i]["dists"]) for i in sp["test"])
+        print(f"  disjoint split (seed {args.split_seed}): train {len(sp['train'])} | "
+              f"val {len(sp['val'])} | test {len(sp['test'])} questions, "
+              f"{n_inst} test country-question instances")
     rows = run(items, E, args.base_url, args.model,
                max_questions=args.max_questions, max_countries=args.max_countries,
-               max_sim=args.max_sim, seed=args.seed, out_path=args.out)
+               max_sim=args.max_sim, seed=args.seed, out_path=args.out,
+               eval_idx=eval_idx, ground_idx=ground_idx, split=args.split)
     summarise(rows, args.boot)
     print(f"\n-> {args.out}")
     return 0

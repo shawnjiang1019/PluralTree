@@ -41,8 +41,11 @@ MAXC="${MAXC:-8}"
 MAXSIM="${MAXSIM:-0.9}"
 SEED="${SEED:-0}"
 OUT="${OUT:-goqa_steer.jsonl}"
+SPLIT="${SPLIT:-all}"            # disjoint = Cao et al. 35/8/57 question split:
+                                 # score test only, ground on train only
+SPLIT_SEED="${SPLIT_SEED:-42}"
 
-echo "MODEL=${MODEL} SOURCE=${SOURCE} MAXQ=${MAXQ} MAXC=${MAXC} OUT=${OUT}"
+echo "MODEL=${MODEL} SOURCE=${SOURCE} MAXQ=${MAXQ} MAXC=${MAXC} SPLIT=${SPLIT} OUT=${OUT}"
 
 vllm serve "${MODEL}" --port "${PORT}" --tensor-parallel-size "${TP}" \
     --max-model-len 8192 --max-logprobs 20 > "logs/vllm_${SLURM_JOB_ID}.log" 2>&1 &
@@ -60,4 +63,5 @@ CUDA_VISIBLE_DEVICES="" python -u -m evaluation.overton.eval_goqa \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
     --source "${SOURCE}" --max_questions "${MAXQ}" --max_countries "${MAXC}" \
     --max_sim "${MAXSIM}" --seed "${SEED}" --out "${OUT}" \
+    --split "${SPLIT}" --split_seed "${SPLIT_SEED}" \
     || { echo "GOQA EVAL FAILED (see .err)"; exit 1; }
