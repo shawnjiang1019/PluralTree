@@ -131,7 +131,7 @@ def main() -> None:
                 if len(pair) == 2 and all(v in dists for v in pair):
                     a, b = pair
                     cost, pos = _option_cost(graph, a, args.embed_model)
-                    js = _js_bits(dists[a], dists[b])
+                    js = _js_bits(dists[a], dists[b]) ** 0.5   # JS distance, as in D
                     emd = _emd_norm(dists[a], dists[b], cost, pos)
                     row.update(
                         personas=True,

@@ -51,14 +51,23 @@ EMB="${EMB:-embeddings_${DATASET}.pt}"
 # (rho=0.9999 for 100% of nodes, measured on both graphs). -1 = auto, 1/sqrt(d).
 # Watch the [ball] line at each eval to confirm which one you got.
 TSCALE="${TSCALE:-0}"
+# TCLIP: soft cap on the tangent norm at every exp map -- the saturation fix
+# (rho <= tanh(sqrt(c) * TCLIP): 0.61 at 1.0, c=0.5). 0 = off (legacy).
+TCLIP="${TCLIP:-0}"
+# LDIS: weight on the disagreement rank loss (geodesic order follows the real
+# answers' D = 0.5 JS distance + 0.5 EMD). SELECT=dis keeps the checkpoint with
+# the best held-out-axis Spearman(geodesic, D) instead of the best link MRR.
+LDIS="${LDIS:-0}"
+SELECT="${SELECT:-mrr}"
 # Anything else to hand train.py, e.g. EXTRA="--lambda_boundary 0.1".
 EXTRA="${EXTRA:-}"
-echo "CURV=${CURV}  LSTR=${LSTR}  LDIV=${LDIV}  DIVM=${DIVM}  EPOCHS=${EPOCHS}  EMB=${EMB}  TSCALE=${TSCALE}"
+echo "CURV=${CURV}  LSTR=${LSTR}  LDIV=${LDIV}  DIVM=${DIVM}  EPOCHS=${EPOCHS}  EMB=${EMB}  TSCALE=${TSCALE}  TCLIP=${TCLIP}  LDIS=${LDIS}  SELECT=${SELECT}"
 
 python scripts/train/train.py --dataset "${DATASET}" \
     --curvature "${CURV}" --lambda_struct "${LSTR}" \
     --lambda_div "${LDIV}" --div_margin "${DIVM}" \
-    --n_epochs "${EPOCHS}" --tangent_scale "${TSCALE}" ${EXTRA} \
+    --n_epochs "${EPOCHS}" --tangent_scale "${TSCALE}" \
+    --tangent_clip "${TCLIP}" --lambda_dis "${LDIS}" --select_on "${SELECT}" ${EXTRA} \
     --save_embeddings "${EMB}" --device cuda \
     || { echo "TRAIN FAILED (see .err)"; exit 1; }
 

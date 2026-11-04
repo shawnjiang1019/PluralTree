@@ -28,6 +28,7 @@ from training.losses import (
     gate_sparsity_loss,
     geodesic_separation_loss,
     boundary_penalty,
+    disagreement_rank_loss,
 )
 from training.scoring import HyperbolicLinkPredictor
 from pluraltree.manifolds.poincare import PoincareBall
@@ -53,6 +54,13 @@ class TrainerConfig:
     lambda_boundary: float = 0.0  # boundary penalty (keep mass off the rim)
     lambda_decode:   float = 0.0  # codebook-separation floor (robust NN decode)
     decode_margin:   float = 1.0  # min geodesic gap to a node's nearest other
+    # --- Disagreement-as-objective: geodesic order follows measured D ---------
+    lambda_dis:      float = 0.0  # weight on disagreement_rank_loss (0 = off)
+    dis_kappa:       float = 1.0  # RankNet sharpness on geodesic differences
+    dis_lam:         float = 0.5  # D = lam*d_JS + (1-lam)*EMD (dis_weight_check.py)
+    dis_embed_model: str   = "all-MiniLM-L6-v2"  # nominal-option ground cost
+    dis_seed:        int   = 0    # axis split for train/val/test disagreement pairs
+    select_on:       str   = "mrr"  # "mrr" | "dis": which val metric picks save_best
     encode_every:   int   = 1     # re-encode the full tree every N steps (1 = every batch)
     metrics_csv:    str | None = None   # if set, append per-eval val metrics here
     save_best:      str | None = None   # if set, save h_all here on each new best val MRR
@@ -65,6 +73,63 @@ class TrainerConfig:
     warmup2:        int   = 1500
     gate_bias_init: float = -2.0
     device:         str   = "cpu"
+
+
+def disagreement_pairs(graph, lam: float = 0.5, embed_model: str = "all-MiniLM-L6-v2",
+                       seed: int = 0, fracs: tuple[float, float] = (0.8, 0.1)
+                       ) -> dict[str, tuple[Tensor, Tensor, Tensor]]:
+    """Same-axis subgroup pairs with their measured disagreement D, split by AXIS.
+
+    Only leaves attached in ``children_indices`` are used -- the training tree.
+    The held-out opinion leaves are the link-prediction targets; pairing them
+    with their axis would hand that edge to the encoder. Axes (not pairs) are
+    split 80/10/10 so validation and test pairs come from axes no training pair
+    touched: "val" picks the checkpoint, "test" is the number to report.
+
+    Returns {split: (i, j, D)} with D = lam * JS distance + (1 - lam) * EMD over
+    option_ordinal positions (semantic cost for nominal items), exactly the
+    score the axis retriever ranks by.
+    """
+    import random
+
+    from retrieval.scout import _option_cost, axis_divergence
+
+    types = getattr(graph, "entity_types", {})
+    dists = getattr(graph, "opinion_dist", {})
+    axes = sorted(v for v, t in types.items() if t == "axis")
+    random.Random(seed).shuffle(axes)
+    n_tr, n_va = int(len(axes) * fracs[0]), int(len(axes) * fracs[1])
+    split_of = {a: ("train" if k < n_tr else "val" if k < n_tr + n_va else "test")
+                for k, a in enumerate(axes)}
+
+    out: dict[str, list] = {"train": [], "val": [], "test": []}
+    for ax in axes:
+        leaves = [c for c in graph.children_indices[ax] if c in dists]
+        if len(leaves) < 2:
+            continue
+        m = len(dists[leaves[0]])
+        leaves = [c for c in leaves if len(dists[c]) == m]
+        if len(leaves) < 2:
+            continue
+        cost, pos = _option_cost(graph, leaves[0], embed_model)
+        for x in range(len(leaves)):
+            for y in range(x + 1, len(leaves)):
+                a, b = leaves[x], leaves[y]
+                out[split_of[ax]].append(
+                    (a, b, axis_divergence(dists[a], dists[b], cost, lam, pos)))
+    return {s: (torch.tensor([p[0] for p in v], dtype=torch.long),
+                torch.tensor([p[1] for p in v], dtype=torch.long),
+                torch.tensor([p[2] for p in v], dtype=torch.float32))
+            for s, v in out.items()}
+
+
+def spearman_t(x: Tensor, y: Tensor) -> float:
+    """Spearman correlation of two 1-D tensors (ranks by double argsort)."""
+    rx = x.argsort().argsort().float()
+    ry = y.argsort().argsort().float()
+    rx, ry = rx - rx.mean(), ry - ry.mean()
+    den = (rx.norm() * ry.norm()).clamp_min(1e-12)
+    return float((rx * ry).sum() / den)
 
 
 class Trainer:
@@ -146,8 +211,24 @@ class Trainer:
         self._sib_j = torch.tensor(sj, dtype=torch.long, device=self.device)
         self._n_sib_pairs = len(si)
 
+        # Disagreement pairs (same-axis subgroups with measured D), split by
+        # axis. Built only when the loss or the selection needs them.
+        self._dis: dict[str, tuple[Tensor, Tensor, Tensor]] = {}
+        if config.lambda_dis > 0.0 or config.select_on == "dis":
+            self._dis = {s: tuple(t.to(self.device) for t in v)
+                         for s, v in disagreement_pairs(
+                             graph, config.dis_lam, config.dis_embed_model,
+                             config.dis_seed).items()}
+            n = {s: len(v[2]) for s, v in self._dis.items()}
+            if n["train"] < 2 or n["val"] < 2:
+                raise ValueError(f"disagreement objective needs same-axis subgroup "
+                                 f"pairs; this graph gives {n}")
+            print(f"  disagreement pairs (by axis): train {n['train']} | "
+                  f"val {n['val']} | test {n['test']} | lam={config.dis_lam}")
+
         self.global_step = 0
         self.best_val_mrr = 0.0
+        self.best_val_dis = float("-inf")
 
         # Optional CSV log of the validation learning curve (for offline plotting).
         self._csv_writer = None
@@ -254,6 +335,22 @@ class Trainer:
             loss = loss + self.config.lambda_div * loss_div
             loss_div_t = loss_div.detach()
 
+        # Disagreement-as-objective: subgroup pairs whose real answers differ more
+        # (D) should sit further apart. Pairs-of-pairs are sampled across axes, so
+        # the geodesic is comparable between axes too -- which is what ranking
+        # axes by W at retrieval time needs.
+        loss_dis_t = torch.zeros((), device=self.device)
+        if self.config.lambda_dis > 0.0:
+            ti, tj, td = self._dis["train"]
+            B = self.config.batch_size
+            a = torch.randint(len(td), (B,), device=self.device)
+            b = torch.randint(len(td), (B,), device=self.device)
+            loss_dis = disagreement_rank_loss(
+                h_all, ti[a], tj[a], td[a], ti[b], tj[b], td[b],
+                manifold, self.config.dis_kappa)
+            loss = loss + self.config.lambda_dis * loss_dis
+            loss_dis_t = loss_dis.detach()
+
         # Boundary penalty — keep mass off the rim (anti-saturation).
         if self.config.lambda_boundary > 0.0:
             loss = loss + self.config.lambda_boundary * boundary_penalty(h_all, manifold)
@@ -295,6 +392,7 @@ class Trainer:
             "loss_struct": loss_struct_t,
             "loss_div":    loss_div_t,
             "loss_dec":    loss_dec_t,
+            "loss_dis":    loss_dis_t,
         }
 
     def train(self) -> None:
@@ -340,6 +438,7 @@ class Trainer:
                         f"struct {metrics['loss_struct'].item():.4f} | "
                         f"div {metrics['loss_div'].item():.4f} | "
                         f"dec {metrics['loss_dec'].item():.4f} | "
+                        f"dis {metrics['loss_dis'].item():.4f} | "
                         f"gate_bias {gate_bias:.2f}"
                     )
 
@@ -379,9 +478,21 @@ class Trainer:
                             val_metrics["hits@3"], val_metrics["hits@10"],
                         ])
                         self._csv_file.flush()
+                    improved = False
                     if val_metrics["mrr"] > self.best_val_mrr:
                         self.best_val_mrr = val_metrics["mrr"]
                         print(f"  [best] new best val MRR: {self.best_val_mrr:.4f}")
+                        improved = self.config.select_on == "mrr"
+                    if self._dis:
+                        rho_dis = self.evaluate_disagreement("val")
+                        print(f"  [dis]   val Spearman(geodesic, D) {rho_dis:+.4f} "
+                              f"(held-out axes)")
+                        if rho_dis > self.best_val_dis:
+                            self.best_val_dis = rho_dis
+                            improved = improved or self.config.select_on == "dis"
+                            if self.config.select_on == "dis":
+                                print(f"  [best] new best val dis rho: {rho_dis:+.4f}")
+                    if improved:
                         if self.config.save_best:
                             with torch.no_grad():
                                 torch.save(self.encode_tree().detach().cpu(),
@@ -392,6 +503,23 @@ class Trainer:
             mean_loss = (epoch_loss_sum / max(epoch_n, 1)).item()   # one sync / epoch
             print(f"Epoch {epoch+1:3d}/{self.config.n_epochs} | "
                   f"mean loss {mean_loss:.4f} | {elapsed:.1f}s")
+
+    def evaluate_disagreement(self, split: str = "val", max_pairs: int = 50000) -> float:
+        """Spearman(geodesic, D) over the split's same-axis subgroup pairs."""
+        if split not in self._dis or len(self._dis[split][2]) < 2:
+            return float("nan")
+        was_training = self.encoder.training
+        self.encoder.eval()
+        i, j, d = self._dis[split]
+        if len(d) > max_pairs:
+            g = torch.Generator(device="cpu").manual_seed(0)
+            k = torch.randperm(len(d), generator=g)[:max_pairs].to(d.device)
+            i, j, d = i[k], j[k], d[k]
+        with torch.no_grad():
+            h = self.encode_tree()
+            geo = self.encoder.manifold.distance(h[i], h[j]).squeeze(-1)
+        self.encoder.train(was_training)
+        return spearman_t(geo, d)
 
     def evaluate(self, split: str = "val") -> dict[str, float]:
         """Run link prediction evaluation on val or test split."""

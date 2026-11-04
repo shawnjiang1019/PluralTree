@@ -694,8 +694,19 @@ def _emd_norm(p: list[float], q: list[float], cost: Tensor | None,
 
 def axis_divergence(p: list[float], q: list[float], cost: Tensor | None,
                     lam: float = 0.5, positions: list[float] | None = None) -> float:
-    """lam * JS + (1 - lam) * EMD: how DIFFERENT and how FAR APART two answers are."""
-    return lam * _js_bits(p, q) + (1.0 - lam) * _emd_norm(p, q, cost, positions)
+    """lam * d_JS + (1 - lam) * EMD: how DIFFERENT and how FAR APART two answers are.
+
+    d_JS is the JS DISTANCE (sqrt of the base-2 divergence): a metric, like EMD
+    and like the geodesic the disagreement loss trains against it. lam = 0.5 was
+    checked in scripts/analysis/dis_weight_check.py (2026-11-03): the pair
+    ordering is stable around it (Kendall 0.91 / 0.93 at 0.25 / 0.75),
+    split-half reliability is flat in lam (0.984-0.986), and the
+    variance-equalised weight is 0.457.
+    """
+    import math
+
+    return (lam * math.sqrt(_js_bits(p, q))
+            + (1.0 - lam) * _emd_norm(p, q, cost, positions))
 
 
 _COST_CACHE: dict = {}

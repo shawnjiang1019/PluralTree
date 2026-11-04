@@ -100,6 +100,17 @@ def parse_args():
     p.add_argument("--lambda_boundary", type=float, default=0.0,
                    help="Weight on the boundary penalty (keep mass off the rim; "
                         "replaces manual CURV/LSTR anti-saturation tuning).")
+    p.add_argument("--lambda_dis", type=float, default=0.0,
+                   help="Weight on the disagreement rank loss: same-axis subgroup "
+                        "pairs whose real answers differ more (D = lam*JS distance "
+                        "+ (1-lam)*EMD) must sit further apart. 0 = off.")
+    p.add_argument("--dis_kappa", type=float, default=1.0,
+                   help="RankNet sharpness on geodesic differences.")
+    p.add_argument("--dis_lam", type=float, default=0.5,
+                   help="JS weight in D (fixed by scripts/analysis/dis_weight_check.py).")
+    p.add_argument("--select_on", type=str, default="mrr", choices=["mrr", "dis"],
+                   help="Validation metric that picks the saved checkpoint: link "
+                        "prediction MRR, or Spearman(geodesic, D) on held-out axes.")
     p.add_argument("--lambda_decode", type=float, default=0.0,
                    help="Weight on the codebook-separation floor — widens each "
                         "node's basin so an inexact query still NN-decodes to the "
@@ -142,6 +153,9 @@ def run_tag(args) -> str:
         f"mask_country={not args.keep_country_text}",
         f"flow={'+'.join(['up'] + (['down'] if args.bidirectional else []) + (['lat'] if args.lateral else []))}",
         f"lstruct={args.lambda_struct}",
+        f"ldis={args.lambda_dis}",
+        f"tclip={args.tangent_clip}",
+        f"select={args.select_on}",
     ]
     return " | ".join(parts)
 
@@ -308,6 +322,11 @@ def main():
         div_margin      = args.div_margin,
         lambda_boundary = args.lambda_boundary,
         lambda_decode   = args.lambda_decode,
+        lambda_dis      = args.lambda_dis,
+        dis_kappa       = args.dis_kappa,
+        dis_lam         = args.dis_lam,
+        dis_embed_model = args.embed_model,
+        select_on       = args.select_on,
         decode_margin   = args.decode_margin,
         encode_every   = args.encode_every,
         metrics_csv    = args.metrics_csv,
@@ -343,12 +362,29 @@ def main():
         h_all_final = trainer.encode_tree()
     # The best-val-MRR embeddings were already saved during training (save_best);
     # only fall back to the final-epoch state if no eval ever improved on 0.
-    if args.save_embeddings and trainer.best_val_mrr <= 0.0:
+    best_seen = (trainer.best_val_dis > float("-inf") if args.select_on == "dis"
+                 else trainer.best_val_mrr > 0.0)
+    if args.save_embeddings and not best_seen:
         torch.save(h_all_final.detach().cpu(), args.save_embeddings)
         print(f"  Saved final embeddings to {args.save_embeddings} (no best checkpoint)")
     elif args.save_embeddings:
-        print(f"  Best embeddings (val MRR {trainer.best_val_mrr:.4f}) already "
-              f"saved at {args.save_embeddings}")
+        what = (f"val dis rho {trainer.best_val_dis:+.4f}" if args.select_on == "dis"
+                else f"val MRR {trainer.best_val_mrr:.4f}")
+        print(f"  Best embeddings ({what}) already saved at {args.save_embeddings}")
+    # Held-out disagreement fidelity: TEST axes, never used for training or
+    # selection -- the number to report. Measured on the saved checkpoint.
+    dis_test = None
+    if trainer._dis:
+        if args.save_embeddings:
+            h_best = torch.load(args.save_embeddings, map_location=args.device)
+            i, j, d = trainer._dis["test"]
+            from training.trainer import spearman_t
+            with torch.no_grad():
+                geo = manifold.distance(h_best[i], h_best[j]).squeeze(-1)
+            dis_test = spearman_t(geo, d)
+        else:
+            dis_test = trainer.evaluate_disagreement("test")
+        print(f"  Test Spearman(geodesic, D) on held-out axes: {dis_test:+.4f}")
     struct = compute_structure_metrics(
         h_all_final,
         graph.children_indices,
@@ -392,6 +428,9 @@ def main():
           f"h@10={test_metrics.get('hits@10', float('nan')):.4f}")
     print(f"STRUCT | {run_tag(args)} | "
           + " ".join(f"{k}={v:.4f}" for k, v in struct.items()))
+    if dis_test is not None:
+        print(f"DIS | {run_tag(args)} | best_val_dis={trainer.best_val_dis:+.4f} "
+              f"test_dis={dis_test:+.4f}")
     if ind_metrics is not None:
         print(f"INDUCTIVE | {run_tag(args)} | n={len(graph.inductive_test)} | "
               f"mrr={ind_metrics.get('mrr', float('nan')):.4f} "
