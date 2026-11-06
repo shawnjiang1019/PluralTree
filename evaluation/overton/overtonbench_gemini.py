@@ -16,8 +16,10 @@ Our answers never enter the few-shot pool: examples come from the original
 human ratings only, so a participant sees the benchmark's own responses with
 their real ratings, never another arm's answer with a missing rating.
 
-Participants: --users_per_q per question (0 = all), drawn once with a fixed
-seed from raters with a cluster label, and shared by every arm and rollout.
+Protocol (Poole-Dayan et al. 2026, Sec. 5-6 and App. C.1): every rater on the
+question (about 60; --users_per_q samples fewer), --source modelslant for their
+15 questions (the set their judge scores, Table 14; "full" = all 60), and three
+predictions per rating, averaged and rounded (--repeats 3).
 --with_references also re-rates the benchmark's own model responses for the same
 participants, so every "model" in the scoring is rated by the same judge.
 
@@ -30,7 +32,7 @@ Output is a CSV in their schema (user, question_id, model, representation_rating
 Run where Gemini is reachable (not a narval compute node). Key from the
 environment only (GEMINI_API_KEY or GOOGLE_API_KEY):
 
-    python -m evaluation.overton.overtonbench_gemini --responses overton_responses_m80.jsonl --conditions baseline,persona_merge --users_per_q 20 --dry_run
+    python -m evaluation.overton.overtonbench_gemini --responses overton_responses_all.jsonl --conditions baseline,persona_merge --source modelslant --repeats 3 --dry_run
 """
 
 from __future__ import annotations
@@ -102,7 +104,11 @@ def main() -> None:
     ap.add_argument("--responses", nargs="+", required=True, help="our responses .jsonl file(s)")
     ap.add_argument("--conditions", default="", help="comma list; empty = all in the files")
     ap.add_argument("--rollouts", default="", help="comma list of rollout ids; empty = all")
-    ap.add_argument("--users_per_q", type=int, default=20, help="0 = every rater")
+    ap.add_argument("--users_per_q", type=int, default=0, help="0 = every rater (their protocol)")
+    ap.add_argument("--source", default="full", choices=["full", "modelslant", "prism"],
+                    help="question split; modelslant = the 15 questions of App. C.1")
+    ap.add_argument("--repeats", type=int, default=1,
+                    help="predictions per rating, averaged and rounded (their protocol: 3)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--with_references", action="store_true",
                     help="also re-rate the benchmark's own model responses")
@@ -121,8 +127,8 @@ def main() -> None:
     import prompts
     from load_dataset import get_overtonbench_data
 
-    helper_functions.set_data_options(path=None, source_split="full")
-    df = get_overtonbench_data(source_split="full")
+    helper_functions.set_data_options(path=None, source_split=args.source)
+    df = get_overtonbench_data(source_split=args.source)
     meta = df.drop_duplicates(["user", "question_id"]).set_index(["user", "question_id"])
     panel = _panel(df, args.users_per_q, args.seed)
 
@@ -166,7 +172,8 @@ def main() -> None:
     n_models = len({t["model"] for t in targets})
     print(f"{len(answers)} answers x panel -> {len(targets)} judge rows "
           f"({n_models} models, {sum(len(v) for v in panel.values())} participants "
-          f"over {len(panel)} questions); {len(todo)} to do; judge={args.model} "
+          f"over {len(panel)} questions, source={args.source}); {len(todo)} to do "
+          f"x {args.repeats} repeats; judge={args.model} "
           f"thinking_budget={args.thinking_budget}")
 
     if args.dry_run:
@@ -181,15 +188,21 @@ def main() -> None:
     judge = _JudgeClient(llm_api._get_gemini_client(), args.model, args.thinking_budget)
     llm_api._gemini_client = judge               # their generate() now calls through us
 
-    def rate(t):
-        p = helper_functions.format_prompt("freeresponse_fewshot", t)
+    def rate_once(p):
         for attempt in range(4):                 # outer backoff for 429/5xx bursts
             r = llm_api.generate(preformatted_prompt=p, sys_prompt=prompts.system_prompt,
                                  model_name="gemini", max_retries=3, temperature=0)
             if r is not None:
-                return t, r
+                return r
             time.sleep(5 * 2 ** attempt)
-        return t, None
+        return None
+
+    def rate(t):
+        p = helper_functions.format_prompt("freeresponse_fewshot", t)
+        rs = [r for r in (rate_once(p) for _ in range(args.repeats)) if r is not None]
+        if len(rs) < args.repeats:               # never average a partial set
+            return t, None
+        return t, int(sum(rs) / len(rs) + 0.5)   # rounded average, half up
 
     new = not os.path.exists(args.out)
     n_ok = n_fail = 0

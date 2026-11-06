@@ -760,8 +760,9 @@ embedding and with ranking by measured divergence.
 
 \subsection{Benchmarks}
 \paragraph{OvertonBench.} Our primary benchmark \citep{placeholder-overtonbench}
-contains 60 contested US questions, each with roughly 450--560 surveyed
-participants grouped into viewpoint clusters (\S\ref{sec:definitions}).
+contains 60 contested questions, each answered by about 60 of its 1,208 US
+participants, who rated eight model responses and are grouped into viewpoint
+clusters (\S\ref{sec:definitions}).
 
 \paragraph{GlobalOpinionQA.} To test the other two forms of pluralism
 \citep{sorensen2024roadmap}, we use the World Values Survey questions of
@@ -837,35 +838,35 @@ Both judges predict individual ratings about equally well, but only
 Qwen3.8-27B matches humans on the two properties that drive coverage: how
 often ratings clear the threshold of $4$, and insensitivity to answer length.
 We report it as the primary judge and Qwen2.5-72B as a robustness check. Each
-question is scored against 80 participants sampled once with a fixed seed and
-shared by all conditions, so every comparison uses the same panel. These two
-judges use our adaptation of the benchmark's few-shot prompt, with each
-reference response shown up to 800 characters.
+question is scored against all of its raters (about 60), so every comparison
+uses the same panel. Both judges use the benchmark's few-shot, free-response
+prompt verbatim: the participant's written view and their ratings of every
+reference response to the same question.
+\textcolor{red}{Validation numbers above predate this prompt: re-validate.}
 
-\paragraph{Benchmark judge.} We also score answers with the OvertonBench
-authors' own judging pipeline \citep{placeholder-overtonbench}, run from their
-released code.\footnote{\url{https://github.com/elinorp-d/overtonbench},
-commit \texttt{a3f221c}.} Their code builds the prompt (their few-shot,
-free-response variant: the participant's written view plus their ratings of
-every other response to the same question, untruncated), calls the model at
-temperature $0$, and parses the rating. We change three things, all fixed
-before scoring.
+\paragraph{Benchmark judge.} We also follow the benchmark's own automated
+evaluation protocol for new models \citep[App.~C]{placeholder-overtonbench},
+run from the authors' released
+code.\footnote{\url{https://github.com/elinorp-d/overtonbench}, commit
+\texttt{a3f221c}.} On the $15$ Model Slant questions, a Gemini judge predicts
+each rater's rating of each answer three times at temperature $0$, and the
+rounded average replaces the human rating; scores are then computed with the
+authors' scoring script ($\tau = 4$; adjusted coverage from an OLS with question
+fixed effects), which places our conditions on the same scale as their published
+results. We make two changes, both fixed before scoring.
 \begin{itemize}
-  \item \emph{Model.} Their code calls Gemini 2.5 Pro; we use Gemini 2.5 Flash,
-  which they report predicts ratings comparably
-  (\textcolor{red}{cite their table/figure and numbers}).
+  \item \emph{Model.} They use Gemini 2.5 Pro; we use Gemini 2.5 Flash, which
+  matched it on the same prompt in their pilot of 250 ratings (accuracy $0.536$
+  vs.\ $0.539$, MAE $0.644$ vs.\ $0.643$; their Table~16).
   \item \emph{Thinking.} Their call leaves the model's default reasoning on; we
   set the thinking budget to $0$, so the judge outputs the rating directly.
-  \item \emph{Participants.} They judge every rater; we judge $20$ participants
-  per question, drawn once with a fixed seed from raters with a cluster label
-  and shared by all conditions.
 \end{itemize}
 Our answers never enter the few-shot pool: each participant is shown the
-benchmark's own responses with their real ratings. The benchmark's reference
-responses are re-rated by the same judge for the same participants, so every
-system, ours and theirs, is rated by one judge. Scores are computed with the
-authors' scoring script (cluster covered if its mean predicted rating is at
-least $\tau = 4$), with and without weighting clusters by size.
+benchmark's own responses with their real ratings. To test whether this judge
+is a fair proxy, we also re-rate the eight reference responses with it and
+compare its ranking with their human scores, for which the authors report
+$\rho = 0.88$ with Gemini 2.5 Pro. As a secondary result, which has more power
+for paired tests, we apply the same judge to all $60$ questions.
 
 \subsection{Metrics and inference}
 The primary metric is per-answer coverage $S$, averaged over rollouts and
@@ -1085,8 +1086,8 @@ component to adapt per generator.
 
 \section{Limitations}
 \paragraph{Scale and statistical power.}
-OvertonBench provides 60 questions, and we score a sample of 20 participants
-per question, so only the clusters those participants belong to are evaluated.
+OvertonBench provides 60 questions with about 60 raters each, so viewpoint
+clusters average only about eight members and a cluster's mean rating is noisy.
 Paired intervals over 60 questions are wide relative to the differences between
 our ablations; a null result for a component means no effect was detected, not
 that none exists.

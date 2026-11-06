@@ -57,6 +57,9 @@ VLLM="${VLLM:-vllm}"
 REASONING_PARSER="${REASONING_PARSER:-}"
 JUDGE_REASONING="${JUDGE_REASONING:-0}"
 JUDGE_MAXTOK="${JUDGE_MAXTOK:-}"
+# benchmark = the OvertonBench authors' fs+fr prompt; ours = our earlier
+# adaptation (examples cut to 800 chars), which every score before 2026-11-06 used.
+JUDGE_PROMPT="${JUDGE_PROMPT:-benchmark}"
 SERVE_EXTRA=""
 JUDGE_EXTRA=""
 [ -n "${REASONING_PARSER}" ] && SERVE_EXTRA="--reasoning-parser ${REASONING_PARSER}"
@@ -68,7 +71,7 @@ if [ "${JUDGE_REASONING}" = "1" ] && [ -z "${REASONING_PARSER}" ]; then
 fi
 
 [ -f "${RESP}" ] || { echo "MISSING ${RESP} in $(pwd)"; exit 1; }
-echo "RESP=${RESP}  SCORES=${SCORES}  MODEL=${MODEL}  MAXU=${MAXU}"
+echo "RESP=${RESP}  SCORES=${SCORES}  MODEL=${MODEL}  MAXU=${MAXU}  JUDGE_PROMPT=${JUDGE_PROMPT}"
 echo "rows: $(grep -c . "${RESP}")"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
@@ -91,7 +94,7 @@ echo "vLLM up"
 python -u -m evaluation.overton.judge_overtonbench --score "${RESP}" \
     --max_users "${MAXU}" --k_rollouts "${KROLL}" \
     --base_url "http://localhost:${PORT}/v1" --model "${MODEL}" \
-    --out "${SCORES}" --seed "${SEED}" \
+    --out "${SCORES}" --seed "${SEED}" --prompt_style "${JUDGE_PROMPT}" \
     --dump_clusters "${CLUSTERS}" ${ROLL_ARG} ${JUDGE_EXTRA} \
     || { echo "JUDGING FAILED"; exit 1; }
 

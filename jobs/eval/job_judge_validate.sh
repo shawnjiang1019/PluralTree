@@ -52,9 +52,10 @@ VLLM_EXTRA="${VLLM_EXTRA:-}"     # e.g. --kv-cache-dtype fp8
 REASONING_PARSER="${REASONING_PARSER:-}"
 JUDGE_REASONING="${JUDGE_REASONING:-0}"
 JUDGE_MAXTOK="${JUDGE_MAXTOK:-}"
-JUDGE_EXTRA=""
+JUDGE_PROMPT="${JUDGE_PROMPT:-benchmark}"   # benchmark | ours (see job_judge_only.sh)
+JUDGE_EXTRA="--prompt_style ${JUDGE_PROMPT}"
 [ -n "${REASONING_PARSER}" ] && VLLM_EXTRA="${VLLM_EXTRA} --reasoning-parser ${REASONING_PARSER}"
-[ "${JUDGE_REASONING}" = "1" ] && JUDGE_EXTRA="--reasoning"
+[ "${JUDGE_REASONING}" = "1" ] && JUDGE_EXTRA="${JUDGE_EXTRA} --reasoning"
 [ -n "${JUDGE_MAXTOK}" ] && JUDGE_EXTRA="${JUDGE_EXTRA} --max_tokens ${JUDGE_MAXTOK}"
 if [ "${JUDGE_REASONING}" = "1" ] && [ -z "${REASONING_PARSER}" ]; then
     echo "JUDGE_REASONING=1 needs REASONING_PARSER (see job_judge_only.sh)"; exit 1
@@ -64,7 +65,7 @@ fi
 #     sbatch --gres=gpu:8 --nodes=1 ... TP=8      (if 8-GPU nodes exist)
 # Otherwise prefer Int8 (~73GB, fits on 4 GPUs) to test the quantization
 # hypothesis: MODEL=Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8
-echo "MODEL=${MODEL}  N=${N}  WITHIN=${WITHIN}  AGG=${AGG}(u=${AGGU})  TP=${TP}"
+echo "MODEL=${MODEL}  N=${N}  WITHIN=${WITHIN}  AGG=${AGG}(u=${AGGU})  TP=${TP}  JUDGE_PROMPT=${JUDGE_PROMPT}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 vllm serve "${MODEL}" --port "${PORT}" --tensor-parallel-size "${TP}" \

@@ -76,7 +76,8 @@ class TrainerConfig:
 
 
 def disagreement_pairs(graph, lam: float = 0.5, embed_model: str = "all-MiniLM-L6-v2",
-                       seed: int = 0, fracs: tuple[float, float] = (0.8, 0.1)
+                       seed: int = 0, fracs: tuple[float, float] = (0.8, 0.1),
+                       by_item: bool = False
                        ) -> dict[str, tuple[Tensor, Tensor, Tensor]]:
     """Same-axis subgroup pairs with their measured disagreement D, split by AXIS.
 
@@ -89,6 +90,10 @@ def disagreement_pairs(graph, lam: float = 0.5, embed_model: str = "all-MiniLM-L
     Returns {split: (i, j, D)} with D = lam * JS distance + (1 - lam) * EMD over
     option_ordinal positions (semantic cost for nominal items), exactly the
     score the axis retriever ranks by.
+
+    ``by_item=True`` splits whole survey items instead: every axis of an item
+    lands in one split, so held-out pairs come from questions the model never
+    saw. The harder test, and the one that matters for a text-only encoder.
     """
     import random
 
@@ -97,10 +102,18 @@ def disagreement_pairs(graph, lam: float = 0.5, embed_model: str = "all-MiniLM-L
     types = getattr(graph, "entity_types", {})
     dists = getattr(graph, "opinion_dist", {})
     axes = sorted(v for v, t in types.items() if t == "axis")
-    random.Random(seed).shuffle(axes)
-    n_tr, n_va = int(len(axes) * fracs[0]), int(len(axes) * fracs[1])
+    if by_item:
+        groups = sorted(v for v, t in types.items() if t == "question")
+        members = {g: [c for c in graph.children_indices[g] if types.get(c) == "axis"]
+                   for g in groups}
+    else:
+        groups = axes
+        members = {a: [a] for a in axes}
+    random.Random(seed).shuffle(groups)
+    n_tr, n_va = int(len(groups) * fracs[0]), int(len(groups) * fracs[1])
     split_of = {a: ("train" if k < n_tr else "val" if k < n_tr + n_va else "test")
-                for k, a in enumerate(axes)}
+                for k, g in enumerate(groups) for a in members[g]}
+    axes = [a for a in axes if a in split_of]
 
     out: dict[str, list] = {"train": [], "val": [], "test": []}
     for ax in axes:

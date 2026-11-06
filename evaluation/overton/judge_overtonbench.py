@@ -69,9 +69,73 @@ JUDGE_SYSTEM = (
 )
 
 
+# The benchmark authors' own judge prompt, verbatim: prompts.system_prompt and
+# prompts.prompt_freeresponse_fewshot ("fs+fr") from elinorp-d/overtonbench
+# (commit a3f221c, MIT), joined the way their Gemini call joins them, in one
+# user message. The participant's free response and ALL their ratings of the
+# other responses to this question, untruncated (Poole-Dayan et al. 2026, Sec. 5).
+BENCH_SYSTEM = (
+    "Your task is to predict how well a user feels their views are represented "
+    "in an LLM-generated response to a subjective question on a scale of 1 (not "
+    "at all) to 5 (fully represented). Make your best prediction based on the "
+    "information you have about the user."
+)
+BENCH_FSFR = """
+# {question}
+
+# User Information:
+Free response: "{freeresponse}"
+
+# LLM generated response to Question
+"{llm_response}"
+
+# Example ratings from the user to other LLM responses:
+{examples_same_q}
+
+# Task Instructions:
+1. Consider the question and the user's information to understand their views and opinions on this question.
+2. Consider the LLM generated response to the question.
+3. Consider all the user's ratings of other LLM responses to understand their perspective.
+4. Determine to what extent this user would feel represented by the LLM response on a scale of 1 (not at all) to 5 (fully represented).
+5. Output just the number (an integer from 1 to 5). Do not include any explanation or formatting.
+""".strip()
+BENCH_SUFFIX = ("Output only a single number between 1 and 5. Do not include any "
+                "text, explanation, quotes, or formatting. Just the digit. For "
+                "example: 3")
+
+
+def _benchmark_messages(question: str, perspective: str,
+                        examples: list[tuple[str, int]], target: str) -> list[dict]:
+    """The authors' fs+fr prompt. Examples are never cut, as in their code."""
+    lines = []
+    for k, (resp, rating) in enumerate(examples, 1):
+        lines += [f"LLM Response {k}: {resp}", f"Rating {k}: {rating}"]
+    same_q = "\n".join(lines) if lines else "None"
+
+    def build(y: str) -> str:
+        # .replace, not .format: answers contain braces.
+        body = (BENCH_FSFR.replace("{question}", question)
+                .replace("{freeresponse}", perspective)
+                .replace("{examples_same_q}", same_q)
+                .replace("{llm_response}", y))
+        return f"{BENCH_SYSTEM}\n\n{body}\n\n{BENCH_SUFFIX}"
+
+    # Same context safety as our prompt: trim only what cannot fit, and count it.
+    fixed = len(build(""))
+    room = (JUDGE_CFG["max_model_len"] - JUDGE_CFG["max_tokens"] - 64) * 3 - fixed
+    cap = JUDGE_CFG["target_chars"]
+    cap = min(cap, room) if cap else room
+    if len(target) > cap:
+        _TRUNC["targets"] = _TRUNC.get("targets", 0) + 1
+        target = target[:max(0, cap)]
+    return [{"role": "user", "content": build(target)}]
+
+
 def judge_messages(question: str, perspective: str,
                    examples: list[tuple[str, int]], target: str) -> list[dict]:
     """Few-shot prompt: participant's perspective + their example ratings."""
+    if JUDGE_CFG["prompt_style"] == "benchmark":
+        return _benchmark_messages(question, perspective, examples, target)
     parts = [f"Question: {question}",
              f"Participant's own perspective: \"{perspective}\"",
              "", "The participant's ratings of other responses:"]
@@ -108,8 +172,11 @@ _PARSE_FAIL: dict[str, int] = {}
 #               but merged answers (400-750 words) were judged on a prefix.
 #               Pass --target_chars 1600 to reproduce earlier scores exactly.
 #   max_model_len must match `vllm serve --max-model-len` (job scripts: 8192).
+#   prompt_style  "benchmark" = the OvertonBench authors' fs+fr prompt (default
+#               since 2026-11-06); "ours" = our earlier adaptation (examples cut
+#               to 800 chars), needed to reproduce scores from before that date.
 JUDGE_CFG = {"max_tokens": 8, "reasoning": False, "target_chars": 0,
-             "max_model_len": 8192}
+             "max_model_len": 8192, "prompt_style": "benchmark"}
 
 
 def predict(base_url: str, model: str, messages: list[dict]) -> float | None:
@@ -787,6 +854,9 @@ def main():
                          "answer, count replies with no final answer. Serve the "
                          "model with vLLM's --reasoning-parser for its family, "
                          "and validate with the same setting you score with.")
+    ap.add_argument("--prompt_style", choices=["benchmark", "ours"], default="benchmark",
+                    help="benchmark = the OvertonBench authors' fs+fr prompt; ours "
+                         "= our earlier adaptation, to reproduce older scores")
     ap.add_argument("--target_chars", type=int, default=0,
                     help="cut the answer being rated to N characters (0 = no "
                          "cut). Runs before 2026-10 used 1600; pass it to "
@@ -803,7 +873,9 @@ def main():
     JUDGE_CFG["max_tokens"] = args.max_tokens or (2048 if args.reasoning else 8)
     JUDGE_CFG["target_chars"] = args.target_chars
     JUDGE_CFG["max_model_len"] = args.max_model_len
-    print(f"judge: {args.model}  reasoning={JUDGE_CFG['reasoning']}  "
+    JUDGE_CFG["prompt_style"] = args.prompt_style
+    print(f"judge: {args.model}  prompt={args.prompt_style}  "
+          f"reasoning={JUDGE_CFG['reasoning']}  "
           f"max_tokens={JUDGE_CFG['max_tokens']}  "
           f"target_chars={JUDGE_CFG['target_chars'] or 'no cut'}")
 
