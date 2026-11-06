@@ -1,0 +1,1471 @@
+\documentclass[11pt]{article}
+
+% Change "review" to "final" to generate the final (sometimes called camera-ready) version.
+% Change to "preprint" to generate a non-anonymous version with page numbers.
+\usepackage[review]{acl}
+
+% Standard package includes
+\usepackage{times}
+\usepackage{latexsym}
+
+% For proper rendering and hyphenation of words containing Latin characters (including in bib files)
+\usepackage[T1]{fontenc}
+% For Vietnamese characters
+% \usepackage[T5]{fontenc}
+% See https://www.latex-project.org/help/documentation/encguide.pdf for other character sets
+
+% This assumes your files are encoded as UTF8
+\usepackage[utf8]{inputenc}
+
+% This is not strictly necessary, and may be commented out,
+% but it will improve the layout of the manuscript,
+% and will typically save some space.
+\usepackage{microtype}
+
+% This is also not strictly necessary, and may be commented out.
+% However, it will improve the aesthetics of text in
+% the typewriter font.
+\usepackage{inconsolata}
+
+%Including images in your LaTeX document requires adding
+%additional package(s)
+\usepackage{graphicx}
+
+% If the title and author information does not fit in the area allocated, uncomment the following
+%
+%\setlength\titlebox{<dim>}
+%
+% and set <dim> to something 5cm or larger.
+
+\title{Instructions for *ACL Proceedings}
+
+% Author information can be set in various styles:
+% For several authors from the same institution:
+% \author{Author 1 \and ... \and Author n \\
+%         Address line \\ ... \\ Address line}
+% if the names do not fit well on one line use
+%         Author 1 \\ {\bf Author 2} \\ ... \\ {\bf Author n} \\
+% For authors from different institutions:
+% \author{Author 1 \\ Address line \\  ... \\ Address line
+%         \And  ... \And
+%         Author n \\ Address line \\ ... \\ Address line}
+% To start a separate ``row'' of authors use \AND, as in
+% \author{Author 1 \\ Address line \\  ... \\ Address line
+%         \AND
+%         Author 2 \\ Address line \\ ... \\ Address line \And
+%         Author 3 \\ Address line \\ ... \\ Address line}
+
+\author{First Author \\
+  Affiliation / Address line 1 \\
+  Affiliation / Address line 2 \\
+  Affiliation / Address line 3 \\
+  \texttt{email@domain} \\\And
+  Second Author \\
+  Affiliation / Address line 1 \\
+  Affiliation / Address line 2 \\
+  Affiliation / Address line 3 \\
+  \texttt{email@domain} \\}
+
+%\author{
+%  \textbf{First Author\textsuperscript{1}},
+%  \textbf{Second Author\textsuperscript{1,2}},
+%  \textbf{Third T. Author\textsuperscript{1}},
+%  \textbf{Fourth Author\textsuperscript{1}},
+%\\
+%  \textbf{Fifth Author\textsuperscript{1,2}},
+%  \textbf{Sixth Author\textsuperscript{1}},
+%  \textbf{Seventh Author\textsuperscript{1}},
+%  \textbf{Eighth Author \textsuperscript{1,2,3,4}},
+%\\
+%  \textbf{Ninth Author\textsuperscript{1}},
+%  \textbf{Tenth Author\textsuperscript{1}},
+%  \textbf{Eleventh E. Author\textsuperscript{1,2,3,4,5}},
+%  \textbf{Twelfth Author\textsuperscript{1}},
+%\\
+%  \textbf{Thirteenth Author\textsuperscript{3}},
+%  \textbf{Fourteenth F. Author\textsuperscript{2,4}},
+%  \textbf{Fifteenth Author\textsuperscript{1}},
+%  \textbf{Sixteenth Author\textsuperscript{1}},
+%\\
+%  \textbf{Seventeenth S. Author\textsuperscript{4,5}},
+%  \textbf{Eighteenth Author\textsuperscript{3,4}},
+%  \textbf{Nineteenth N. Author\textsuperscript{2,5}},
+%  \textbf{Twentieth Author\textsuperscript{1}}
+%\\
+%\\
+%  \textsuperscript{1}Affiliation 1,
+%  \textsuperscript{2}Affiliation 2,
+%  \textsuperscript{3}Affiliation 3,
+%  \textsuperscript{4}Affiliation 4,
+%  \textsuperscript{5}Affiliation 5
+%\\
+%  \small{
+%    \textbf{Correspondence:} \href{mailto:email@domain}{email@domain}
+%  }
+%}
+
+\usepackage[most]{tcolorbox}
+\newtcolorbox{answerbox}[1]{breakable, enhanced, colback=white,
+  colframe=black!35, boxrule=0.5pt, arc=2pt, left=6pt, right=6pt,
+  fonttitle=\small\bfseries, coltitle=black, colbacktitle=black!6,
+  title={#1}, fontupper=\small}
+
+
+\begin{document}
+\maketitle
+\begin{abstract}
+This document is a supplement to the general instructions for *ACL authors. It contains instructions for using the \LaTeX{} style files for ACL conferences.
+The document itself conforms to its own specifications, and is therefore an example of what your manuscript should look like.
+These instructions should be used both for papers submitted for review and for final versions of accepted papers.
+\end{abstract}
+
+
+\section{Introduction \textcolor{red}{suggested by AI}}
+
+Large language models (LLMs) are increasingly deployed as interfaces for public discourse, informational synthesis, and decision support \citep{placeholder-llm-public}. However, standard alignment techniques—such as Reinforcement Learning from Human Feedback (RLHF) or Direct Preference Optimization (DPO)—tend to optimize models toward a single consensus response \citep{placeholder-rlhf, placeholder-dpo}. When queried on controversial, open-ended, or value-laden questions, this consensus-seeking behavior defaults to majority viewpoints, systematically marginalizing valid minority perspectives and underrepresenting the full spectrum of opinion \citep{placeholder-overtonbench, placeholder-pluralism-bias}.
+
+Achieving \emph{Overton pluralism}—the principled representation of all valid viewpoint clusters across a population—requires moving beyond single-answer generation. Existing approaches to pluralistic alignment predominantly rely on unconstrained model brainstorming or static persona prompting \citep{placeholder-persona-prompting}. These approaches suffer from severe model self-bias: LLMs often produce strawman representations of minority views or hallucinate non-empirical perspectives when left without structured grounding \citep{placeholder-persona-bias}. 
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{motivate.jpeg}
+    \caption{\textbf{Motivating Example.} Standard alignment collapses diverse viewpoints into a single majority response (top). Our framework uses opinion graph retrieval and empirical priors to preserve full viewpoint coverage across minority clusters (bottom).}
+    \label{fig:motivating_example}
+\end{figure}
+
+To address these challenges, we introduce a novel framework for grounded persona synthesis that anchors pluralistic generation in real-world empirical survey distributions. Our approach makes three key technical contributions:
+\begin{enumerate}
+    \item \textbf{Dual-Geometry Divergent Fork Retrieval:} We construct a hierarchical opinion graph $G$ where subgroup opinion nodes carry empirical answer distributions. We retrieve maximally divisive opinion forks using a dual-geometry formulation: text-space Euclidean similarity ensures topical relevance to the prompt, while optimal transport (Wasserstein distance) computed over a learned hyperbolic manifold ($\mathbb{B}^d_c$) measures structural ideological divergence without tree-distortion issues.
+    \item \textbf{Grounded Persona Conditioning:} Rather than relying on static prompt templates, we condition parallel draft generations directly on the empirical subgroup priors retrieved from the opinion graph, allowing for minority perspectives to receive higher representation of their viewpoint clusters.
+    \item \textbf{Guaranteed Union Merging:} To synthesize diverse drafts into a unified response without losing minority representation, we introduce a constrained merge procedure enforced by length and position guards ($N_m \ge N_d$ and $P_m \ge P_d$), falling back to direct concatenation if information loss is detected.
+\end{enumerate}
+
+
+
+
+
+Evaluated against original reported state-of-the-art baselines on OvertonBench \citep{placeholder-overtonbench}, our methodology significantly improves viewpoint cluster coverage across both uniform and prevalence-sensitive metrics, demonstrating that structured geometric retrieval and constrained synthesis provide a robust pathway toward pluralistic AI alignment.
+
+\section{\color{red}Related Work}
+
+\paragraph{Pluralistic alignment.}
+\citet{sorensen2024roadmap} distinguish three ways a model can serve a diverse
+population: presenting the full range of reasonable views (\emph{Overton}),
+faithfully adopting a requested perspective (\emph{steerable}), and matching
+the spread of opinion in a population (\emph{distributional}). As a result of their pretraining, language models
+fall short on all three by default. When asked on their opinions, the models align with some
+demographic groups more than others \citep{santurkar2023whose,
+durmus2023towards}, and preference fine-tuning tends to steer outputs towards a smaller set of responses, and narrow the diversity
+of their outputs \citep{kirk2024understanding}. Proposed remedies mostly act at
+training time,  by learning a mixture of preferences
+\citep{chakraborty2024maxmin} or by training community-specific models whose
+outputs a base model combines \citep{feng-etal-2024-modular}. As shown by Jiang et.al, continuous sampling of outputs from the same model leads to a homogenization of responses both within models, and between different models, likely due to consumption of similar data during pretraining. These methods are often costly, and require large amounts of labeled preference data in order to generalize across a wide range of opinions.
+
+
+We instead work
+at test time with a single, frozen model, and condition generation based on disagreement and dissimilarity of retrieved opinion distributions embedded within a hierarchical graph structure. The usage of this retrieval and conditioning method avoids train time methods while maintaining representativeness of diverse opinions.
+
+
+Prior methods such as Modular Pluralism make use of similar multi-perspective based approaches via a set of community tuned models. Rather than relying on specifically trained models to incentivize pluralistic responses. To provide a more generalizable approach, we introduce Plural Tree, a test-time retrieval approach towards overton pluralistic alignment.   
+
+\paragraph{Optimal transport.}
+Optimal transport measures the least cost of moving one distribution onto
+another under a ground cost \citep{villani2008optimal, peyre2019computational},
+and entropic regularisation makes it tractable at scale \citep{cuturi2013sinkhorn}.
+In NLP it underlies the Word Mover's Distance between documents
+\citep{kusner2015word}, and recent retrieval work selects context by minimising
+a Sinkhorn--Wasserstein distance between an information-demand distribution and
+the retrieved coverage \citep{zhang2026georag}. Those uses treat transport cost
+as a measure of \emph{similarity} or \emph{coverage}. We use it as a measure of
+\emph{disagreement}: the Wasserstein distance between two subgroups' clouds of
+nodes, with geodesic ground cost and transport mass weighted by relevance to
+the question, ranks where opinion splits.
+
+{\color{red}
+\begin{itemize}
+    \item \textbf{Pluralistic AI Alignment}
+    \item \textbf{Persona Prompting and Grounded Priors}
+
+    \paragraph{Persona prompting.}
+Conditioning a language model on a description of a person or group is a
+common way to elicit viewpoints other than its default. Backstory-conditioned
+models can reproduce subgroup survey responses \citep{argyle2023out}, although
+a model's unconditioned opinions favour some groups and steering only partly
+corrects this \citep{santurkar2023whose, durmus2023towards}. Persona prompts
+also have known failure modes: they produce stereotyped or caricatured
+portrayals \citep{cheng2023marked, cheng2023compost}, explain little of the
+variation in human judgements \citep{hu2024quantifying}, and can flatten
+identity groups into a single voice \citep{wang2025misportray}. Several personas
+can also be combined within one task, either collaborating on a single answer
+\citep{wang2024unleashing} or arguing opposite sides so that a judge can pick the
+truthful one \citep{khan2024debating}.
+
+Our personas differ in three ways. They are \emph{grounded}: each carries its
+group's measured answer distribution on a related survey item, not only a
+demographic label. They are \emph{selected as an opposed pair}, as the two
+endpoints of an opinion axis built from those distributions, so the drafts
+disagree by construction rather than by sampling or enumeration. And they are
+\emph{intermediate}: unlike debate, which adjudicates between sides, we keep
+both and merge them, since the goal is to represent each view, not to choose
+one.
+
+    \item \textbf{Hyperbolic Geometry and Optimal Transport}
+    \item \textbf{Multi-Draft Ensembling and Information Preservation}
+    \paragraph{Multi-draft ensembling and information preservation.}
+Sampling several generations and combining them is a common way to improve a
+single output, but most methods combine by \emph{selection} or
+\emph{convergence}. Self-consistency \citep{wang2023selfconsistency} and its
+universal variant \citep{chen2023universal} keep the answer most samples agree
+on; ranking-based ensembles choose among candidates \citep{jiang2023llmblender};
+and multi-agent debate drives agents toward a shared answer \citep{du2024debate}.
+Each is designed to discard minority content, the content an Overton-pluralistic
+answer must keep. Other methods \emph{fuse} candidates: LLM-Blender's generative
+fuser \citep{jiang2023llmblender}, the aggregator layers of Mixture-of-Agents
+\citep{wang2024mixture}, the merge step of Branch-Solve-Merge
+\citep{saha2024bsm}, and the summariser over community comments in Modular
+Pluralism \citep{feng-etal-2024-modular}. Fusion of this kind is a form of
+summarisation, and summaries are known to under-represent some perspectives
+\citep{zhang2024fair} and to under-use material in the middle of long inputs
+\citep{liu2024lost}. Closest to our aim, Atomic Self-Consistency
+\citep{thirukovalluru2024asc} merges atomic content across samples rather than
+choosing one, improving long-form generation. We share the goal of preserving
+the union of what drafts contain, and pursue it at the level of positions: the
+merge is instructed to assemble rather than summarise, and its output is
+rejected in favour of the drafts themselves if it comes back shorter, or with
+fewer positions, than the best draft.
+
+\end{itemize}
+}
+
+\paragraph{Structured retrieval.}
+Retrieval-augmented generation usually ranks passages by similarity to the
+query; diversity-aware variants additionally penalise redundancy among the
+retrieved items \citep{carbonell1998mmr}, and graph-based retrieval organises
+a corpus by its relations rather than as independent passages
+\citep{edge2024graphrag}. For hierarchical data, hyperbolic embeddings
+represent trees with low distortion \citep{nickel2017poincare,
+chami2020trees}, and optimal transport compares distributions under a ground
+cost \citep{peyre2019computational}, with uses in NLP ranging from document
+distance \citep{kusner2015word} to selecting retrieved context
+\citep{zhang2026georag}. Our retrieval differs in what it looks for: not
+passages similar to the question, nor merely different from one another, but
+places where measured groups \emph{disagree}, scored by a transport distance
+between subgroups in a learned embedding of survey data. We find, however,
+that the gains do not depend on this machinery: a Euclidean embedding, a flat
+index, or a random choice among the retrieved forks performs comparably
+(\S\ref{sec:analysis}), so what matters is grounding drafts in real opposing
+subgroups rather than how those subgroups are ranked.
+
+
+\section{Method}
+\label{sec:method}
+
+Given a contested question, our method produces a single answer in four steps
+(Figure~\ref{fig:method}). It first retrieves from a graph of public-opinion
+survey data a \emph{fork}: a survey item related to the question on which
+demographic subgroups answer differently (\S\ref{sec:retrieval}). It then
+orders the subgroups under that item along the direction in which their answers
+diverge and selects the two at opposite ends of this opinion axis
+(\S\ref{sec:personas}). Next, it samples three drafts independently: a plain
+answer, and one draft conditioned on each selected subgroup's measured answers.
+Finally, a single merge call assembles the drafts into one answer that keeps
+every distinct position, with a structural check that falls back to the drafts
+if the merge drops content (\S\ref{sec:merge}). The survey data decide
+\emph{which} viewpoints the drafts take; the model never chooses them itself.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\linewidth]{method.jpeg}
+  \caption{Overview. (1) Retrieve a survey item on which subgroups disagree;
+  (2) order its subgroups along their direction of disagreement and select the
+  two ends; (3) draft a plain answer and one answer per selected subgroup;
+  (4) merge the drafts, keeping every position.}
+  \label{fig:method}
+\end{figure*}
+
+% ----------------------------------------------------------------------------
+\subsection{Task definition}
+\label{sec:definitions}
+
+\citet{sorensen2024roadmap} call a model \emph{Overton-pluralistic} if, given a
+query, it presents the full range of reasonable answers rather than a single
+one. OvertonBench \citep{placeholder-overtonbench} makes this measurable by
+replacing ``reasonable answers'' with the views of real people. For a contested
+question $q$, a surveyed population $U_q$ wrote their own views and voted
+\emph{agree}, \emph{disagree} or \emph{pass} on at least ten others'
+statements; participants are grouped by $k$-means over these votes into
+\emph{viewpoint clusters} $\mathcal{C}_q = \{c_1, \dots, c_{K_q}\}$, with $K_q$
+chosen per question by silhouette score. The clusters are fixed by the
+benchmark. Each participant $u$ rates an answer $y$ by how well it represents
+their own view, $r(u, y) \in \{1, \dots, 5\}$, and a cluster is
+\emph{represented} when its members endorse $y$ on average:
+\begin{equation}
+  \mathrm{cov}(c, y) = \mathbf{1}\Bigl[\tfrac{1}{|c|}\textstyle\sum_{u \in c} r(u, y) \ge 4\Bigr].
+  \label{eq:cov}
+\end{equation}
+The coverage of $y$ is the share of clusters it represents, and the task is to
+produce a single answer that maximises it:
+\begin{equation}
+  S(y, q) = \frac{1}{|\mathcal{C}_q|}\sum_{c \in \mathcal{C}_q} \mathrm{cov}(c, y),
+  \qquad
+  y^\star(q) = \arg\max_{y} S(y, q).
+\end{equation}
+Every cluster counts equally, matching the definition's concern with the range
+of views rather than their prevalence. Because representation is judged by each
+cluster's own members, naming a view while misstating or dismissing it does
+not count, and content that wins one cluster can lose another.
+
+% ----------------------------------------------------------------------------
+\subsection{Viewpoint graph}
+\label{sec:graph}
+
+We organise public-opinion survey data so that, for any question, the method
+can find subgroups that answered the same item differently. The source is the
+Pew American Trends Panel as released with OpinionQA \citep{santurkar2023whose}:
+survey items on US social and political topics, with individual responses,
+survey weights and respondents' demographic attributes.
+
+\paragraph{Subgroup nodes.}
+For every item and every demographic attribute recorded with it (e.g.\
+ideology, party, religion, education, income, race, marital status), we split
+respondents by the attribute's groups and compute each group's
+post-stratification-weighted distribution over the item's answer options,
+excluding refusals. A \emph{subgroup node} $\ell$ is one (item, attribute,
+group) triple with distribution $p_\ell \in \Delta^{m-1}$ over the item's $m$
+options; groups with fewer than 100 respondents on an item are dropped.
+
+\paragraph{Structure.}
+Subgroup nodes sit under an \emph{axis} node, one attribute's split of one item
+(e.g.\ ideology on an item about China), so siblings under an axis are answers
+to the same question by different groups. Axes sit under their item, and items
+are grouped into topics and subtopics by $k$-means over their text, which only
+indexes items by subject. For a node $a$, $L(a)$ denotes its children that
+carry distributions.
+
+\paragraph{Forks.}
+A \emph{fork} $f = (a, A, B)$ is an internal node $a$, the \emph{anchor},
+together with two of its children $A$ and $B$. A fork anchored at an axis
+contrasts two subgroups' answers to the same item.
+
+% ----------------------------------------------------------------------------
+\subsection{Retrieval}
+\label{sec:retrieval}
+
+Retrieval ranks forks by two properties: how relevant they are to the question,
+and how far apart their two branches are.
+
+\paragraph{Relevance.}
+Relevance is cosine similarity between sentence embeddings $\psi$ of the
+question and of a node's text,
+$\mathrm{rel}(q, v) = \langle \psi(q), \psi(v) \rangle / (\lVert\psi(q)\rVert\,\lVert\psi(v)\rVert)$.
+Candidate anchors are chosen in two stages. First, a lexical match: any node
+whose name occurs in the question becomes an anchor (longest names first, and a
+matched subgroup node is replaced by its parent axis, since forks live at
+internal nodes). Only if nothing matches do the anchors fall back to the four
+internal nodes most relevant to $q$. Up to four anchors are kept, and each
+contributes at most its first eight children. For each anchor, every child's
+subtree (capped at 32 nodes) is pruned to nodes with
+$\mathrm{rel}(q, v) \ge \tau$, always keeping the child itself and at least two
+nodes; a child is kept as a branch only if the mean relevance $\bar r$ of its
+pruned subtree is at least $\tau$.
+
+\paragraph{Divergence.}
+Divergence between branches $A$ and $B$ is measured in an embedding $\phi$ of
+the graph (\S\ref{sec:embedding}). With $\{x_i\}$ and $\{z_j\}$ the pruned
+nodes under $A$ and $B$, each node is weighted by its relevance,
+$\mu_i \propto e^{\mathrm{rel}(q, x_i)/\beta}$ and
+$\nu_j \propto e^{\mathrm{rel}(q, z_j)/\beta}$, and divergence is the
+Wasserstein distance between the two weighted sets,
+\begin{equation}
+  W(A, B) = \min_{\pi \in \Pi(\mu, \nu)} \sum_{i, j} \pi_{ij}\, d\bigl(\phi(x_i), \phi(z_j)\bigr),
+\end{equation}
+where $\Pi(\mu, \nu)$ is the set of transport plans with marginals $\mu$ and
+$\nu$ and $d$ is distance in the embedding. When $A$ and $B$ are single
+subgroups, as for an axis anchor, $W$ reduces to $d(\phi(A), \phi(B))$.
+
+\paragraph{Score.}
+A fork is scored
+$s(f) = \bigl(\tfrac{\bar r_A + \bar r_B}{2}\bigr)^{\alpha} W(A, B)$, and the
+top $k$ forks are returned. We use $\tau = 0.25$, $\alpha = 1$, $\beta = 0.1$
+and $k = 5$. Section~\ref{sec:analysis} examines how much this ranking matters
+by replacing it with random choice and with the measured divergence between
+subgroups' answers.
+
+% ----------------------------------------------------------------------------
+\subsection{Subgroup-conditioned drafts}
+\label{sec:personas}
+
+From the top-ranked fork $f^\star = (a, A, B)$, two subgroups are chosen by a
+fixed rule; the model does not choose them.
+
+\paragraph{Opinion axis.}
+The fork's two branches define a direction in answer space, $v = p_B - p_A$,
+and each subgroup is placed along it by projection,
+\begin{equation}
+  t(\ell) = \frac{\langle p_\ell - p_A,\ v \rangle}{\lVert v \rVert^{2}},
+  \qquad \ell \in L(a),
+\end{equation}
+so that $t(A) = 0$ and $t(B) = 1$. Sorting $L(a)$ by $t$ orders the subgroups
+along the fork's direction of disagreement; a subgroup may lie beyond either
+branch.
+
+\paragraph{Selection.}
+The personas are the two ends of the axis,
+$\ell^{-} = \arg\min_{\ell} t(\ell)$ and $\ell^{+} = \arg\max_{\ell} t(\ell)$:
+the subgroups whose answers differ most along that direction, and so the
+likeliest to produce drafts that disagree. The rule ignores group size, so a
+small group at one end receives a draft as readily as a large one. For the
+question \emph{``Is Russia an ally of the United States, or an adversary?''},
+the top fork splits respondents by ideology on whether China is a partner,
+competitor or enemy of the US; the axis runs from \emph{very liberal}
+($15/72/13\%$) through \emph{moderate} ($10/59/31\%$) to \emph{very
+conservative} ($6/28/66\%$), and the personas are its two ends.
+
+\paragraph{Drafts.}
+Three drafts are sampled independently at temperature $0.7$:
+\begin{equation}
+  y_1 \sim P_M(\,\cdot \mid q\,), \qquad
+  y_2 \sim P_M(\,\cdot \mid q, \ell^{-}), \qquad
+  y_3 \sim P_M(\,\cdot \mid q, \ell^{+}),
+\end{equation}
+where $P_M$ is the model's generation distribution. The plain draft $y_1$ is
+identical to a single-answer baseline. Each persona draft sees one subgroup,
+rendered as its label and answer percentages, and is asked to answer as that
+group would and to commit to its view; it sees neither the fork list nor the
+other persona. The axis is defined only when the top fork is anchored at an
+axis node, so that $A$ and $B$ are themselves subgroups with distributions over
+the same options, and $L(a)$ has at least three subgroups. Otherwise, as when
+no fork passes the relevance gate, no personas are drawn and the method returns
+the plain draft alone, with no merge.
+
+\paragraph{Instruction-varied drafts.}
+As a comparison, \textsc{merge\_v2} keeps the same retrieval and merge but
+varies drafts by instruction rather than by subgroup: alongside the plain
+draft, one draft sees all retrieved forks as pairs of opposing subgroups and
+another sees each fork's full set of subgroups, both instructed to represent
+the perspectives they contain.
+
+% ----------------------------------------------------------------------------
+\subsection{Merging}
+\label{sec:merge}
+
+A single further call assembles the drafts. The model is instructed to act as
+an editor rather than an author: to keep every distinct position from any
+draft in its own paragraph, at the length of the draft that explained it best,
+and not to shorten, reconcile or rank them. Models asked to combine texts tend
+to summarise, which loses exactly the positions the merge exists to keep, so
+the output is checked. Writing $N_m, P_m$ for the merged answer's words and
+positions (paragraphs of at least $20$ words) and $N_d, P_d$ for the largest
+values over the drafts, the merge is accepted only if $N_m \ge N_d$ and
+$P_m \ge P_d$; otherwise the drafts are concatenated under neutral headings.
+The check detects compression, not distortion. An answer with personas costs
+four model calls, three drafts and one merge; the merge call is skipped when
+only one draft survives, and replaced by concatenation when the drafts alone
+exceed the context window.
+
+% ----------------------------------------------------------------------------
+\subsection{Graph embedding}
+\label{sec:embedding}
+
+The embedding $\phi$ used for divergence is learned from the graph. A
+tree-recurrent encoder maps each node to a point in a Poincar\'e ball
+($c = 0.5$, $d = 64$), building it from the node's own features and its
+children's points; features are frozen sentence embeddings of node text, and
+for subgroup nodes the embeddings of the item's answer options weighted by
+$p_\ell$. The encoder is trained to predict held-out graph edges by a margin
+ranking loss, with two auxiliary terms that keep parents closer than
+non-ancestors and siblings apart. Architecture and training details are in
+Appendix~\ref{app:embedding}. Because the embedding enters the method only
+through $W$, Section~\ref{sec:analysis} compares it with a Euclidean
+embedding and with ranking by measured divergence.
+
+% \section{Methodology}
+
+% Given a contested question, our method produces a single answer in four steps
+% Retrieval from a graph of public-opinion
+% survey data a \emph{fork}: a survey item related to the question on which
+% demographic subgroups answer differently (\S\ref{sec:retrieval}). Ordering the subgroups under the retrieved item along the direction in which their
+% answers diverge, and selects the two at opposite ends of this opinion axis
+% (\S\ref{sec:personas}). Third, it samples three drafts independently: a plain
+% answer to the question, and one draft conditioned on each selected subgroup's
+% measured answers, which argues the question as that group would. Fourth, a
+% single merge call assembles the drafts into one answer that keeps every
+% distinct position, and a structural check falls back to the drafts themselves
+% if the merge drops content (\S\ref{sec:merge}). The survey data thus decides
+% \emph{which} viewpoints the drafts take, and the merge decides only how they
+% are combined; the model never chooses the subgroups itself.
+
+
+% \begin{figure*}[t]
+%     \centering
+%     \includegraphics[width=\linewidth]{method.jpeg}
+%     \caption{\textcolor{red}{Make section 1 simpler}}
+%     \label{fig:motivating_example}
+% \end{figure*}
+
+% \subsection{Definitions}
+
+
+% We formalize the task of overton pluralism as the maximization of a number of valid viewpoint clusters being properly represented.
+
+% % Let $q$ be a contested question and $U_q$ the population polled on it. A
+% % partition $\mathcal{C}_q = \{c_1, \ldots, c_{K_q}\}$ of $U_q$ into
+% % \emph{viewpoint clusters} groups participants who hold substantively the same
+% % position. Each participant $u$ rates a candidate answer $y$ on a five-point
+% % scale, $r(u, y) \in \{1, \ldots, 5\}$, according to how well $y$ represents
+% % their own view.
+
+% Let $q$ be a contested question and $U_q$ the population surveyed on it.
+% OvertonBench partitions $U_q$ into \emph{viewpoint clusters}
+% $\mathcal{C}_q = \{c_1, \dots, c_{K_q}\}$: each participant wrote their own
+% view and voted \emph{agree}, \emph{disagree} or \emph{pass} on at least ten
+% other participants' statements, and participants are grouped by $k$-means over
+% these votes, with $K_q$ chosen per question by silhouette score. The clusters
+% are fixed by the benchmark. Each participant rates an answer $y$ by how well it
+% represents their own view, $r(u, y) \in \{1, \dots, 5\}$, and a cluster is
+% \emph{represented} when its members endorse $y$ on average.
+% \begin{equation}
+%   \mathrm{cov}(c, y) = \mathbf{1}\Bigl[\tfrac{1}{|c|}\textstyle\sum_{u \in c} r(u, y) \ge 4\Bigr].
+% \end{equation}
+
+
+% \subsection{Viewpoint graph}
+% \label{sec:graph}
+
+% We organise public-opinion survey data into a hierarchy whose leaves record
+% how demographic subgroups actually answered. The source is the Pew American
+% Trends Panel, as released with OpinionQA \citep{santurkar2023whose}: survey
+% items on US social and political topics, each with individual responses,
+% survey weights, and the respondents' demographic attributes.
+
+% \paragraph{Leaves.}
+% For every item and every demographic attribute recorded with it (e.g.\
+% ideology, party, religion, education, income, race, marital status), we split
+% respondents by the attribute's groups and compute each group's
+% post-stratification-weighted distribution over the item's answer options,
+% excluding refusals. A \emph{subgroup opinion node} $\ell$ is one such
+% (item, attribute, group) triple, carrying its distribution
+% $p_\ell \in \Delta^{m-1}$ over the item's $m$ options; groups with fewer than
+% 100 respondents on an item are dropped as too noisy.
+
+% \paragraph{Hierarchy.}
+% Leaves are arranged in six levels:
+% \[
+%   \text{US public} \;\rightarrow\; \text{topic} \;\rightarrow\; \text{subtopic}
+%   \;\rightarrow\; \text{item} \;\rightarrow\; \text{axis} \;\rightarrow\;
+%   \text{subgroup}.
+% \]
+% An \emph{axis} node is one attribute's split of one item (e.g.\ ideology on the
+% China item), and its children are that split's subgroups, so siblings under an
+% axis are directly comparable answers to the same question. Items are grouped
+% into $12$ topics and $4$ subtopics per topic by $k$-means over sentence
+% embeddings of the item text, each labelled by its most central items; these
+% upper levels index items by subject and carry no opinion data of their own.
+
+% \paragraph{Forks.}
+% A \emph{fork} $f = (a, A, B)$ is an internal node $a$, the \emph{anchor},
+% together with two of its children $A$ and $B$. A fork anchored at an axis
+% contrasts two subgroups' answers to the same item; a fork anchored at an item
+% contrasts two attributes' splits of it. For a node $a$, $L(a)$ denotes its
+% children that carry distributions, so for an axis anchor $L(a)$ is the set of
+% subgroups whose answers the persona drafts can be conditioned on
+% (\S\ref{sec:personas}).
+% % \paragraph{Viewpoint graph.}
+% % We build a graph $G$ from public-opinion surveys. Its leaves are
+% % \emph{subgroup opinion nodes}: a leaf $\ell$ is one demographic group's answers
+% % to one survey item (e.g.\ \emph{very liberal} respondents on whether China is a
+% % partner, competitor or enemy of the US) and carries that group's answer
+% % distribution $p_\ell \in \Delta^{m-1}$ over the item's $m$ options. Leaves sit
+% % under an \emph{axis} node (one demographic attribute's split of one item), axes
+% % under their item, and items under topic nodes. For a node $a$, $L(a)$ denotes
+% % its children that carry distributions.
+
+
+
+
+
+
+
+% Through the construction and usage of a viewpoint graph, we retrieve divergent forks as payloads to inject at test-time.
+
+
+
+
+
+
+
+
+
+% Let $G$ be a graph whose leaves are \emph{subgroup opinion nodes}. A leaf
+% $\ell$ names a demographic group (e.g.\ an ideology or age band) and carries
+% that group's empirical answer distribution $p_\ell \in \Delta^{m-1}$ over the
+% $m$ options of one survey item.\newline
+
+% We represent a fork $f$ as a triple $f = (a, A, B)$: where $a$ is an anchor item and $A, B$ are two of its children whose distributions differ. Forks are scored
+% \[
+%   s(f) \;=\; \max\bigl(\mathrm{rel}(q, a),\, 0\bigr)^{\alpha} \cdot W(p_A, p_B),
+% \]
+% where $\mathrm{rel}(q,a)$ is the similarity of the anchor to the user's question
+% $q$ , gated at $\tau$. 
+% $$\mathrm{rel}(q, a) = \frac{\langle \psi(q),, \psi(a)\rangle}{\|\psi(q)\|,\|\psi(a)\|}$$ 
+% $W$ is a Wasserstein distance whose ground cost comes
+% from a hyperbolic embedding of $G$.
+% Forks are returned in decreasing $s$.
+
+% Let $\{x_i\}_{i=1}^{n}$ and
+% $\{y_j\}_{j=1}^{m}$ be the nodes under $A$ and $B$, embedded on the ball as
+% $\phi(x_i), \phi(y_j)$, and give them question-conditioned masses
+% \begin{equation}
+%   a_i = \frac{e^{\mathrm{rel}(q, x_i)/\beta}}{\sum_{i'} e^{\mathrm{rel}(q, x_{i'})/\beta}},
+%   \qquad
+%   b_j = \frac{e^{\mathrm{rel}(q, y_j)/\beta}}{\sum_{j'} e^{\mathrm{rel}(q, y_{j'})/\beta}},
+% \end{equation}
+% so on-topic nodes carry the weight. Then
+% \begin{equation}
+%   W(A, B) = \min_{\pi \in \Pi(a, b)}\ \sum_{i=1}^{n} \sum_{j=1}^{m}
+%             \pi_{ij}\, d_c\bigl(\phi(x_i), \phi(y_j)\bigr),
+% \end{equation}
+% where $\Pi(a, b) = \{\pi \ge 0 : \pi\mathbf{1} = a,\ \pi^\top\mathbf{1} = b\}$ is
+% the set of transport plans with those marginals. The ground cost is the geodesic
+% $d_c$, so $W$ is the least mass-weighted geodesic displacement needed to move one
+% branch's opinion cloud onto the other's: large when the branches sit far apart on
+% the learned manifold. Relevance and divergence thus use different geometries by
+% design---text-space similarity to judge topicality, hyperbolic distance to judge
+% disagreement.
+
+% A high score marks a relevant anchor whose branches genuinely diverge. Retrieval
+% returns the surviving forks in decreasing $s$, and both methods below use it
+% unchanged.
+
+% \subsection{Retrieval}
+% To measure the quantity of disagreement between distributions in our opinion graph we define a score over two child nodes A and B. We retrieve the top divisive forks that surpass a relevance threshold $\tau$. A \emph{fork}
+% $f = (a, A, B)$ is an anchor node $a$ together with two of its children whose
+% answers differ, and is scored
+% \begin{equation}
+%   s(f) = \max\bigl(\mathrm{rel}(q, a),\, 0\bigr)^{\alpha}\; W(A, B),
+% \end{equation}
+% where $\mathrm{rel}(q,a)$ measures how closely the anchor matches the question
+% $q$ and discards anchors below $\tau$, and $W$ is an
+% optimal-transport distance between the subgroups under $A$ and under $B$,
+% measured in the embedding. A high score thus marks a relevant place with a real
+% split of opinion. Retrieval returns the surviving forks in decreasing score, and
+% both methods below use it unchanged.
+
+
+% \subsection{Persona selection}
+
+% We treat the fork as prior knowledge supplied to the model. Left alone, a model
+% answers from its own implicit sense of which views exist, and that sense favours
+% the majority. The fork instead supplies an empirical prior over viewpoints: the
+% subgroups $L(a)$, their measured distributions $p_\ell$, and their positions on
+% the axis. Each persona draft is then conditioned on one support point
+% $\ell_k$ of this prior,
+% \begin{equation}
+%   y_k \sim P_M\bigl(\,\cdot \mid q,\ \ell_k\bigr),
+%   \qquad \ell_k \in L(a),
+% \end{equation}
+% where $P_M$ is the model's generation distribution. Selection depends only on a
+% subgroup's position on the axis, not on how many people share its view, so a
+% minority position can receive its own draft as readily as a majority one.
+
+% \subsection{Sampling and merging}
+% \label{sec:merge}
+
+% \paragraph{Sampling.} The three drafts are sampled independently at temperature
+% $0.7$, so no draft sees another. Draft~1 is a plain answer to the question,
+% identical to a single-answer baseline; we keep it because the plain answer is
+% the strongest single condition we measure. In the persona method the draft set
+% is
+% \begin{equation}
+%   y_1 \sim P_M(\,\cdot \mid q\,), \qquad
+%   y_k \sim P_M(\,\cdot \mid q,\ \ell_k\,), \quad k = 2, 3,
+% \end{equation}
+% a plain draft alongside two drafts conditioned on opposite ends of the prior.
+% Each draft covers some viewpoints well, and because they are sampled apart, they
+% tend to cover different ones.
+
+% \paragraph{Merging.} A single further call assembles the drafts into one answer.
+% The model is asked to act as merger: The aim is to keep the union of what the drafts cover, and synthesize into a single answer.
+
+% We introduce a separate merge process to avoid losing information in direct summarization.
+% Writing $W_m, P_m$ for the merged answer's words and positions (paragraphs of at
+% least $20$ words), and $W_d, P_d$ for the largest values over the drafts, the
+% merge is accepted only if $W_m \ge W_d$ and $P_m \ge P_d$. Otherwise the drafts
+% are concatenated as they stand. Each method costs four model calls per
+% answer: three drafts and one merge. Doing so preserves the opinion clusters of the original drafts.
+
+% \subsection{Embedding (Requires change, too verbose)}
+% A tree-recurrent encoder $\phi$ maps each node to the ball, building $\phi(v)$
+% from $v$'s own text features and the embeddings of its children. Each edge type
+% $\rho$ (parent--child, axis membership, and so on) has a learned vector
+% $r_\rho \in \mathbb{B}^d_c$, and a triple $(s, \rho, o)$ is scored by translating
+% the subject by the relation and measuring distance to the object,
+% \begin{equation}
+%   f(s, \rho, o) = -\,d_c\bigl(\phi(s) \oplus_c r_\rho,\ \phi(o)\bigr),
+% \end{equation}
+% so a higher score means a shorter edge. We train $\phi$ and the $r_\rho$ by a
+% margin ranking objective over the tree's edge set $E$: for each true edge we draw
+% $K$ corrupted negatives $\mathcal{N}(s,\rho,o)$ by replacing an endpoint, and
+% minimise
+% \begin{equation}
+%   \mathcal{L} = \!\!\sum_{(s,\rho,o)\in E}\ \sum_{(s',\rho,o')\in \mathcal{N}}
+%   \!\!\bigl[\, \gamma + f(s',\rho,o') - f(s,\rho,o) \,\bigr]_+ ,
+% \end{equation}
+% with margin $\gamma$ and $[\cdot]_+ = \max(0, \cdot)$. The objective pulls each
+% node within $\gamma$ of its true neighbours in $d_c$ and pushes corrupted pairs
+% apart, so related subgroups come to lie close on the ball. We verify the fit
+% with structural measures: whether depth tracks radius, and tree distance tracks
+% geodesic distance.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/main_result_by_judge.pdf}
+  \caption{Difference from a single plain answer in union@3 coverage: a
+    viewpoint cluster counts as covered if any of a condition's three sampled
+    answers covers it. Paired by question, with 95\% bootstrap intervals over
+    60 questions.}
+  \label{fig:main-result}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/bars_by_judge_coverage.png}
+  \caption{Per-answer coverage (OvertonScore) by condition under two judges,
+  Qwen2.5-72B (left) and Qwen3.8-27B (right).}
+  \label{fig:bars-coverage}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/bars_by_judge_union_coverage.png}
+  \caption{Union@3 coverage by condition under two judges: a cluster counts as
+  covered if any of three sampled answers covers it. The y-axis is truncated.}
+  \label{fig:bars-union}
+\end{figure*}
+
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/scores_by_judge.pdf}
+  \caption{Share of viewpoint clusters covered by any of a condition's three
+    answers (union@3), with 95\% intervals over 60 questions; the dotted line
+    marks the baseline. The calibrated judge is stricter, so all its scores are
+    lower: compare within a panel. Intervals are per condition and unpaired;
+    paired tests are in Figure~\ref{fig:main-result}.}
+  \label{fig:scores}
+\end{figure}
+
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Benchmarks}
+\paragraph{OvertonBench.} Our primary benchmark \citep{placeholder-overtonbench}
+contains 60 contested US questions, each with roughly 450--560 surveyed
+participants grouped into viewpoint clusters (\S\ref{sec:definitions}).
+
+\paragraph{GlobalOpinionQA.} To test the other two forms of pluralism
+\citep{sorensen2024roadmap}, we use the World Values Survey questions of
+GlobalOpinionQA \citep{durmus2023towards}, which give each surveyed country's
+answer distribution. We read the model's probability over the answer letters
+and score it by $1 -$ Jensen--Shannon distance to the real distribution: per
+country for \emph{steerable} pluralism, and for the average over countries
+against the equal-weight population for \emph{distributional} pluralism
+(\S\ref{sec:goqa}).
+
+\subsection{Models}
+The main generator is Qwen2.5-72B-Instruct (AWQ-quantised); we repeat the
+OvertonBench conditions with Gemma-3-27B to test dependence on the generator.
+All drafts and baselines are sampled at temperature $0.7$, with three
+independent answers (rollouts) per question and condition.
+
+\subsection{Conditions}
+Table~\ref{tab:conditions} lists the conditions. Each control removes one
+ingredient of the method, so that a difference between the method and a
+control isolates that ingredient.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}p{2.2cm}p{3.6cm}c@{}}
+\toprule
+Condition & Non-plain drafts are given & Calls \\
+\midrule
+baseline             & --- (single answer)                  & 1 \\
+long baseline        & --- (single $\sim$650-word answer)   & 1 \\
+plain merge          & nothing beyond the question          & 4 \\
+self-chosen personas & views the model names itself         & 4--7 \\
+random anchor        & two subgroups of a random retrieved fork & 4 \\
+\textbf{persona merge} & \textbf{two opposed subgroups of the top fork} & 4 \\
+\textsc{merge\_v2}   & all retrieved forks                  & 4 \\
+\bottomrule
+\end{tabular}
+\caption{Conditions. Multi-draft conditions write one plain draft plus two (or,
+for self-chosen personas, up to four) further drafts, then merge them with the
+same instruction and guard; they differ only in what those further drafts are
+given. Each control removes one ingredient of persona merge: answer length
+(long baseline), the survey data (plain merge), real rather than invented
+subgroups (self-chosen personas), the fork ranking (random anchor), and
+conditioning each draft on a single subgroup (\textsc{merge\_v2}).}
+\label{tab:conditions}
+\end{table}
+
+\subsection{Judging}
+\label{sec:judges}
+No participant has rated our answers, so, following OvertonBench, an LLM judge
+predicts each participant's rating. For participant $u$ and answer $y$, the
+judge sees the question, $u$'s own written perspective, and $u$'s actual
+ratings of the benchmark's reference responses, and predicts $\hat r(u, y)$;
+coverage is Eq.~(\ref{eq:cov}) with $\hat r$ in place of $r$. The judge reads
+every answer in full. We use two judges, Qwen2.5-72B-Instruct and Qwen3.8-27B
+(thinking disabled), and validate both on 300 held-out human ratings:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & Qwen2.5-72B & Qwen3.8-27B & Humans \\
+\midrule
+Mean absolute error            & 0.527 & 0.523 & --- \\
+Spearman $\rho$                & 0.653 & 0.626 & 0.673$^\dagger$ \\
+Share of ratings $\ge 4$       & 0.747 & 0.647 & 0.650 \\
+Corr.\ with answer length      & ---   & $-0.017$ & $-0.017$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both judges predict individual ratings about equally well, but only
+Qwen3.8-27B matches humans on the two properties that drive coverage: how
+often ratings clear the threshold of $4$, and insensitivity to answer length.
+We report it as the primary judge and Qwen2.5-72B as a robustness check. Each
+question is scored against 80 participants sampled once with a fixed seed and
+shared by all conditions, so every comparison uses the same panel. These two
+judges use our adaptation of the benchmark's few-shot prompt, with each
+reference response shown up to 800 characters.
+
+\paragraph{Benchmark judge.} We also score answers with the OvertonBench
+authors' own judging pipeline \citep{placeholder-overtonbench}, run from their
+released code.\footnote{\url{https://github.com/elinorp-d/overtonbench},
+commit \texttt{a3f221c}.} Their code builds the prompt (their few-shot,
+free-response variant: the participant's written view plus their ratings of
+every other response to the same question, untruncated), calls the model at
+temperature $0$, and parses the rating. We change three things, all fixed
+before scoring.
+\begin{itemize}
+  \item \emph{Model.} Their code calls Gemini 2.5 Pro; we use Gemini 2.5 Flash,
+  which they report predicts ratings comparably
+  (\textcolor{red}{cite their table/figure and numbers}).
+  \item \emph{Thinking.} Their call leaves the model's default reasoning on; we
+  set the thinking budget to $0$, so the judge outputs the rating directly.
+  \item \emph{Participants.} They judge every rater; we judge $20$ participants
+  per question, drawn once with a fixed seed from raters with a cluster label
+  and shared by all conditions.
+\end{itemize}
+Our answers never enter the few-shot pool: each participant is shown the
+benchmark's own responses with their real ratings. The benchmark's reference
+responses are re-rated by the same judge for the same participants, so every
+system, ours and theirs, is rated by one judge. Scores are computed with the
+authors' scoring script (cluster covered if its mean predicted rating is at
+least $\tau = 4$), with and without weighting clusters by size.
+
+\subsection{Metrics and inference}
+The primary metric is per-answer coverage $S$, averaged over rollouts and
+questions. As secondary metrics we report union@3, the share of clusters
+covered by at least one of a condition's three answers, and coverage restricted
+to \emph{minority} clusters (those smaller than half the question's largest
+cluster). The minority metric was adopted after the uniform results had been
+seen, so we treat it as exploratory and do not rest a claim on it. Differences
+between conditions are paired by question and tested by bootstrap over
+questions (10{,}000 resamples). We apply no correction for multiple
+comparisons, and note which results would survive a family-wise correction.
+
+% \section{Experimental design}
+
+% We run four conditions (Table~\ref{tab:conditions}) and make three comparisons. We compare against original reported SOTA scores in the OvertonBench paper and isolate that merging, and injection of divergent forks works. (Still need to isolate that our geometry is valid, use a flat graph?)
+
+% \begin{table}[t]
+% \centering
+% \small
+% \begin{tabular}{lll}
+% \hline
+% Condition & Drafts 2--3 see & Calls \\
+% \hline
+% baseline                & ---                 & 1 \\
+% plain merge             & nothing             & 4 \\
+% \textsc{merge\_v2}      & all retrieved forks & 4 \\
+% \textsc{persona\_merge} & one subgroup each   & 4 \\
+% \hline
+% \end{tabular}
+% \caption{Conditions. The last three share the plain first draft, the sampling,
+% the merge, the guard, and the call count; they differ only in what drafts~2
+% and~3 see.}
+% \label{tab:conditions}
+% \end{table}
+
+% \paragraph{Evaluation.} We score answers by viewpoint-cluster coverage: a judge
+% predicts the rating each surveyed participant would give an answer, and a
+% cluster counts as properly represented when its members' mean predicted rating
+% clears a threshold. We report the benchmark's uniform weighting as the primary
+% metric, and prevalence-sensitive weightings as declared-exploratory secondaries,
+% since uniform weighting counts a view held by a twentieth of the population
+% exactly as much as one held by a majority.
+% \newline
+
+% Let $q$ be a contested question and $U_q$ the population surveyed on it.
+% OvertonBench partitions $U_q$ into \emph{viewpoint clusters}
+% $\mathcal{C}_q = \{c_1, \dots, c_{K_q}\}$: each participant wrote their own
+% view and voted \emph{agree}, \emph{disagree} or \emph{pass} on at least ten
+% other participants' statements, and participants are grouped by $k$-means over
+% these vote vectors, following Pol.is, with $K_q$ chosen per question by
+% silhouette score. A cluster is thus a set of people who agree and disagree
+% with the same statements, as presented in (??)
+
+
+
+% \section{Additional Tasks}
+% Results on VITAL:
+
+
+% Results on GlobalOpinionQA
+
+% \subsection{Beyond Overton Pluralism}
+
+% Overton coverage is one of three forms of pluralism
+% \citep{sorensen2024roadmap}. A model is \emph{steerably} pluralistic if,
+% asked to adopt a particular perspective, it represents that perspective
+% faithfully, and \emph{distributionally} pluralistic if the answers it gives
+% match the spread of opinion in a population. We also evaluate on both.
+
+% We use GlobalOpinionQA \citep{durmus2023towards}, whose multiple-choice
+% questions come with real answer distributions for each surveyed country, so
+% outputs are scored directly as $1-$Jensen--Shannon distance, with no judge.
+% For each question and country, the model answers in three ways: the question
+% alone; as a typical person from that country; and as a typical person from
+% that country after seeing the country's real answers to a related survey item
+% (\emph{grounded}). The steerable score compares each answer with that
+% country's distribution. The distributional score averages the answers across
+% countries and compares the mixture with the equal-weight population.
+
+% Both settings isolate the mechanism our method depends on: whether
+% conditioning a model on a group's measured answers makes it answer as that
+% group does. We use only the World Values Survey questions, which share no
+% source with the US survey data behind our graph. Grounding for a question is
+% always drawn from a \emph{different} question, with near-duplicates
+% (question-text cosine $\geq 0.9$) excluded, so the model never sees the answer
+% it is asked to predict.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/goqa/goqa_results.png}
+  \caption{GlobalOpinionQA (World Values Survey, 150 questions; generator
+    Qwen2.5-72B-Instruct). Scores are $1-$Jensen--Shannon distance to real
+    answer distributions; higher is better. \emph{Steerable}: the model answers
+    as one country. \emph{Distributional}: personas are averaged and compared
+    with the population. \emph{Grounded} personas also see their group's real
+    answers to the most similar \emph{other} survey question. Brackets show
+    paired differences; y-axes are zoomed and do not start at zero.}
+
+    
+  \label{fig:goqa}
+\end{figure*}
+
+
+
+\section{Results}
+\label{sec:results}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrcc@{}}
+\toprule
+Condition & Words & Per answer & Union@3 \\
+\midrule
+baseline             &  64 & 0.381 & 0.440 \\
+long baseline        & 748 & 0.366 & 0.476 \\
+plain merge          & 188 & 0.297 & 0.360 \\
+self-chosen personas & --- & 0.367 & 0.444 \\
+\textsc{merge\_v2}   & 665 & 0.262 & 0.341 \\
+random anchor        & --- & 0.389 & \textbf{0.527} \\
+\textbf{persona merge} & 424 & \textbf{0.413} & 0.495 \\
+\bottomrule
+\end{tabular}
+\caption{OvertonBench coverage under the primary judge (Qwen3.8-27B),
+generator Qwen2.5-72B, 60 questions, three rollouts. Words are median answer
+length.}
+\label{tab:main}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Condition & Per answer & Union@3 \\
+\midrule
+baseline               & 0.497 & 0.568 \\
+\textsc{merge\_v2}     & \textbf{0.544} & \textbf{0.646} \\
+\textbf{persona merge} & 0.528 & 0.642 \\
+\bottomrule
+\end{tabular}
+\caption{OvertonBench coverage under the secondary judge (Qwen2.5-72B),
+generator Qwen2.5-72B, 60 questions, three rollouts, from a separate generation
+run. The remaining controls were not scored by this judge.}
+\label{tab:secondary}
+\end{table}
+
+\paragraph{Grounded persona drafts give the highest coverage.}
+Table~\ref{tab:main} reports every condition under the primary judge. Persona
+merge has the highest per-answer coverage of any condition, $0.413$ against
+$0.381$ for a single plain answer. Across three answers it covers a viewpoint
+cluster at least once on $0.495$ of clusters, against $0.440$ for the
+baseline. In a paired test over questions the gain over the baseline is
+$+0.060$ [$+0.008$, $+0.111$] ($p = .024$) under the primary judge and $+0.075$
+[$+0.027$, $+0.126$] ($p = .002$) under Qwen2.5-72B
+(Figure~\ref{fig:main-result}).
+
+\paragraph{The gain survives a change of judge.}
+Judge sensitivity is the main threat to coverage results: the two judges
+predict individual ratings equally well (\S\ref{sec:judges}) but differ in how
+often ratings clear the threshold. Persona merge is the only multi-draft
+condition that improves on the baseline under both. \textsc{merge\_v2}, which
+uses the same retrieval, drafts and merge but varies drafts by instruction,
+gains $+0.078$ under the more lenient judge (Table~\ref{tab:secondary}) and
+loses $-0.084$
+[$-0.151$, $-0.017$] under the primary one. Persona merge exceeds it by
+$+0.144$ [$+0.072$, $+0.215$] ($p < .001$) under the primary judge.
+
+\paragraph{The method adds coverage rather than trading it.}
+Decomposing the change from the baseline, persona merge gains $0.72$ clusters
+per question and loses $0.36$, and the clusters it gains are as prevalent as
+those it loses ($0.50$ of the largest cluster on average for both).
+\textsc{merge\_v2} gains $0.37$ and loses $0.91$, shedding larger clusters than
+it recovers. The two recover almost disjoint sets of clusters
+(Jaccard $0.033$): what grounded personas add is not what injecting retrieved
+context adds.
+
+\paragraph{Each control falls short.}
+\begin{itemize}
+  \item \emph{Length.} The long baseline writes $748$ words with no survey data
+  and scores \emph{below} the baseline per answer ($0.366$). Persona merge is
+  shorter ($424$ words) and $+0.047$ higher, so under this judge, which shows
+  no length preference (\S\ref{sec:judges}), the gain is not explained by
+  answer length.
+  \item \emph{Sampling and merging.} Merging three plain drafts lowers coverage
+  to $0.297$; persona merge exceeds it by $+0.117$. The draft-and-merge
+  machinery helps only when the drafts disagree, which grounded personas
+  ensure.
+  \item \emph{Real versus invented subgroups.} When the model names its own
+  perspectives and drafts one answer for each, using up to seven calls rather
+  than four, coverage is $0.367$; survey-grounded subgroups are $+0.046$
+  higher per answer and $+0.051$ in union@3 with fewer calls.
+  \item \emph{Anchor choice.} Drawing the anchor at random from the retrieved
+  forks gives $0.389$ per answer and the highest union@3 ($0.527$). Grounding
+  in any relevant opposed pair of subgroups carries the gain; it does not
+  depend on finding the single most divergent one (\S\ref{sec:analysis}).
+\end{itemize}
+
+\paragraph{Grounding transfers to steerable and distributional pluralism.}
+On GlobalOpinionQA (Figure~\ref{fig:goqa}), showing a country persona its
+country's real answers to a \emph{different} survey item raises steerable
+alignment from $0.428$ (country label only) to $0.452$, against $0.400$ with
+no persona. Averaging grounded personas across countries matches the
+population distribution at $0.564$, above label-only personas ($0.474$), a
+uniform distribution ($0.511$) and the unconditioned model ($0.404$). The
+mechanism the method relies on, that a model conditioned on a group's measured
+answers moves toward that group's views, holds across the three forms of
+pluralism.
+
+\paragraph{Generator dependence.}
+With Gemma-3-27B as generator, persona merge falls below the baseline
+($0.428$ vs.\ $0.578$, Qwen2.5-72B judge). Gemma follows the instruction to
+commit to a view literally and writes adversarial first-person drafts, which
+the merge preserves and the judge penalises; we analyse this in
+\S\ref{sec:analysis}. The result marks register, not grounding, as the
+component to adapt per generator.
+
+\section{Limitations}
+\paragraph{Scale and statistical power.}
+OvertonBench provides 60 questions, and we score a sample of 20 participants
+per question, so only the clusters those participants belong to are evaluated.
+Paired intervals over 60 questions are wide relative to the differences between
+our ablations; a null result for a component means no effect was detected, not
+that none exists.
+
+
+\section{Document Body}
+
+\subsection{Footnotes}
+
+Footnotes are inserted with the \verb|\footnote| command.\footnote{This is a footnote.}
+
+% \subsection{Tables and figures}
+
+% See Table~\ref{tab:accents} for an example of a table and its caption.
+% \textbf{Do not override the default caption sizes.}
+
+% \begin{table}
+%   \centering
+%   \begin{tabular}{lc}
+%     \hline
+%     \textbf{Command} & \textbf{Output} \\
+%     \hline
+%     \verb|{\"a}|     & {\"a}           \\
+%     \verb|{\^e}|     & {\^e}           \\
+%     \verb|{\`i}|     & {\`i}           \\
+%     \verb|{\.I}|     & {\.I}           \\
+%     \verb|{\o}|      & {\o}            \\
+%     \verb|{\'u}|     & {\'u}           \\
+%     \verb|{\aa}|     & {\aa}           \\\hline
+%   \end{tabular}
+%   \begin{tabular}{lc}
+%     \hline
+%     \textbf{Command} & \textbf{Output} \\
+%     \hline
+%     \verb|{\c c}|    & {\c c}          \\
+%     \verb|{\u g}|    & {\u g}          \\
+%     \verb|{\l}|      & {\l}            \\
+%     \verb|{\~n}|     & {\~n}           \\
+%     \verb|{\H o}|    & {\H o}          \\
+%     \verb|{\v r}|    & {\v r}          \\
+%     \verb|{\ss}|     & {\ss}           \\
+%     \hline
+%   \end{tabular}
+%   \caption{Example commands for accented characters, to be used in, \emph{e.g.}, Bib\TeX{} entries.}
+%   \label{tab:accents}
+% \end{table}
+
+% As much as possible, fonts in figures should conform
+% to the document fonts. See Figure~\ref{fig:experiments} for an example of a figure and its caption.
+
+% Using the \verb|graphicx| package graphics files can be included within figure
+% environment at an appropriate point within the text.
+% The \verb|graphicx| package supports various optional arguments to control the
+% appearance of the figure.
+% You must include it explicitly in the \LaTeX{} preamble (after the
+% \verb|\documentclass| declaration and before \verb|\begin{document}|) using
+% \verb|\usepackage{graphicx}|.
+
+% \begin{figure}[t]
+%   \includegraphics[width=\columnwidth]{example-image-golden}
+%   \caption{A figure with a caption that runs for more than one line.
+%     Example image is usually available through the \texttt{mwe} package
+%     without even mentioning it in the preamble.}
+%   \label{fig:experiments}
+% \end{figure}
+
+% \begin{figure*}[t]
+%   \includegraphics[width=0.48\linewidth]{example-image-a} \hfill
+%   \includegraphics[width=0.48\linewidth]{example-image-b}
+%   \caption {A minimal working example to demonstrate how to place
+%     two images side-by-side.}
+% \end{figure*}
+
+% \subsection{Hyperlinks}
+
+% Users of older versions of \LaTeX{} may encounter the following error during compilation:
+% \begin{quote}
+% \verb|\pdfendlink| ended up in different nesting level than \verb|\pdfstartlink|.
+% \end{quote}
+% This happens when pdf\LaTeX{} is used and a citation splits across a page boundary. The best way to fix this is to upgrade \LaTeX{} to 2018-12-01 or later.
+
+% \subsection{Citations}
+
+% \begin{table*}
+%   \centering
+%   \begin{tabular}{lll}
+%     \hline
+%     \textbf{Output}           & \textbf{natbib command} & \textbf{ACL only command} \\
+%     \hline
+%     \citep{Gusfield:97}       & \verb|\citep|           &                           \\
+%     \citealp{Gusfield:97}     & \verb|\citealp|         &                           \\
+%     \citet{Gusfield:97}       & \verb|\citet|           &                           \\
+%     \citeyearpar{Gusfield:97} & \verb|\citeyearpar|     &                           \\
+%     \citeposs{Gusfield:97}    &                         & \verb|\citeposs|          \\
+%     \hline
+%   \end{tabular}
+%   \caption{\label{citation-guide}
+%     Citation commands supported by the style file.
+%     The style is based on the natbib package and supports all natbib citation commands.
+%     It also supports commands defined in previous ACL style files for compatibility.
+%   }
+% \end{table*}
+
+% Table~\ref{citation-guide} shows the syntax supported by the style files.
+% We encourage you to use the natbib styles.
+% You can use the command \verb|\citet| (cite in text) to get ``author (year)'' citations, like this citation to a paper by \citet{Gusfield:97}.
+% You can use the command \verb|\citep| (cite in parentheses) to get ``(author, year)'' citations \citep{Gusfield:97}.
+% You can use the command \verb|\citealp| (alternative cite without parentheses) to get ``author, year'' citations, which is useful for using citations within parentheses (e.g. \citealp{Gusfield:97}).
+
+% A possessive citation can be made with the command \verb|\citeposs|.
+% This is not a standard natbib command, so it is generally not compatible
+% with other style files.
+
+% \subsection{References (Make sure to recollect them here)}
+
+% \nocite{Ando2005,andrew2007scalable,rasooli-tetrault-2015}
+
+% The \LaTeX{} and Bib\TeX{} style files provided roughly follow the American Psychological Association format.
+% If your own bib file is named \texttt{custom.bib}, then placing the following before any appendices in your \LaTeX{} file will generate the references section for you:
+% \begin{quote}
+% \begin{verbatim}
+% \bibliography{custom}
+% \end{verbatim}
+% \end{quote}
+
+% You can obtain the complete ACL Anthology as a Bib\TeX{} file from \url{https://aclweb.org/anthology/anthology.bib.gz}.
+% To include both the Anthology and your own .bib file, use the following instead of the above.
+% \begin{quote}
+% \begin{verbatim}
+% \bibliography{anthology,custom}
+% \end{verbatim}
+% \end{quote}
+
+% Please see Section~\ref{sec:bibtex} for information on preparing Bib\TeX{} files.
+
+% \subsection{Equations}
+
+% An example equation is shown below:
+% \begin{equation}
+%   \label{eq:example}
+%   A = \pi r^2
+% \end{equation}
+
+% Labels for equation numbers, sections, subsections, figures and tables
+% are all defined with the \verb|\label{label}| command and cross references
+% to them are made with the \verb|\ref{label}| command.
+
+% This an example cross-reference to Equation~\ref{eq:example}.
+
+% \subsection{Appendices}
+
+% Use \verb|\appendix| before any appendix section to switch the section numbering over to letters. See Appendix~\ref{sec:appendix} for an example.
+
+% \section{Bib\TeX{} Files}
+% \label{sec:bibtex}
+
+% Unicode cannot be used in Bib\TeX{} entries, and some ways of typing special characters can disrupt Bib\TeX's alphabetization. The recommended way of typing special characters is shown in Table~\ref{tab:accents}.
+
+% Please ensure that Bib\TeX{} records contain DOIs or URLs when possible, and for all the ACL materials that you reference.
+% Use the \verb|doi| field for DOIs and the \verb|url| field for URLs.
+% If a Bib\TeX{} entry has a URL or DOI field, the paper title in the references section will appear as a hyperlink to the paper, using the hyperref \LaTeX{} package.
+
+% \section*{Limitations}
+
+% This document does not cover the content requirements for ACL or any
+% other specific venue.  Check the author instructions for
+% information on
+% maximum page lengths, the required ``Limitations'' section,
+% and so on.
+
+\section*{Acknowledgments}
+
+This document has been adapted
+by Steven Bethard, Ryan Cotterell and Rui Yan
+from the instructions for earlier ACL and NAACL proceedings, including those for
+ACL 2019 by Douwe Kiela and Ivan Vuli\'{c},
+NAACL 2019 by Stephanie Lukin and Alla Roskovskaya,
+ACL 2018 by Shay Cohen, Kevin Gimpel, and Wei Lu,
+NAACL 2018 by Margaret Mitchell and Stephanie Lukin,
+Bib\TeX{} suggestions for (NA)ACL 2017/2018 from Jason Eisner,
+ACL 2017 by Dan Gildea and Min-Yen Kan,
+NAACL 2017 by Margaret Mitchell,
+ACL 2012 by Maggie Li and Michael White,
+ACL 2010 by Jing-Shin Chang and Philipp Koehn,
+ACL 2008 by Johanna D. Moore, Simone Teufel, James Allan, and Sadaoki Furui,
+ACL 2005 by Hwee Tou Ng and Kemal Oflazer,
+ACL 2002 by Eugene Charniak and Dekang Lin,
+and earlier ACL and EACL formats written by several people, including
+John Chen, Henry S. Thompson and Donald Walker.
+Additional elements were taken from the formatting instructions of the \emph{International Joint Conference on Artificial Intelligence} and the \emph{Conference on Computer Vision and Pattern Recognition}.
+
+% Bibliography entries for the entire Anthology, followed by custom entries
+%\bibliography{custom,anthology-overleaf-1,anthology-overleaf-2}
+
+% Custom bibliography entries only
+\bibliography{custom}
+
+\appendix
+\section{Example Answers}
+\label{app:examples}
+
+Full \texttt{persona\_merge} answers for two questions, generated by Qwen2.5-72B
+and Gemma-3-27B from the same retrieved subgroups. Answers are verbatim (first
+rollout); Markdown formatting is rendered.
+
+\subsection*{``Should I leave a job if work-life balance is not good?''}
+
+\begin{answerbox}{Qwen2.5-72B, \texttt{persona\_merge}}
+\input{examples/qwen_persona_merge_3069}
+\end{answerbox}
+
+\begin{answerbox}{Gemma-3-27B, \texttt{persona\_merge}}
+\input{examples/gemma_persona_merge_3069}
+\end{answerbox}
+
+\subsection*{``What's your opinion on working from home?''}
+
+\begin{answerbox}{Qwen2.5-72B, \texttt{persona\_merge}}
+\input{examples/qwen_persona_merge_393}
+\end{answerbox}
+
+\begin{answerbox}{Gemma-3-27B, \texttt{persona\_merge}}
+\input{examples/gemma_persona_merge_393}
+\end{answerbox}
+
+% ----------------------------------------------------------------------------
+\section{Graph Embedding: Training and Selecting Its Settings}
+\label{app:embedding}
+
+The embedding $\phi$ enters retrieval only through the divergence term $W$
+(\S\ref{sec:retrieval}), so what it should encode is how differently subgroups
+answer. This appendix describes the default training, why it does not encode
+that, and the procedure we use to choose the settings that should. Every choice
+below is made from the survey data or from held-out embedding metrics, never
+from benchmark coverage, so it cannot be fitted to the evaluation.
+
+\subsection{Default training}
+A tree-recurrent encoder (a Tree-GRU with gated injection of node features)
+maps each node to the Poincar\'e ball ($c = 0.5$, $d = 64$). Input features
+are frozen \texttt{all-MiniLM-L6-v2} embeddings of node text; a subgroup's
+feature is the embeddings of its item's answer options weighted by $p_\ell$.
+The default objective is a margin ranking loss for link prediction
+($10$ corrupted negatives, margin $1$), plus a hierarchy term keeping parents
+closer than non-ancestors ($\lambda = 0.1$), a floor on sibling distance
+($\lambda = 0.1$) and a gate-sparsity penalty ($0.01$), trained with Adam
+($10^{-3}$) and Riemannian Adam on manifold parameters ($10^{-2}$) for
+$12$ epochs. The checkpoint with the best validation link-prediction MRR is
+kept.
+
+\subsection{Three problems with the default}
+\paragraph{Saturation.} Every node lands at normalised radius
+$\sqrt{c}\,\lVert\phi(v)\rVert \approx 0.9999$, the projection limit of the
+ball. The encoder's tangent vectors grow with $\sqrt{d}$ ($\approx 7$ at
+$d = 64$) while the exponential map saturates near $5$, and a saturated child
+feeds a large tangent vector to its parent, so the effect propagates up the
+tree. Radius then carries no information, geodesics reduce mostly to angle,
+and gradients through the map vanish. A soft cap on the tangent norm at every
+exponential map (\texttt{tangent\_clip}) bounds the radius by
+$\tanh(\sqrt{c}\cdot s)$, $0.61$ at $s = 1$; scaling alone does not, because
+the log map of a near-rim point is unbounded.
+
+\paragraph{The objective ignores degree of disagreement.} None of the default
+terms ties the distance between two subgroups to how differently they answer:
+the sibling term sets only a floor, so two groups that answer alike and two
+that are opposed can end up equally far apart.
+
+\paragraph{Selection uses the wrong signal.} Link-prediction MRR measures
+whether edges are recovered, not whether distance tracks disagreement, so the
+checkpoint it selects need not be the best one for retrieval.
+
+\subsection{The disagreement target}
+For two subgroups $a, b$ under one axis (one attribute's split of one item),
+measured disagreement combines how \emph{different} and how \emph{far apart}
+their answers are:
+\begin{equation}
+  D(a, b) = \lambda\, d_{\mathrm{JS}}(p_a, p_b) + (1 - \lambda)\,
+            \mathrm{EMD}(p_a, p_b),
+  \label{eq:dis}
+\end{equation}
+where $d_{\mathrm{JS}}$ is the Jensen--Shannon distance (base 2) and
+$\mathrm{EMD}$ is the earth mover's distance over answer options, normalised
+to $[0, 1]$. For ordinal items EMD places options at the scale positions
+released with OpinionQA \citep{santurkar2023whose}, which already put neutral
+options mid-scale; items whose options share one position are nominal, and
+use the cosine distance between option texts as ground cost. Both terms, like
+the geodesic they are compared with, are metrics. The same $D$ ranks forks in
+disagreement-ranked axis retrieval, so the embedding is trained toward the
+quantity retrieval uses.
+
+\paragraph{Choosing $\lambda$.} We set $\lambda$ from the survey data alone,
+over all $141{,}134$ same-axis subgroup pairs ($2.5\%$ on nominal items), with
+three checks (Table~\ref{tab:lambda}). (i)~\emph{Agreement}: $d_{\mathrm{JS}}$
+and EMD rank pairs similarly (Spearman $0.853$), and the ordering of pairs by
+$D$ changes little near $\lambda = 0.5$ (Kendall $\tau = 0.91$ and $0.93$ at
+$\lambda = 0.25$ and $0.75$), against $0.80$ and $0.87$ at the extremes.
+(ii)~\emph{Reliability}: a good disagreement measure should be stable across
+items, so for $128$ subgroup pairs that recur on at least $10$ items in each
+half, we correlate their mean $D$ on a random half of the items with the other
+half, over $20$ splits. Reliability is high and flat in $\lambda$
+($0.984$--$0.986$, s.d.\ $\approx 0.01$), so no weight is measurably better.
+(iii)~\emph{Spread}: equalising the two terms' standard deviations gives
+$\lambda = 0.457$. We therefore fix $\lambda = 0.5$. That subgroup-pair
+disagreement is this reproducible across items ($r \approx 0.99$) also means it
+is a stable, learnable signal for the embedding.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+$\lambda$ & $0$ & $0.25$ & $0.5$ & $0.75$ & $1$ \\
+\midrule
+Kendall $\tau$ vs.\ $\lambda{=}0.5$ & 0.804 & 0.911 & 1.000 & 0.927 & 0.867 \\
+Split-half reliability $r$ & 0.984 & 0.985 & 0.986 & 0.986 & 0.986 \\
+\bottomrule
+\end{tabular}
+\caption{Choosing the JS weight $\lambda$ in Eq.~(\ref{eq:dis}) from survey data
+alone. Reliability s.d.\ over 20 splits is $0.008$--$0.012$ for every $\lambda$.
+$d_{\mathrm{JS}}$ is $\lambda = 1$; EMD is $\lambda = 0$.}
+\label{tab:lambda}
+\end{table}
+
+\subsection{Disagreement loss, split and selection}
+\paragraph{Loss.} For two subgroup pairs $u = (a, b)$ and $u' = (a', b')$
+with $D_u > D_{u'}$, the pair that disagrees more should be further apart.
+With $g_u = d_c(\phi(a), \phi(b))$ the geodesic,
+\begin{equation}
+  \mathcal{L}_{\mathrm{dis}} =
+  \frac{\sum |D_u - D_{u'}|\,
+        \log\!\bigl(1 + e^{-\kappa\,\mathrm{sgn}(D_u - D_{u'})(g_u - g_{u'})}\bigr)}
+       {\sum |D_u - D_{u'}|},
+\end{equation}
+summed over pairs of pairs sampled across axes, with $\kappa = 1$. The loss is
+rank-based because the scale of a geodesic, set by curvature and radius, has
+no reason to equal that of $D$; the weight $|D_u - D_{u'}|$ discounts
+near-ties, which carry no ordering information. Sampling across axes makes
+geodesics comparable between axes, which ranking axes by $W$ requires. The
+total objective adds $\lambda_{\mathrm{dis}}\,\mathcal{L}_{\mathrm{dis}}$ to
+the default terms.
+
+\paragraph{Split.} Pairs use only subgroups attached in the training tree, so
+the held-out link-prediction targets are never paired with their axis. Axes,
+not pairs, are split $80/10/10$: training axes supply
+$\mathcal{L}_{\mathrm{dis}}$, validation axes select the checkpoint, and test
+axes, never used for either, give the number we report.
+
+\paragraph{Selection.} We keep the checkpoint with the highest validation
+Spearman correlation between geodesic and $D$, in place of the best
+link-prediction MRR.
+
+\subsection{Sweep and decision rule}
+Each run changes one setting (Table~\ref{tab:sweep}). We compare runs on three
+held-out quantities, read in order: (1)~\emph{saturation}, the median
+normalised radius, which must sit clearly inside the ball; (2)~\emph{disagreement
+fidelity}, test-axis Spearman$(g, D)$, against $0.755$ for the default
+embedding; and (3)~\emph{hierarchy fidelity}, which must not collapse while (2)
+improves. The best configuration is then retrained in Euclidean space for the
+curvature comparison, and only that pair of embeddings is used downstream, in
+the retrieval comparisons of \S\ref{sec:analysis}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Run & clip $s$ & $\lambda_{\mathrm{dis}}$ & Selection & Test $\rho(g, D)$ \\
+\midrule
+Default        & --- & 0   & MRR & 0.755$^\ast$ \\
+Clip           & 1.0 & 0   & $\rho(g,D)$ & \textcolor{red}{pending} \\
+Clip + dis     & 1.0 & 1.0 & $\rho(g,D)$ & \textcolor{red}{pending} \\
+Clip + dis (low) & 1.0 & 0.3 & $\rho(g,D)$ & \textcolor{red}{pending} \\
+\bottomrule
+\end{tabular}
+\caption{Embedding sweep. Each run changes one setting from the row above it
+(the last varies $\lambda_{\mathrm{dis}}$). $^\ast$Within-axis rank correlation
+of the default embedding with Jensen--Shannon divergence, measured before this
+protocol; it is not computed on the test axes or against $D$, so it is an
+approximate reference.}
+\label{tab:sweep}
+\end{table}
+
+\end{document}
